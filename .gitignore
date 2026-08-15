@@ -1,0 +1,5 @@
+# Build & test artifacts
+cover.out
+*.test
+*.out
+/dist/
