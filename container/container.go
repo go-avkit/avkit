@@ -5,10 +5,15 @@
 // (CGO=0).
 //
 // Demux reads MP4/ISO-BMFF and Matroska/WebM, exposing each elementary
-// stream's metadata (kind, codec, dimensions, timing). Muxer writes a
-// fragmented MP4 from tracks that arrive separately — which is what a
-// DASH presentation, keeping its video and audio apart, requires — and never
-// re-encodes: samples are written as handed over.
+// stream's metadata (kind, codec, dimensions, timing). Reader goes further on
+// MP4, handing back a track's samples and the configuration needed to write it
+// elsewhere. Muxer writes a fragmented MP4 from tracks that arrive separately —
+// which is what a DASH presentation, keeping its video and audio apart,
+// requires — and never re-encodes: samples are written as handed over.
+//
+// Reader and Muxer are counterparts: what one hands back, the other takes, so
+// a track can be copied from one file into another without the caller reading
+// a single box.
 //
 // Codec bitstream decoding lives in sibling packages.
 package container

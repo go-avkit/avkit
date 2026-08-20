@@ -19,6 +19,12 @@ func demuxMP4(data []byte) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
+	return mp4File(mf)
+}
+
+// mp4File projects an already decoded box tree onto the unified metadata, so
+// the reader can share one parse with the demuxer.
+func mp4File(mf *mp4.File) (*File, error) {
 	if mf.Moov == nil {
 		return nil, fmt.Errorf("container: MP4 has no moov box")
 	}

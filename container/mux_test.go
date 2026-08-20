@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -424,25 +425,20 @@ func TestNonSyncSamplesStayInTheSameFragment(t *testing.T) {
 	}
 }
 
-func TestMuxHEVC(t *testing.T) {
+func TestMuxRefusesParameterSetsItCannotRead(t *testing.T) {
+	// AVC parameter sets are not HEVC ones: rather than write a file whose
+	// sample entry says nothing, the muxer refuses the track.
 	sps, pps, _, _ := avcParameterSets(t)
-	var buf bytes.Buffer
-	m := NewMuxer(&buf)
-	id, err := m.AddTrack(TrackConfig{
+	m := NewMuxer(io.Discard)
+	_, err := m.AddTrack(TrackConfig{
 		Kind: Video, Codec: "hvc1", Timescale: 90000, Width: 32, Height: 24,
 		VPS: sps, SPS: sps, PPS: pps,
 	})
-	if err != nil {
-		t.Fatalf("AddTrack: %v", err)
+	if !errors.Is(err, ErrTrackConfig) {
+		t.Fatalf("err = %v, want ErrTrackConfig", err)
 	}
-	if err := m.WriteSample(id, Sample{Data: []byte{0, 0, 0, 1, 0x26}, Duration: 3000, Sync: true}); err != nil {
-		t.Fatalf("WriteSample: %v", err)
-	}
-	if err := m.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if countBoxes(t, buf.Bytes(), "moov") != 1 {
-		t.Fatal("no movie box was written")
+	if !strings.Contains(err.Error(), "not usable") {
+		t.Errorf("the message must say what is wrong: %v", err)
 	}
 }
 
