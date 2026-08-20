@@ -1,10 +1,16 @@
 // Copyright (c) the go-avkit authors.
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Package container demuxes time-based media containers — MP4/ISO-BMFF and
-// Matroska/WebM — in pure Go (CGO=0). It reads the container structure and
-// exposes each elementary stream's metadata (kind, codec, dimensions, timing);
-// codec bitstream decoding lives in sibling packages.
+// Package container reads and writes time-based media containers in pure Go
+// (CGO=0).
+//
+// Demux reads MP4/ISO-BMFF and Matroska/WebM, exposing each elementary
+// stream's metadata (kind, codec, dimensions, timing). Muxer writes a
+// fragmented MP4 from tracks that arrive separately — which is what a
+// DASH presentation, keeping its video and audio apart, requires — and never
+// re-encodes: samples are written as handed over.
+//
+// Codec bitstream decoding lives in sibling packages.
 package container
 
 import "fmt"
