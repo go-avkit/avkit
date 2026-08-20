@@ -5,8 +5,8 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/go-avkit/avkit)](https://goreportcard.com/report/github.com/go-avkit/avkit)
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
-Pure-Go (CGO=0) audio/video toolkit. It reads time-based media — starting with
-container demuxing — with no `libav`/`ffmpeg` linkage and no external binaries.
+Pure-Go (CGO=0) audio/video toolkit. It reads and writes time-based media
+containers with no `libav`/`ffmpeg` linkage and no external binaries.
 
 Container parsing is delegated to the maintained reference libraries
 ([Eyevinn/mp4ff](https://github.com/Eyevinn/mp4ff) for ISO-BMFF,
@@ -17,7 +17,7 @@ their box/element trees onto one small, format-neutral metadata model.
 
 | Package     | What it does |
 |-------------|--------------|
-| `container` | Sniff and demux MP4/ISO-BMFF and Matroska/WebM into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing). |
+| `container` | Sniff and demux MP4/ISO-BMFF and Matroska/WebM into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing), and mux a fragmented MP4 from separately delivered tracks — no re-encoding. |
 
 ## Install
 
