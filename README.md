@@ -17,7 +17,7 @@ their box/element trees onto one small, format-neutral metadata model.
 
 | Package     | What it does |
 |-------------|--------------|
-| `container` | Sniff and demux MP4/ISO-BMFF and Matroska/WebM into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing), and mux a fragmented MP4 from separately delivered tracks — no re-encoding. |
+| `container` | Sniff and demux MP4/ISO-BMFF and Matroska/WebM into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing), read an MP4's samples and per-track configuration, and mux a fragmented MP4 from separately delivered tracks — no re-encoding. |
 
 ## Install
 

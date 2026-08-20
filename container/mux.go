@@ -224,6 +224,13 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 	default:
 		return fmt.Errorf("%w: %q", ErrUnsupportedCodec, cfg.Codec)
 	}
+	// A descriptor is written from the parameter sets it is given, and sets
+	// nothing at all when it cannot read them. Writing a file whose sample
+	// entry is empty would produce something no player can open, so say so
+	// here instead.
+	if _, err := trak.Mdia.Minf.Stbl.Stsd.GetSampleDescription(0); err != nil {
+		return fmt.Errorf("%w: %s parameter sets are not usable: %v", ErrTrackConfig, codec, err)
+	}
 	return nil
 }
 
