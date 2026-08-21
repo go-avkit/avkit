@@ -6,18 +6,21 @@
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
 Pure-Go (CGO=0) audio/video toolkit. It reads and writes time-based media
-containers with no `libav`/`ffmpeg` linkage and no external binaries.
+containers with no `libav`/`ffmpeg` linkage and no external binaries, which is
+enough to remux — to move tracks between containers without re-encoding them.
 
 Container parsing is delegated to the maintained reference libraries
 ([Eyevinn/mp4ff](https://github.com/Eyevinn/mp4ff) for ISO-BMFF,
-[at-wat/ebml-go](https://github.com/at-wat/ebml-go) for EBML); go-avkit projects
-their box/element trees onto one small, format-neutral metadata model.
+[at-wat/ebml-go](https://github.com/at-wat/ebml-go) for EBML,
+[asticode/go-astits](https://github.com/asticode/go-astits) for MPEG-TS);
+go-avkit projects their box/element/packet trees onto one small, format-neutral
+model, and converts the payloads each container spells differently.
 
 ## Packages
 
 | Package     | What it does |
 |-------------|--------------|
-| `container` | Sniff and demux MP4/ISO-BMFF and Matroska/WebM into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing), read an MP4's samples and per-track configuration, and mux a fragmented MP4 from separately delivered tracks — no re-encoding. |
+| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of an MP4 or a transport stream; mux a fragmented MP4 from tracks delivered separately. No re-encoding anywhere. |
 
 ## Install
 
