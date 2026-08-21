@@ -294,7 +294,7 @@ func TestAnnexBConversion(t *testing.T) {
 	sps := []byte{0x67, 0x42}
 	pps := []byte{0x68, 0xce}
 	picture := []byte{0x65, 0x88}
-	payload, params := convertAnnexB(annexB([]byte{0x09, 0x10}, sps, pps, picture))
+	payload, params := convertAnnexB(annexB([]byte{0x09, 0x10}, sps, pps, picture), false)
 	if len(params.sps) != 1 || len(params.pps) != 1 {
 		t.Fatalf("parameter sets = %+v", params)
 	}
@@ -306,11 +306,11 @@ func TestAnnexBConversion(t *testing.T) {
 	// padding belongs to neither unit.
 	three := append([]byte{0, 0, 1}, picture...)
 	three = append(three, 0, 0)
-	payload, _ = convertAnnexB(three)
+	payload, _ = convertAnnexB(three, false)
 	if !bytes.Equal(payload, want) {
 		t.Fatalf("payload = %x, want %x", payload, want)
 	}
-	if got, _ := convertAnnexB(nil); len(got) != 0 {
+	if got, _ := convertAnnexB(nil, false); len(got) != 0 {
 		t.Errorf("an empty stream yielded %x", got)
 	}
 }
@@ -318,41 +318,59 @@ func TestAnnexBConversion(t *testing.T) {
 func TestNALUClassification(t *testing.T) {
 	cases := []struct {
 		nalu []byte
+		hevc bool
 		want int
 	}{
-		{[]byte{0x67, 0x00}, naluSPS},
-		{[]byte{0x68, 0x00}, naluPPS},
-		{[]byte{0x09, 0x10}, naluDrop},
-		{[]byte{0x65, 0x00}, naluPicture},
-		{[]byte{0x40, 0x01}, naluVPS}, // HEVC video parameter set
-		{[]byte{0x42, 0x01}, naluSPS}, // HEVC sequence parameter set
-		{[]byte{0x44, 0x01}, naluPPS}, // HEVC picture parameter set
-		{nil, naluDrop},
+		{[]byte{0x67, 0x00}, false, naluSPS},
+		{[]byte{0x68, 0x00}, false, naluPPS},
+		{[]byte{0x09, 0x10}, false, naluDrop},
+		{[]byte{0x65, 0x00}, false, naluPicture},
+		{[]byte{0x40, 0x01}, true, naluVPS},     // HEVC video parameter set
+		{[]byte{0x42, 0x01}, true, naluSPS},     // HEVC sequence parameter set
+		{[]byte{0x44, 0x01}, true, naluPPS},     // HEVC picture parameter set
+		{[]byte{0x46, 0x01}, true, naluDrop},    // an HEVC access unit delimiter
+		{[]byte{0x4c, 0x01}, true, naluDrop},    // HEVC filler data
+		{[]byte{0x26, 0x01}, true, naluPicture}, // an HEVC picture
+		{nil, false, naluDrop},
+		// The same byte means a picture to one codec and a parameter set to
+		// the other, which is why the codec has to be stated.
+		{[]byte{0x41, 0x9a}, false, naluPicture},
+		{[]byte{0x41, 0x9a}, true, naluVPS},
 	}
 	for _, c := range cases {
-		if got := naluKind(c.nalu); got != c.want {
-			t.Errorf("naluKind(%x) = %d, want %d", c.nalu, got, c.want)
+		if got := naluKind(c.nalu, c.hevc); got != c.want {
+			t.Errorf("naluKind(%x, hevc=%v) = %d, want %d", c.nalu, c.hevc, got, c.want)
 		}
 	}
 }
 
 func TestSyncUnitDetection(t *testing.T) {
 	avcIDR := append([]byte{0, 0, 0, 2}, 0x65, 0x88)
-	if !isSyncUnit(avcIDR) {
+	if !isSyncUnit(avcIDR, false) {
 		t.Error("an AVC picture coded on its own is a sync sample")
 	}
 	avcSlice := append([]byte{0, 0, 0, 2}, 0x41, 0x88)
-	if isSyncUnit(avcSlice) {
+	if isSyncUnit(avcSlice, false) {
 		t.Error("a picture referring to another is not")
 	}
+	// The very same bytes, read as HEVC, are a parameter set and no picture
+	// at all: only the codec says which bits of the header state the type.
+	if isSyncUnit(avcSlice, true) {
+		t.Error("an HEVC video parameter set is not a picture")
+	}
 	hevcIRAP := append([]byte{0, 0, 0, 2}, 0x26, 0x01)
-	if !isSyncUnit(hevcIRAP) {
+	if !isSyncUnit(hevcIRAP, true) {
 		t.Error("an HEVC picture starting a decodable segment is a sync sample")
 	}
-	if isSyncUnit([]byte{0, 0, 0, 99, 1}) {
+	// An AVC slice whose reference bits happen to read as an HEVC segment
+	// start must not be taken for one.
+	if isSyncUnit(append([]byte{0, 0, 0, 2}, 0x21, 0x88), false) {
+		t.Error("an AVC picture referring to another is not a sync sample")
+	}
+	if isSyncUnit([]byte{0, 0, 0, 99, 1}, false) {
 		t.Error("a length past the end must not be trusted")
 	}
-	if isSyncUnit(nil) {
+	if isSyncUnit(nil, false) {
 		t.Error("nothing is not a sync sample")
 	}
 }
@@ -565,7 +583,7 @@ func TestReadTSPropagatesAReadFailure(t *testing.T) {
 
 func TestConvertAnnexBSkipsEmptyUnits(t *testing.T) {
 	// Two start codes in a row name a unit with nothing in it.
-	payload, _ := convertAnnexB([]byte{0, 0, 1, 0, 0, 1, 0x65, 0x88})
+	payload, _ := convertAnnexB([]byte{0, 0, 1, 0, 0, 1, 0x65, 0x88}, false)
 	want := append([]byte{0, 0, 0, 2}, 0x65, 0x88)
 	if !bytes.Equal(payload, want) {
 		t.Fatalf("payload = %x, want %x", payload, want)
