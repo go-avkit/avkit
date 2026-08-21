@@ -20,7 +20,7 @@ model, and converts the payloads each container spells differently.
 
 | Package     | What it does |
 |-------------|--------------|
-| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of an MP4 or a transport stream; mux a fragmented MP4 or an MPEG-TS from tracks delivered separately; copy, cut, concatenate and drop tracks with `Remux`, `Cut` and `Concat`. No re-encoding anywhere. |
+| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of an MP4 or a transport stream, one file or a sequence of segments; mux a fragmented MP4 or an MPEG-TS from tracks delivered separately; copy, cut, concatenate and drop tracks with `Remux`, `Cut` and `Concat`. No re-encoding anywhere. |
 
 ## Install
 
