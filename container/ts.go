@@ -48,8 +48,11 @@ func sniffTS(data []byte) bool {
 
 // tsTrack is one elementary stream, read and converted.
 type tsTrack struct {
-	track   Track
-	config  TrackConfig
+	track  Track
+	config TrackConfig
+	// hevc says which codec's NAL headers the units carry, which the bytes
+	// themselves do not.
+	hevc    bool
 	samples []Sample
 	// pending holds each unit with the time it is shown at, so durations can
 	// be worked out once the following one is known.
@@ -128,6 +131,7 @@ func newTSTrack(es *astits.PMTElementaryStream) *tsTrack {
 	return &tsTrack{
 		track:  Track{ID: id, Kind: kind, Codec: codec, Timescale: TSTimescale},
 		config: TrackConfig{Kind: kind, Codec: codec, Timescale: TSTimescale},
+		hevc:   es.StreamType == astits.StreamTypeH265Video,
 	}
 }
 
@@ -136,7 +140,7 @@ func (t *tsTrack) append(pes *astits.PESData) {
 	when := pesTime(pes)
 	switch t.track.Kind {
 	case Video:
-		payload, params := convertAnnexB(pes.Data)
+		payload, params := convertAnnexB(pes.Data, t.hevc)
 		t.adoptParameterSets(params)
 		if len(payload) > 0 {
 			t.pending = append(t.pending, tsUnit{data: payload, time: when})
@@ -192,7 +196,7 @@ func (t *tsTrack) finish() {
 		t.samples = append(t.samples, Sample{
 			Data:     u.data,
 			Duration: uint32(dur),
-			Sync:     t.track.Kind == Audio || isSyncUnit(u.data),
+			Sync:     t.track.Kind == Audio || isSyncUnit(u.data, t.hevc),
 		})
 		t.track.Duration += uint64(dur)
 	}
@@ -240,7 +244,7 @@ type parameterSets struct {
 // convertAnnexB turns the start-code separated NAL units of a transport stream
 // into the length-prefixed form an MP4 sample holds, and lifts out the
 // parameter sets, which belong in the sample entry instead.
-func convertAnnexB(data []byte) ([]byte, parameterSets) {
+func convertAnnexB(data []byte, hevc bool) ([]byte, parameterSets) {
 	var (
 		out    bytes.Buffer
 		params parameterSets
@@ -249,7 +253,7 @@ func convertAnnexB(data []byte) ([]byte, parameterSets) {
 		if len(nalu) == 0 {
 			continue
 		}
-		switch naluKind(nalu) {
+		switch naluKind(nalu, hevc) {
 		case naluSPS:
 			params.sps = append(params.sps, nalu)
 			continue
@@ -310,51 +314,76 @@ const (
 	naluDrop
 )
 
-// naluKind classifies a NAL unit for both AVC and HEVC, whose headers differ.
-func naluKind(nalu []byte) int {
+// naluKind classifies a NAL unit. Which of the two codecs the stream carries
+// has to be stated, because the header does not say: the two spell their type
+// in different bits of it, and the meanings overlap. An AVC slice header of
+// 0x41 reads as an HEVC video parameter set, and dropping a picture as if it
+// described the stream loses the picture.
+func naluKind(nalu []byte, hevc bool) int {
 	if len(nalu) == 0 {
 		return naluDrop
 	}
-	// HEVC units have a two-byte header whose type sits in six bits.
-	if hevcType := (nalu[0] >> 1) & 0x3f; nalu[0]&0x80 == 0 && len(nalu) > 1 {
-		switch hevcType {
+	if hevc {
+		// An HEVC unit has a two-byte header whose type sits in six bits.
+		switch (nalu[0] >> 1) & 0x3f {
 		case 32:
 			return naluVPS
 		case 33:
 			return naluSPS
 		case 34:
 			return naluPPS
+		case 35, 38:
+			return naluDrop // an access unit delimiter or filler carries nothing
 		}
+		return naluPicture
 	}
+	// An AVC unit states its type in the low five bits of one byte.
 	switch nalu[0] & 0x1f {
 	case 7:
 		return naluSPS
 	case 8:
 		return naluPPS
 	case 9, 12:
-		return naluDrop // an access unit delimiter or filler carries nothing
+		return naluDrop
 	}
 	return naluPicture
 }
 
-// isSyncUnit reports whether an access unit can be decoded on its own.
-func isSyncUnit(data []byte) bool {
-	for i := 0; i+4 < len(data); {
+// splitLengthPrefixed cuts a sample into the NAL units its four-byte prefixes
+// separate, and reports whether they described the sample exactly: a prefix
+// reaching past the end, or bytes left over after the last unit, mean the data
+// is not in the form this package writes. The units read before that are still
+// returned, because deciding what a partly readable unit holds is worth more
+// than refusing to look at it.
+func splitLengthPrefixed(data []byte) ([][]byte, bool) {
+	var nalus [][]byte
+	i := 0
+	for i+4 <= len(data) {
 		size := int(uint32(data[i])<<24 | uint32(data[i+1])<<16 |
 			uint32(data[i+2])<<8 | uint32(data[i+3]))
 		if size <= 0 || i+4+size > len(data) {
-			return false
+			return nalus, false
 		}
-		nalu := data[i+4 : i+4+size]
-		if len(nalu) > 0 && nalu[0]&0x1f == 5 {
-			return true // an AVC picture coded without reference to another
-		}
-		if len(nalu) > 0 {
+		nalus = append(nalus, data[i+4:i+4+size])
+		i += 4 + size
+	}
+	return nalus, i == len(data)
+}
+
+// isSyncUnit reports whether an access unit can be decoded on its own. As with
+// naluKind, only the stream's codec says which bits of the header to read.
+func isSyncUnit(data []byte, hevc bool) bool {
+	nalus, _ := splitLengthPrefixed(data)
+	for _, nalu := range nalus {
+		if hevc {
 			if t := (nalu[0] >> 1) & 0x3f; t >= 16 && t <= 21 {
 				return true // an HEVC picture starting a decodable segment
 			}
+			continue
 		}
-		i += 4 + size
+		if nalu[0]&0x1f == 5 {
+			return true // an AVC picture coded without reference to another
+		}
 	}
 	return false
 }

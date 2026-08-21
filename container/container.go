@@ -9,11 +9,13 @@
 // MP4 and MPEG-TS, handing back a track's samples and the configuration needed
 // to write it elsewhere — which is what turns an HLS segment into an MP4. Muxer writes a fragmented MP4 from tracks that arrive separately —
 // which is what a DASH presentation, keeping its video and audio apart,
-// requires — and never re-encodes: samples are written as handed over.
+// requires — and never re-encodes: samples are written as handed over. TSMuxer
+// writes the same tracks as an MPEG-TS instead, which is what an HLS segment
+// is, so remuxing runs in both directions.
 //
-// Reader and Muxer are counterparts: what one hands back, the other takes, so
-// a track can be copied from one file into another without the caller reading
-// a single box.
+// Reader and the muxers are counterparts: what one hands back, the others
+// take, so a track can be copied from one file into another without the caller
+// reading a single box.
 //
 // Codec bitstream decoding lives in sibling packages.
 package container
