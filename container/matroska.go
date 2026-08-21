@@ -53,11 +53,39 @@ type mkvTrackEntry struct {
 	Language    string    `ebml:"Language,omitempty"`
 	Video       *mkvVideo `ebml:"Video"`
 	Audio       *mkvAudio `ebml:"Audio"`
+	// CodecPrivate is the codec's own configuration, in whatever form the
+	// codec's Matroska mapping states: an avcC record for AVC, an hvcC one
+	// for HEVC, an av1C one for AV1, an identification header for Opus, an
+	// audio specific config for AAC.
+	CodecPrivate []byte `ebml:"CodecPrivate,omitempty"`
+	// DefaultDuration is how long a frame of this track lasts, in
+	// nanoseconds — not in timestamp ticks, which is what every other
+	// duration of a Matroska file is counted in.
+	DefaultDuration uint64 `ebml:"DefaultDuration,omitempty"`
 }
 
 type mkvVideo struct {
-	PixelWidth  uint64 `ebml:"PixelWidth"`
-	PixelHeight uint64 `ebml:"PixelHeight"`
+	PixelWidth  uint64     `ebml:"PixelWidth"`
+	PixelHeight uint64     `ebml:"PixelHeight"`
+	Colour      *mkvColour `ebml:"Colour"`
+}
+
+// mkvColour is what a video track states about its colour, which for VP8 and
+// VP9 is the only place a vpcC record can be filled from.
+//
+// The three fields that are slices are the ones whose zero is a value in its
+// own right — an identity matrix, and no subsampling at all — so their absence
+// has to be told apart from a stated zero, and a slice is how ebml-go reports
+// an element that may or may not be there.
+type mkvColour struct {
+	MatrixCoefficients      []uint64 `ebml:"MatrixCoefficients,omitempty"`
+	ChromaSubsamplingHorz   []uint64 `ebml:"ChromaSubsamplingHorz,omitempty"`
+	ChromaSubsamplingVert   []uint64 `ebml:"ChromaSubsamplingVert,omitempty"`
+	BitsPerChannel          uint64   `ebml:"BitsPerChannel,omitempty"`
+	ChromaSitingVert        uint64   `ebml:"ChromaSitingVert,omitempty"`
+	Range                   uint64   `ebml:"Range,omitempty"`
+	TransferCharacteristics uint64   `ebml:"TransferCharacteristics,omitempty"`
+	Primaries               uint64   `ebml:"Primaries,omitempty"`
 }
 
 type mkvAudio struct {

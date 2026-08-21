@@ -36,9 +36,14 @@ type Reader struct {
 	file  *File
 	mp4   *mp4.File
 	traks map[uint32]*mp4.TrakBox
-	// ts holds the tracks of a transport stream, whose samples are read in
-	// one pass rather than addressed through tables.
+	// ts holds the tracks whose samples are read in one pass rather than
+	// addressed through tables: those of a transport stream, and those of
+	// several streams read as one.
 	ts map[uint32]*tsTrack
+	// mkv holds the tracks of a Matroska or WebM file, read in one pass as
+	// well, but each carrying what went wrong with it: a file may hold a
+	// track this package cannot describe next to tracks it can.
+	mkv map[uint32]*mkvReadTrack
 }
 
 // newTSReader reads a transport stream in one pass: it has no table to seek
@@ -61,12 +66,16 @@ func newTSReader(data []byte) (*Reader, error) {
 	return r, nil
 }
 
-// NewReader reads the structure of an MP4 and prepares its sample tables.
+// NewReader reads the structure of a container and prepares its samples: an
+// MP4's sample tables are indexed, and a transport stream or a Matroska file,
+// which have none, is walked in one pass.
 func NewReader(data []byte) (*Reader, error) {
 	switch format := Sniff(data); format {
 	case FormatMP4:
 	case FormatMPEGTS:
 		return newTSReader(data)
+	case FormatMatroska:
+		return newMatroskaReader(data)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedFormat, describeFormat(format))
 	}
@@ -128,6 +137,16 @@ func (r *Reader) TrackIDs() []uint32 {
 // TrackConfig describes a track the way Muxer.AddTrack wants it, so a track
 // can be copied without the caller reading a single box.
 func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
+	if r.mkv != nil {
+		t, ok := r.mkv[trackID]
+		if !ok {
+			return TrackConfig{}, fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
+		}
+		if t.configErr != nil {
+			return TrackConfig{}, t.configErr
+		}
+		return t.config, nil
+	}
 	if r.ts != nil {
 		t, ok := r.ts[trackID]
 		if !ok {
@@ -253,6 +272,16 @@ func boxPayload(box mp4.Box) ([]byte, error) {
 
 // Samples reads every sample of a track, in decoding order.
 func (r *Reader) Samples(trackID uint32) ([]Sample, error) {
+	if r.mkv != nil {
+		t, ok := r.mkv[trackID]
+		if !ok {
+			return nil, fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
+		}
+		if t.samplesErr != nil {
+			return nil, t.samplesErr
+		}
+		return t.samples, nil
+	}
 	if r.ts != nil {
 		t, ok := r.ts[trackID]
 		if !ok {

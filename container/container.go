@@ -6,8 +6,9 @@
 //
 // Demux reads MP4/ISO-BMFF, Matroska/WebM and MPEG-TS, exposing each elementary
 // stream's metadata (kind, codec, dimensions, timing). Reader goes further on
-// MP4 and MPEG-TS, handing back a track's samples and the configuration needed
-// to write it elsewhere — which is what turns an HLS segment into an MP4. Muxer writes a fragmented MP4 from tracks that arrive separately —
+// all three, handing back a track's samples and the configuration needed to
+// write it elsewhere — which is what turns an HLS segment, or a WebM, into an
+// MP4. Muxer writes a fragmented MP4 from tracks that arrive separately —
 // which is what a DASH presentation, keeping its video and audio apart,
 // requires — and never re-encodes: samples are written as handed over. TSMuxer
 // writes the same tracks as an MPEG-TS instead, which is what an HLS segment
