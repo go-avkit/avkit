@@ -17,6 +17,11 @@
 // take, so a track can be copied from one file into another without the caller
 // reading a single box.
 //
+// Remux, Cut and Concat stand on those two and offer the whole-file operations
+// a caller would otherwise reach for ffmpeg to perform — copy a file, keep the
+// stretch between two time offsets, join files that match, leave a track out —
+// none of which touches a sample's bytes.
+//
 // Codec bitstream decoding lives in sibling packages.
 package container
 
