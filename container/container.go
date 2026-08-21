@@ -15,7 +15,9 @@
 // mdat and the sample tables that address it — which is what a player with no
 // streaming stack, a hardware decoder, or a tool that seeks by sample table
 // expects. TSMuxer writes them as an MPEG-TS, which is what an HLS segment
-// is, so remuxing runs in both directions.
+// is, so remuxing runs in both directions, and WebMMuxer writes them as a
+// Matroska/WebM file — the container a browser plays with no plugin — leaving
+// the segment's size unstated when the caller cannot seek.
 //
 // Reader and the muxers are counterparts: what one hands back, the others
 // take, so a track can be copied from one file into another without the caller
