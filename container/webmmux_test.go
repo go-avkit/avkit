@@ -50,9 +50,15 @@ type webmBlock struct {
 	relative int16
 	keyframe bool
 	data     []byte
+	// duration is what a block group states, and zero for a simple block,
+	// which has nowhere to state one.
+	duration uint64
+	group    bool
 }
 
-// webmBlocks lists every block of every cluster, in file order.
+// webmBlocks lists every block of every cluster, in both of the forms a cluster
+// can hold them: the last frame of each track is a block group, because that is
+// the only form that can state how long a frame lasts.
 func webmBlocks(f webmFile) []webmBlock {
 	var out []webmBlock
 	for i, cluster := range f.Segment.Cluster {
@@ -66,8 +72,37 @@ func webmBlocks(f webmFile) []webmBlock {
 				data:     b.Data[0],
 			})
 		}
+		for _, g := range cluster.BlockGroup {
+			out = append(out, webmBlock{
+				cluster:  i,
+				track:    g.Block.TrackNumber,
+				tick:     int64(cluster.Timecode) + int64(g.Block.Timecode),
+				relative: g.Block.Timecode,
+				// A block group states no flag: a frame with no reference is
+				// a keyframe, which is how a reader tells them apart.
+				keyframe: g.ReferenceBlock == 0,
+				data:     g.Block.Data[0],
+				duration: g.BlockDuration,
+				group:    true,
+			})
+		}
 	}
 	return out
+}
+
+// clusterOpensOn is the block a cluster starts at, whichever form holds it.
+func clusterOpensOn(f webmFile, cluster int) webmBlock {
+	var first webmBlock
+	found := false
+	for _, b := range webmBlocks(f) {
+		if b.cluster != cluster {
+			continue
+		}
+		if !found || b.relative < first.relative {
+			first, found = b, true
+		}
+	}
+	return first
 }
 
 // The two tracks the round-trip tests write: VP9 at the 90 kHz an MPEG-TS
@@ -326,7 +361,7 @@ func TestWebMMuxerStartsAClusterOnAKeyframe(t *testing.T) {
 		if cluster.Timecode != want[i] {
 			t.Errorf("cluster %d starts at %d, want %d", i, cluster.Timecode, want[i])
 		}
-		if !cluster.SimpleBlock[0].Keyframe {
+		if !clusterOpensOn(f, i).keyframe {
 			t.Errorf("cluster %d does not start on a keyframe", i)
 		}
 	}
@@ -1235,13 +1270,15 @@ func TestWebMWriteFailuresAreReported(t *testing.T) {
 			reported["header"] = true
 		case strings.Contains(failure.Error(), "write cluster at"):
 			reported["cluster"] = true
+		case strings.Contains(failure.Error(), "write block group on track"):
+			reported["block group"] = true
 		case strings.Contains(failure.Error(), "write block on track"):
 			reported["block"] = true
 		default:
 			t.Fatalf("with room for %d bytes, an unnamed failure: %v", limit, failure)
 		}
 	}
-	for _, phase := range []string{"header", "cluster", "block"} {
+	for _, phase := range []string{"header", "cluster", "block", "block group"} {
 		if !reported[phase] {
 			t.Errorf("no run failed while writing the %s", phase)
 		}
@@ -1310,7 +1347,9 @@ func TestWebMRefusesTimesTheScaleCannotState(t *testing.T) {
 		t.Fatalf("AddTrack: %v", err)
 	}
 	sample := Sample{Data: []byte{1}, Duration: math.MaxUint32, Sync: true}
-	for i := 0; i < 3; i++ {
+	// A frame is refused as soon as either end of it is beyond range, so the
+	// third one goes: it would start inside the range and finish outside.
+	for i := 0; i < 2; i++ {
 		if err := m.WriteSample(id, sample); err != nil {
 			t.Fatalf("WriteSample %d: %v", i, err)
 		}
@@ -1319,10 +1358,10 @@ func TestWebMRefusesTimesTheScaleCannotState(t *testing.T) {
 	if !errors.Is(err, ErrSample) {
 		t.Errorf("the sample beyond range: %v, want %v", err, ErrSample)
 	}
-	// The duration of what was written is beyond range too, and Close says so
-	// instead of stating a wrapped one.
-	if err := m.Close(); !errors.Is(err, ErrSample) {
-		t.Errorf("Close: %v, want %v", err, ErrSample)
+	// Nothing out of range was accepted, so the file can be finished and the
+	// duration it states is the one of what was written.
+	if err := m.Close(); err != nil {
+		t.Errorf("Close: %v", err)
 	}
 }
 
