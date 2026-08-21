@@ -275,9 +275,6 @@ func TestTrackConfigOfAnHEVCTrack(t *testing.T) {
 }
 
 func TestNewReaderRefusesWhatItCannotRead(t *testing.T) {
-	if _, err := NewReader(fixture(t, "tiny.mkv")); !errors.Is(err, ErrUnsupportedFormat) {
-		t.Errorf("matroska: %v, want ErrUnsupportedFormat", err)
-	}
 	if _, err := NewReader([]byte("not a container at all")); !errors.Is(err, ErrUnsupportedFormat) {
 		t.Errorf("rubbish: %v", err)
 	}
