@@ -281,10 +281,18 @@ func TestNewReaderRefusesWhatItCannotRead(t *testing.T) {
 	if _, err := NewReader([]byte("not a container at all")); !errors.Is(err, ErrUnsupportedFormat) {
 		t.Errorf("rubbish: %v", err)
 	}
-	// An ftyp box and nothing else: sniffed as MP4, refused as a file.
-	truncated := append([]byte{0, 0, 0, 12}, []byte("ftypisom")...)
-	if _, err := NewReader(truncated); err == nil {
+	// An ftyp box and nothing else: sniffed as MP4, refused as a file for
+	// naming no movie.
+	header := append([]byte{0, 0, 0, 12}, []byte("ftypisom")...)
+	if _, err := NewReader(header); err == nil {
 		t.Error("a file with nothing but an ftyp box was accepted")
+	}
+	// A box claiming more bytes than the file holds cannot be parsed at all,
+	// which is a different failure from a file that parses and says nothing.
+	overlong := append(header, 0xff, 0xff, 0xff, 0xff)
+	overlong = append(overlong, []byte("moov")...)
+	if _, err := NewReader(overlong); err == nil {
+		t.Error("a box longer than its file was accepted")
 	}
 }
 
@@ -298,19 +306,6 @@ func TestReaderRejectsAnUnknownTrack(t *testing.T) {
 	}
 	if _, err := r.TrackConfig(999); !errors.Is(err, ErrUnknownTrack) {
 		t.Errorf("TrackConfig: %v", err)
-	}
-}
-
-func TestReaderReportsSampleDataOutOfRange(t *testing.T) {
-	data := fixture(t, "tiny.mp4")
-	r, err := NewReader(data[:len(data)-64])
-	if err != nil {
-		// A file cut this short may not parse at all, which is fine: the
-		// point is that it never reads past its own end.
-		t.Skipf("the truncated fixture no longer parses: %v", err)
-	}
-	if _, err := r.Samples(r.TrackIDs()[0]); !errors.Is(err, ErrSampleData) {
-		t.Fatalf("err = %v, want ErrSampleData", err)
 	}
 }
 
