@@ -400,3 +400,74 @@ func chunkOffset(stbl *mp4.StblBox, chunkNr uint32) (uint64, error) {
 	}
 	return 0, fmt.Errorf("%w: no chunk offset table", ErrNoSamples)
 }
+
+// NewSegmentedReader reads several streams that follow one another — the
+// segments of an HLS playlist, say — as one logical stream.
+//
+// It exists because a segment boundary is invisible in a concatenation. A
+// transport stream ends its last packetised unit by simply stopping, so a
+// demuxer given one long byte slice is still accumulating that unit when the
+// next segment's tables arrive, and drops it: one access unit lost per join.
+// Handing the segments over separately keeps them, and is what a caller that
+// downloaded them one by one can do for free.
+//
+// Tracks are matched across segments by identifier, and the configuration of
+// the first segment that declares a track is the one kept: a stream that
+// changes codec mid-playlist cannot be read as one track, and this reports
+// what it can rather than pretending otherwise.
+func NewSegmentedReader(parts [][]byte) (*Reader, error) {
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("%w: no segment given", ErrNoSamples)
+	}
+	if len(parts) == 1 {
+		return NewReader(parts[0])
+	}
+	merged := &Reader{ts: map[uint32]*tsTrack{}, traks: map[uint32]*mp4.TrakBox{}}
+	file := &File{}
+	var order []uint32
+	for i, part := range parts {
+		r, err := NewReader(part)
+		if err != nil {
+			return nil, fmt.Errorf("container: segment %d: %w", i+1, err)
+		}
+		if file.Format == "" {
+			file.Format, file.Timescale, file.Brand = r.file.Format, r.file.Timescale, r.file.Brand
+		}
+		for _, track := range r.file.Tracks {
+			id := track.ID
+			cfg, err := trackConfig(r, id)
+			if err != nil {
+				return nil, fmt.Errorf("container: segment %d: %w", i+1, err)
+			}
+			samples, err := r.Samples(id)
+			if err != nil {
+				continue // this segment carries nothing for that track
+			}
+			t, seen := merged.ts[id]
+			if !seen {
+				// The merged duration is summed from the samples, not taken
+				// from one segment's own header.
+				track.Duration = 0
+				t = &tsTrack{track: track, config: cfg}
+				merged.ts[id] = t
+				order = append(order, id)
+			}
+			t.samples = append(t.samples, samples...)
+			for _, s := range samples {
+				t.track.Duration += uint64(s.Duration)
+			}
+		}
+	}
+	if len(order) == 0 {
+		return nil, fmt.Errorf("%w: no segment carries a track", ErrNoSamples)
+	}
+	for _, id := range order {
+		t := merged.ts[id]
+		file.Tracks = append(file.Tracks, t.track)
+		if t.track.Duration > file.Duration {
+			file.Duration = t.track.Duration
+		}
+	}
+	merged.file = file
+	return merged, nil
+}
