@@ -9,8 +9,11 @@
 // MP4 and MPEG-TS, handing back a track's samples and the configuration needed
 // to write it elsewhere — which is what turns an HLS segment into an MP4. Muxer writes a fragmented MP4 from tracks that arrive separately —
 // which is what a DASH presentation, keeping its video and audio apart,
-// requires — and never re-encodes: samples are written as handed over. TSMuxer
-// writes the same tracks as an MPEG-TS instead, which is what an HLS segment
+// requires — and never re-encodes: samples are written as handed over.
+// ProgressiveMuxer writes those same tracks as an ordinary MP4 instead — one
+// mdat and the sample tables that address it — which is what a player with no
+// streaming stack, a hardware decoder, or a tool that seeks by sample table
+// expects. TSMuxer writes them as an MPEG-TS, which is what an HLS segment
 // is, so remuxing runs in both directions.
 //
 // Reader and the muxers are counterparts: what one hands back, the others
