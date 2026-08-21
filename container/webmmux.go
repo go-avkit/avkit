@@ -162,8 +162,32 @@ type webmTrack struct {
 	// last written, which is what keeps the rounding from accumulating.
 	nextTime uint64
 	end      uint64
+	// endTick is the same end in file ticks. Every frame's end was converted
+	// when it was written, and refused there if the scale could not state it,
+	// so the segment's duration is the largest of them rather than a
+	// conversion that could fail after the fact.
+	endTick uint64
 	// webmCodec is what the codec this track carries is allowed in.
 	inWebM bool
+	// held is the last frame handed over and not yet written. One frame per
+	// track is kept back so that the frame which turns out to be the last of
+	// its track can be written as a block group stating how long it lasts:
+	// nothing else in the file would say, and a reader cannot invent it.
+	held *heldFrame
+	// lastTick is the file tick of the frame written before the held one, or
+	// zero when the held frame is the first. A block group carries no
+	// keyframe flag, so a frame that is not one has to name a reference, and
+	// the frame before it on the same track is that reference.
+	lastTick uint64
+	hasLast  bool
+}
+
+// heldFrame is one frame waiting to be written, with what it takes to place it.
+type heldFrame struct {
+	data     []byte
+	tick     uint64 // presentation time, in file ticks
+	duration uint64 // in file ticks
+	sync     bool
 }
 
 // The EBML tree this muxer writes. The elements come from ebml-go's own table
@@ -231,8 +255,9 @@ type webmAudio struct {
 }
 
 type webmCluster struct {
-	Timecode    uint64       `ebml:"Timecode"`
-	SimpleBlock []ebml.Block `ebml:"SimpleBlock"`
+	Timecode    uint64           `ebml:"Timecode"`
+	SimpleBlock []ebml.Block     `ebml:"SimpleBlock"`
+	BlockGroup  []webmBlockGroup `ebml:"BlockGroup"`
 }
 
 // webmOpenCluster is a cluster whose size is left unknown, so the blocks
@@ -247,6 +272,21 @@ type webmClusterHead struct {
 
 type webmBlockElement struct {
 	Block ebml.Block `ebml:"SimpleBlock"`
+}
+
+// webmBlockGroupElement wraps a block that states its own duration. A simple
+// block cannot: it has no room for one.
+type webmBlockGroupElement struct {
+	BlockGroup webmBlockGroup `ebml:"BlockGroup"`
+}
+
+type webmBlockGroup struct {
+	Block         ebml.Block `ebml:"Block"`
+	BlockDuration uint64     `ebml:"BlockDuration"`
+	// ReferenceBlock, when present, says this frame is not a keyframe: a
+	// block group has no flag for it. It is a time relative to this block,
+	// so it is negative, and it is left out entirely for a keyframe.
+	ReferenceBlock int64 `ebml:"ReferenceBlock,omitempty"`
 }
 
 // NewWebMMuxer returns a WebMMuxer writing to w. It writes to w as samples
@@ -613,24 +653,94 @@ func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 			return err
 		}
 	}
-	if m.needNewCluster(tick, t, s.Sync) {
-		if err := m.openCluster(tick); err != nil {
+	// The frame's length is the distance between its own tick and the tick of
+	// the frame that follows it, rather than its duration converted on its
+	// own: a reader works out every other frame's length from that same
+	// difference, so stating anything else would make the last frame the odd
+	// one out.
+	endTick, err := m.ticksFor(uint64(presentation)+uint64(s.Duration), t.timescale)
+	if err != nil {
+		return err
+	}
+	duration := endTick - tick
+	if duration == 0 {
+		// A frame shorter than one tick can still be the last of its track,
+		// and a stated duration of zero cannot be told from none at all. The
+		// smallest length the file can express is stated instead of nothing.
+		duration = 1
+	}
+	// The frame handed over last is written now, and this one takes its place:
+	// whichever turns out to be last must still be able to state its length.
+	if err := m.flushHeld(t, false); err != nil {
+		return err
+	}
+	t.held = &heldFrame{data: s.Data, tick: tick, duration: duration, sync: s.Sync}
+	t.nextTime += uint64(s.Duration)
+	if end := uint64(presentation) + uint64(s.Duration); end > t.end {
+		t.end, t.endTick = end, endTick
+	}
+	return nil
+}
+
+// flushHeld writes the frame a track was holding, as a simple block while more
+// frames may follow and as a block group stating its duration when it is the
+// last of its track. It does nothing when the track holds nothing.
+func (m *WebMMuxer) flushHeld(t *webmTrack, last bool) error {
+	h := t.held
+	if h == nil {
+		return nil
+	}
+	t.held = nil
+	if m.needNewCluster(h.tick, t, h.sync) {
+		if err := m.openCluster(h.tick); err != nil {
 			return err
 		}
 	}
-	if err := m.writeBlock(ebml.Block{
+	block := ebml.Block{
 		TrackNumber: uint64(t.id),
-		Timecode:    int16(int64(tick) - int64(m.clusterStart)),
-		Keyframe:    s.Sync,
-		Data:        [][]byte{s.Data},
-	}); err != nil {
-		return err
+		Timecode:    int16(int64(h.tick) - int64(m.clusterStart)),
+		Keyframe:    h.sync,
+		Data:        [][]byte{h.data},
 	}
-	t.nextTime += uint64(s.Duration)
-	if end := uint64(presentation) + uint64(s.Duration); end > t.end {
-		t.end = end
+	if !last {
+		t.lastTick, t.hasLast = h.tick, true
+		return m.writeBlock(block)
 	}
-	return nil
+	group := webmBlockGroup{Block: block, BlockDuration: h.duration}
+	if !h.sync {
+		// A block group states no keyframe flag, so a frame that is not one
+		// names the frame before it. Two frames landing on the same tick
+		// would name a reference of zero, which cannot be told from none, so
+		// the nearest time the file can state is used instead.
+		reference := int64(t.lastTick) - int64(h.tick)
+		if !t.hasLast || reference == 0 {
+			reference = -1
+		}
+		group.ReferenceBlock = reference
+	}
+	return m.writeBlockGroup(group)
+}
+
+// flushTails writes every held frame, in the order they are meant to be read.
+// A track that ended before the others held its last frame all along.
+func (m *WebMMuxer) flushTails() error {
+	for {
+		var next *webmTrack
+		for _, t := range m.tracks {
+			if t.held == nil {
+				continue
+			}
+			if next == nil || t.held.tick < next.held.tick {
+				next = t
+			}
+		}
+		if next == nil {
+			return nil
+		}
+		if err := m.flushHeld(next, true); err != nil {
+			return err
+		}
+	}
 }
 
 // begin writes what precedes the first cluster, in the mode that writes it
@@ -691,6 +801,19 @@ func (m *WebMMuxer) writeBlock(b ebml.Block) error {
 	return nil
 }
 
+// writeBlockGroup adds one block group to the open cluster.
+func (m *WebMMuxer) writeBlockGroup(g webmBlockGroup) error {
+	if m.settings.buffered {
+		cluster := &m.clusters[len(m.clusters)-1]
+		cluster.BlockGroup = append(cluster.BlockGroup, g)
+		return nil
+	}
+	if err := ebml.Marshal(&webmBlockGroupElement{BlockGroup: g}, m.w); err != nil {
+		return fmt.Errorf("container: write block group on track %d: %w", g.Block.TrackNumber, err)
+	}
+	return nil
+}
+
 // Close finishes the file and refuses any further use. It reports an error when
 // no track was ever declared, because that file would name nothing.
 func (m *WebMMuxer) Close() error {
@@ -700,6 +823,13 @@ func (m *WebMMuxer) Close() error {
 	if len(m.tracks) == 0 {
 		m.closed = true
 		return ErrNoTracks
+	}
+	// The frame each track is still holding is written now, stating its
+	// duration: it is the last of its track, and nothing else in the file
+	// would say how long it lasts.
+	if err := m.flushTails(); err != nil {
+		m.closed = true
+		return err
 	}
 	m.closed = true
 	if !m.settings.buffered {
@@ -720,14 +850,10 @@ func (m *WebMMuxer) Close() error {
 		}
 		return nil
 	}
-	duration, err := m.duration()
-	if err != nil {
-		return err
-	}
 	doc := webmSizedDoc{
 		Header: m.ebmlHeader(),
 		Segment: webmSegment{
-			Info:    m.info(duration),
+			Info:    m.info(m.duration()),
 			Tracks:  webmTracks{TrackEntry: m.entries},
 			Cluster: m.clusters,
 		},
@@ -739,18 +865,14 @@ func (m *WebMMuxer) Close() error {
 }
 
 // duration is how long the longest track lasts, in segment ticks.
-func (m *WebMMuxer) duration() (float64, error) {
+func (m *WebMMuxer) duration() float64 {
 	var longest uint64
 	for _, t := range m.tracks {
-		end, err := m.ticksFor(t.end, t.timescale)
-		if err != nil {
-			return 0, err
-		}
-		if end > longest {
-			longest = end
+		if t.endTick > longest {
+			longest = t.endTick
 		}
 	}
-	return float64(longest), nil
+	return float64(longest)
 }
 
 // ebmlHeader is the EBML header of the document, whose type follows the tracks:
