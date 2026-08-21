@@ -5,6 +5,7 @@ package container
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -62,7 +63,7 @@ type Sample struct {
 type TrackConfig struct {
 	Kind Kind
 	// Codec is the sample entry to write: "avc1", "avc3", "hvc1", "hev1",
-	// "av01", "mp4a".
+	// "av01", "vp08", "vp09", "mp4a", "Opus", "ac-3", "ec-3".
 	Codec string
 	// Timescale is the unit of every duration of this track, per second.
 	Timescale uint32
@@ -80,6 +81,37 @@ type TrackConfig struct {
 	CodecConfig []byte
 	// AudioObjectType selects the AAC profile; 0 means AAC-LC.
 	AudioObjectType byte
+	// PreSkip is how many samples an Opus decoder discards at the start of
+	// the track, counted at 48 kHz whatever the input rate. A track written
+	// without it starts a few milliseconds early. It is stated by the
+	// identification header a Matroska or an Ogg file carries, so a caller
+	// that passes CodecConfig does not need to fill this in.
+	PreSkip uint16
+	// VPx describes a VP8 or VP9 track. ISO-BMFF cannot carry one without
+	// this record, and unlike AVC or HEVC the bitstream keeps it out of the
+	// sample data, so a caller remuxing VP9 has to state it.
+	VPx *VPxConfig
+}
+
+// VPxConfig is what the vpcC record says about a VP8 or VP9 track. The colour
+// fields take their values from ISO/IEC 23001-8; leaving them at 2, the value
+// that means "unspecified", is what a caller that does not know them should do.
+type VPxConfig struct {
+	// Profile is 0 to 3, and Level a value of the VP9 level table (10 for
+	// level 1, 11 for 1.1, and so on). Level 0 is not a level: a record that
+	// states it is refused rather than written as a guess.
+	Profile, Level byte
+	// BitDepth is 8, 10 or 12.
+	BitDepth byte
+	// ChromaSubsampling is 0 (4:2:0 vertically colocated), 1 (4:2:0
+	// colocated), 2 (4:2:2) or 3 (4:4:4).
+	ChromaSubsampling byte
+	// FullRange tells a player the samples use the full range rather than
+	// the studio swing of 16 to 235.
+	FullRange bool
+	// ColourPrimaries, TransferCharacteristics and MatrixCoefficients are
+	// the ISO/IEC 23001-8 code points; 2 means unspecified.
+	ColourPrimaries, TransferCharacteristics, MatrixCoefficients byte
 }
 
 // MuxOption configures a Muxer.
@@ -212,6 +244,41 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 			return err
 		}
 		trak.SetAV1Descriptor(codec, av1C, uint16(cfg.Width), uint16(cfg.Height))
+	case "vp08", "vp09":
+		vpcC, err := vpxConfig(codec, cfg)
+		if err != nil {
+			return err
+		}
+		if err := setVPxEntry(trak, codec, vpcC, uint16(cfg.Width), uint16(cfg.Height)); err != nil {
+			return fmt.Errorf("%w: %s: %v", ErrTrackConfig, codec, err)
+		}
+	case "opus":
+		dops, err := opusConfig(cfg)
+		if err != nil {
+			return err
+		}
+		// The decoder always runs at 48 kHz whatever the track was recorded
+		// at, and the Opus-in-ISOBMFF mapping says the sample entry states
+		// that rate; the rate the track came from lives in dOps.
+		entry := mp4.CreateAudioSampleEntryBox("Opus",
+			uint16(dops.OutputChannelCount), 16, opusOutputRate, dops)
+		trak.Mdia.Minf.Stbl.Stsd.AddChild(entry)
+	case "ac-3":
+		dac3, err := decodeDac3(cfg.CodecConfig)
+		if err != nil {
+			return err
+		}
+		if err := setAC3Entry(trak, dac3); err != nil {
+			return fmt.Errorf("%w: ac-3: %v", ErrTrackConfig, err)
+		}
+	case "ec-3":
+		dec3, err := decodeDec3(cfg.CodecConfig)
+		if err != nil {
+			return err
+		}
+		if err := setEC3Entry(trak, dec3); err != nil {
+			return fmt.Errorf("%w: ec-3: %v", ErrTrackConfig, err)
+		}
 	case "mp4a":
 		if cfg.SampleRate <= 0 {
 			return fmt.Errorf("%w: mp4a needs a sample rate", ErrTrackConfig)
@@ -239,6 +306,11 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 // cannot be exercised is code nobody knows the behaviour of.
 var (
 	decodeAv1CBox = mp4.DecodeAv1C
+	decodeDac3Box = mp4.DecodeDac3
+	setVPxEntry   = (*mp4.TrakBox).SetVPxDescriptor
+	setAC3Entry   = (*mp4.TrakBox).SetAC3Descriptor
+	setEC3Entry   = (*mp4.TrakBox).SetEC3Descriptor
+	decodeDec3Box = mp4.DecodeDec3
 	newFragment   = mp4.CreateMultiTrackFragment
 )
 
@@ -257,6 +329,232 @@ func decodeAv1C(payload []byte) (*mp4.Av1CBox, error) {
 		return nil, fmt.Errorf("%w: av1C decoded as %T", ErrTrackConfig, box)
 	}
 	return av1C, nil
+}
+
+// opusOutputRate is the rate an Opus decoder always outputs, and so the rate
+// the sample entry of an Opus track states.
+const opusOutputRate = 48000
+
+// opusHeadMagic labels the Opus identification header, which is what Matroska
+// and Ogg carry as the codec's private data. Its fields are little-endian,
+// where the dOps box of an MP4 holds the same information big-endian and
+// without the label: the two are converted, never copied.
+const opusHeadMagic = "OpusHead"
+
+// opusHeadSize is the length of an identification header that maps its channels
+// implicitly (mapping family 0).
+const opusHeadSize = 19
+
+// opusConfig builds the Opus configuration to write, from the identification
+// header when the caller has one and from the track's own fields otherwise.
+func opusConfig(cfg TrackConfig) (*mp4.DopsBox, error) {
+	if len(cfg.CodecConfig) > 0 {
+		return opusHead(cfg.CodecConfig)
+	}
+	switch {
+	case cfg.Channels <= 0:
+		return nil, fmt.Errorf("%w: Opus needs a channel count", ErrTrackConfig)
+	case cfg.Channels > 2:
+		// Mapping family 0 covers mono and stereo only, so more channels
+		// cannot be described without the header that states their mapping.
+		return nil, fmt.Errorf("%w: %d-channel Opus needs its identification header",
+			ErrTrackConfig, cfg.Channels)
+	case cfg.SampleRate <= 0:
+		return nil, fmt.Errorf("%w: Opus needs the sample rate it was recorded at", ErrTrackConfig)
+	}
+	return &mp4.DopsBox{
+		OutputChannelCount: byte(cfg.Channels),
+		PreSkip:            cfg.PreSkip,
+		InputSampleRate:    uint32(cfg.SampleRate),
+	}, nil
+}
+
+// opusHead converts an Opus identification header into the box an MP4 carries.
+func opusHead(head []byte) (*mp4.DopsBox, error) {
+	if len(head) < opusHeadSize || string(head[:len(opusHeadMagic)]) != opusHeadMagic {
+		return nil, fmt.Errorf("%w: Opus needs an %s identification header", ErrTrackConfig, opusHeadMagic)
+	}
+	if version := head[8]; version != 1 {
+		return nil, fmt.Errorf("%w: %s version %d is not one this can read",
+			ErrTrackConfig, opusHeadMagic, version)
+	}
+	channels := head[9]
+	if channels == 0 {
+		return nil, fmt.Errorf("%w: %s states no channel", ErrTrackConfig, opusHeadMagic)
+	}
+	dops := &mp4.DopsBox{
+		OutputChannelCount:   channels,
+		PreSkip:              binary.LittleEndian.Uint16(head[10:12]),
+		InputSampleRate:      binary.LittleEndian.Uint32(head[12:16]),
+		OutputGain:           int16(binary.LittleEndian.Uint16(head[16:18])),
+		ChannelMappingFamily: head[18],
+	}
+	if dops.ChannelMappingFamily == 0 {
+		if channels > 2 {
+			return nil, fmt.Errorf("%w: %s maps %d channels implicitly, which family 0 cannot",
+				ErrTrackConfig, opusHeadMagic, channels)
+		}
+		return dops, nil
+	}
+	// A stated mapping needs a stream count, a coupled count and one index
+	// per channel; a header that stops short would otherwise be written as a
+	// mapping of silence.
+	if len(head) < opusHeadSize+2+int(channels) {
+		return nil, fmt.Errorf("%w: %s stops before its channel mapping", ErrTrackConfig, opusHeadMagic)
+	}
+	dops.StreamCount = head[19]
+	dops.CoupledCount = head[20]
+	dops.ChannelMapping = append([]byte(nil), head[21:21+int(channels)]...)
+	return dops, nil
+}
+
+// OpusHead renders an Opus configuration as the identification header Matroska
+// and Ogg carry, which is what a caller writing one of those needs back.
+func OpusHead(cfg TrackConfig) ([]byte, error) {
+	dops, err := opusConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return opusHeadBytes(dops), nil
+}
+
+// opusHeadBytes is the identification header of this configuration.
+func opusHeadBytes(dops *mp4.DopsBox) []byte {
+	head := make([]byte, opusHeadSize, opusHeadSize+2+len(dops.ChannelMapping))
+	copy(head, opusHeadMagic)
+	head[8] = 1
+	head[9] = dops.OutputChannelCount
+	binary.LittleEndian.PutUint16(head[10:12], dops.PreSkip)
+	binary.LittleEndian.PutUint32(head[12:16], dops.InputSampleRate)
+	binary.LittleEndian.PutUint16(head[16:18], uint16(dops.OutputGain))
+	head[18] = dops.ChannelMappingFamily
+	if dops.ChannelMappingFamily != 0 {
+		head = append(head, dops.StreamCount, dops.CoupledCount)
+		head = append(head, dops.ChannelMapping...)
+	}
+	return head
+}
+
+// vpxConfig builds the vpcC record of a VP8 or VP9 track, refusing a
+// description a player could not use rather than writing a guess.
+func vpxConfig(codec string, cfg TrackConfig) (*mp4.VppCBox, error) {
+	v := cfg.VPx
+	if v == nil {
+		return nil, fmt.Errorf("%w: %s needs its vpcC configuration", ErrTrackConfig, codec)
+	}
+	switch {
+	case cfg.Width <= 0 || cfg.Height <= 0:
+		return nil, fmt.Errorf("%w: %s needs its frame size", ErrTrackConfig, codec)
+	case cfg.Width > maxFrameSide || cfg.Height > maxFrameSide:
+		return nil, fmt.Errorf("%w: %s frame of %dx%d does not fit a sample entry",
+			ErrTrackConfig, codec, cfg.Width, cfg.Height)
+	case v.Profile > 3:
+		return nil, fmt.Errorf("%w: %s profile %d is not one of 0 to 3", ErrTrackConfig, codec, v.Profile)
+	case v.Level == 0:
+		return nil, fmt.Errorf("%w: %s needs a level; 0 is not one", ErrTrackConfig, codec)
+	case v.BitDepth != 8 && v.BitDepth != 10 && v.BitDepth != 12:
+		return nil, fmt.Errorf("%w: %s bit depth %d is not 8, 10 or 12", ErrTrackConfig, codec, v.BitDepth)
+	case v.ChromaSubsampling > 3:
+		return nil, fmt.Errorf("%w: %s chroma subsampling %d is not one of 0 to 3",
+			ErrTrackConfig, codec, v.ChromaSubsampling)
+	}
+	var fullRange byte
+	if v.FullRange {
+		fullRange = 1
+	}
+	return &mp4.VppCBox{
+		Version:                 1,
+		Profile:                 v.Profile,
+		Level:                   v.Level,
+		BitDepth:                v.BitDepth,
+		ChromaSubsampling:       v.ChromaSubsampling,
+		VideoFullRangeFlag:      fullRange,
+		ColourPrimaries:         v.ColourPrimaries,
+		TransferCharacteristics: v.TransferCharacteristics,
+		MatrixCoefficients:      v.MatrixCoefficients,
+	}, nil
+}
+
+// maxFrameSide is the largest frame side a sample entry can state.
+const maxFrameSide = 0xFFFF
+
+// dac3Size is the length of an AC-3 configuration record: two bits of sample
+// rate code, five of bit stream identification, three of bit stream mode, three
+// of audio coding mode, one of LFE, five of bit rate code and five reserved.
+const dac3Size = 3
+
+// dec3MinSize is the shortest Enhanced AC-3 record that describes anything:
+// thirteen bits of data rate and three of substream count, then one
+// three-byte substream.
+const dec3MinSize = 5
+
+// maxAC3SampleRateCode is the largest sample rate code AC-3 defines. A record
+// stating more is refused here, because the sample rate table of the library
+// that builds the sample entry is indexed by it and would run off its end.
+const maxAC3SampleRateCode = 2
+
+// decodeDac3 rebuilds the AC-3 configuration from the record's content, which
+// is what a container carrying it without its box header hands over.
+func decodeDac3(payload []byte) (*mp4.Dac3Box, error) {
+	if len(payload) < dac3Size {
+		return nil, fmt.Errorf("%w: a dac3 record is %d bytes, not %d",
+			ErrTrackConfig, dac3Size, len(payload))
+	}
+	box, err := decodeConfigBox("dac3", payload, decodeDac3Box)
+	if err != nil {
+		return nil, err
+	}
+	dac3, ok := box.(*mp4.Dac3Box)
+	if !ok {
+		return nil, fmt.Errorf("%w: dac3 decoded as %T", ErrTrackConfig, box)
+	}
+	if dac3.FSCod > maxAC3SampleRateCode {
+		return nil, fmt.Errorf("%w: dac3 states sample rate code %d, which AC-3 does not define",
+			ErrTrackConfig, dac3.FSCod)
+	}
+	return dac3, nil
+}
+
+// decodeDec3 rebuilds the Enhanced AC-3 configuration from the record's
+// content.
+func decodeDec3(payload []byte) (*mp4.Dec3Box, error) {
+	if len(payload) < dec3MinSize {
+		return nil, fmt.Errorf("%w: a dec3 record is at least %d bytes, not %d",
+			ErrTrackConfig, dec3MinSize, len(payload))
+	}
+	box, err := decodeConfigBox("dec3", payload, decodeDec3Box)
+	if err != nil {
+		return nil, err
+	}
+	dec3, ok := box.(*mp4.Dec3Box)
+	if !ok {
+		return nil, fmt.Errorf("%w: dec3 decoded as %T", ErrTrackConfig, box)
+	}
+	// The sample entry is built from the first substream, so a record naming
+	// none, or naming a sample rate code that does not exist, must not reach
+	// the library: it indexes both without looking.
+	if len(dec3.EC3Subs) == 0 {
+		return nil, fmt.Errorf("%w: dec3 names no substream", ErrTrackConfig)
+	}
+	for i, sub := range dec3.EC3Subs {
+		if sub.FSCod > maxAC3SampleRateCode {
+			return nil, fmt.Errorf("%w: dec3 substream %d states sample rate code %d, which AC-3 does not define",
+				ErrTrackConfig, i, sub.FSCod)
+		}
+	}
+	return dec3, nil
+}
+
+// decodeConfigBox reads a configuration record given only its content, by
+// handing the decoder the header that content would have had.
+func decodeConfigBox(name string, payload []byte,
+	decode func(mp4.BoxHeader, uint64, io.Reader) (mp4.Box, error)) (mp4.Box, error) {
+	hdr := mp4.BoxHeader{Name: name, Size: uint64(8 + len(payload)), Hdrlen: 8}
+	box, err := decode(hdr, 0, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrTrackConfig, name, err)
+	}
+	return box, nil
 }
 
 // WriteSample appends one frame to a track. The initialisation segment is

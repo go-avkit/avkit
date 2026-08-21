@@ -169,8 +169,41 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 		}
 	case stsd.Mp4a != nil && stsd.Mp4a.Esds != nil:
 		cfg.AudioObjectType = audioObjectType(stsd.Mp4a.Esds)
+	case stsd.Opus != nil && stsd.Opus.Dops != nil:
+		d := stsd.Opus.Dops
+		cfg.Channels = int(d.OutputChannelCount)
+		// The sample entry of an Opus track states the 48 kHz the decoder
+		// outputs; the rate the track was recorded at is in dOps, and it is
+		// the one a caller writing this track elsewhere needs.
+		cfg.SampleRate = int(d.InputSampleRate)
+		cfg.PreSkip = d.PreSkip
+		cfg.CodecConfig = opusHeadBytes(d)
+	case stsd.VpXX != nil && stsd.VpXX.VppC != nil:
+		cfg.VPx = vpxFromBox(stsd.VpXX.VppC)
+	case stsd.AC3 != nil && stsd.AC3.Dac3 != nil:
+		if payload, err := boxPayload(stsd.AC3.Dac3); err == nil {
+			cfg.CodecConfig = payload
+		}
+	case stsd.EC3 != nil && stsd.EC3.Dec3 != nil:
+		if payload, err := boxPayload(stsd.EC3.Dec3); err == nil {
+			cfg.CodecConfig = payload
+		}
 	}
 	return cfg, nil
+}
+
+// vpxFromBox is what a vpcC record says, as a caller states it.
+func vpxFromBox(v *mp4.VppCBox) *VPxConfig {
+	return &VPxConfig{
+		Profile:                 v.Profile,
+		Level:                   v.Level,
+		BitDepth:                v.BitDepth,
+		ChromaSubsampling:       v.ChromaSubsampling,
+		FullRange:               v.VideoFullRangeFlag != 0,
+		ColourPrimaries:         v.ColourPrimaries,
+		TransferCharacteristics: v.TransferCharacteristics,
+		MatrixCoefficients:      v.MatrixCoefficients,
+	}
 }
 
 // audioObjectType reads the AAC profile out of the audio specific config the
