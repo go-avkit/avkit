@@ -52,7 +52,11 @@ type tsTrack struct {
 	config TrackConfig
 	// hevc says which codec's NAL headers the units carry, which the bytes
 	// themselves do not.
-	hevc    bool
+	hevc bool
+	// av1 marks a track whose units are OBUs rather than NAL units, and
+	// whose configuration has to be built from the sequence header they
+	// carry: a transport stream states none.
+	av1     bool
 	samples []Sample
 	// pending holds each unit with the time it is shown at, so durations can
 	// be worked out once the following one is known.
@@ -108,6 +112,7 @@ func readTS(data []byte) ([]*tsTrack, error) {
 	for _, pid := range order {
 		t := tracks[pid]
 		t.finish()
+		t.deriveConfiguration()
 		out = append(out, t)
 	}
 	return out, nil
@@ -124,6 +129,13 @@ func newTSTrack(es *astits.PMTElementaryStream) *tsTrack {
 		kind, codec = Video, "hvc1"
 	case astits.StreamTypeAACAudio:
 		kind, codec = Audio, "mp4a"
+	case astits.StreamTypePrivateData:
+		// AV1 has no stream type of its own: it travels as private data, and
+		// only a registration descriptor says that is what it is.
+		if !isAV1Stream(es) {
+			return nil
+		}
+		kind, codec = Video, "av01"
 	default:
 		return nil
 	}
@@ -132,6 +144,7 @@ func newTSTrack(es *astits.PMTElementaryStream) *tsTrack {
 		track:  Track{ID: id, Kind: kind, Codec: codec, Timescale: TSTimescale},
 		config: TrackConfig{Kind: kind, Codec: codec, Timescale: TSTimescale},
 		hevc:   es.StreamType == astits.StreamTypeH265Video,
+		av1:    codec == "av01",
 	}
 }
 
@@ -140,6 +153,15 @@ func (t *tsTrack) append(pes *astits.PESData) {
 	when := pesTime(pes)
 	switch t.track.Kind {
 	case Video:
+		if t.av1 {
+			// An AV1 temporal unit is already what an MP4 sample holds, and
+			// it states its configuration inside itself rather than in
+			// parameter sets to lift out.
+			if len(pes.Data) > 0 {
+				t.pending = append(t.pending, tsUnit{data: pes.Data, time: when})
+			}
+			return
+		}
 		payload, params := convertAnnexB(pes.Data, t.hevc)
 		t.adoptParameterSets(params)
 		if len(payload) > 0 {
@@ -196,7 +218,7 @@ func (t *tsTrack) finish() {
 		t.samples = append(t.samples, Sample{
 			Data:     u.data,
 			Duration: uint32(dur),
-			Sync:     t.track.Kind == Audio || isSyncUnit(u.data, t.hevc),
+			Sync:     t.syncUnit(u.data),
 		})
 		t.track.Duration += uint64(dur)
 	}
