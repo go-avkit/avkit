@@ -202,21 +202,20 @@ func (r *Reader) fragmentedSamples(trackID uint32) ([]Sample, error) {
 	var out []Sample
 	for _, seg := range r.mp4.Segments {
 		for _, frag := range seg.Fragments {
-			if frag.Moof == nil || frag.Moof.Traf == nil ||
-				frag.Moof.Traf.Tfhd.TrackID != trackID {
+			if frag.Moof == nil {
 				continue
 			}
-			full, err := fragmentSamples(frag, trex)
-			if err != nil {
-				return nil, fmt.Errorf("container: fragment samples: %w", err)
-			}
-			for _, s := range full {
-				out = append(out, Sample{
-					Data:              s.Data,
-					Duration:          s.Dur,
-					CompositionOffset: s.CompositionTimeOffset,
-					Sync:              s.IsSync(),
-				})
+			// A fragment may carry several tracks, one track fragment each,
+			// and only the track asked about is wanted.
+			for _, traf := range frag.Moof.Trafs {
+				if traf.Tfhd == nil || traf.Tfhd.TrackID != trackID {
+					continue
+				}
+				samples, err := r.trafSamples(frag.Moof.StartPos, traf, trex)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, samples...)
 			}
 		}
 	}
@@ -226,10 +225,36 @@ func (r *Reader) fragmentedSamples(trackID uint32) ([]Sample, error) {
 	return out, nil
 }
 
-// fragmentSamples exists so the failure it guards can be tested; reading a
-// fragment this package wrote never fails.
-var fragmentSamples = func(frag *mp4.Fragment, trex *mp4.TrexBox) ([]mp4.FullSample, error) {
-	return frag.GetFullSamples(trex)
+// trafSamples reads the samples of one track fragment. The run states where
+// its data sits relative to the fragment header, and what the run leaves out
+// the track defaults supply.
+func (r *Reader) trafSamples(moofStart uint64, traf *mp4.TrafBox, trex *mp4.TrexBox) ([]Sample, error) {
+	trun := traf.Trun
+	if trun == nil {
+		return nil, fmt.Errorf("%w: track fragment %d has no sample run",
+			ErrNoSamples, traf.Tfhd.TrackID)
+	}
+	trun.AddSampleDefaultValues(traf.Tfhd, trex)
+	offset := moofStart
+	if trun.HasDataOffset() {
+		offset = uint64(int64(moofStart) + int64(trun.DataOffset))
+	}
+	out := make([]Sample, 0, len(trun.Samples))
+	for i, s := range trun.Samples {
+		end := offset + uint64(s.Size)
+		if end > uint64(len(r.data)) {
+			return nil, fmt.Errorf("%w: sample %d of track %d ends at %d of %d bytes",
+				ErrSampleData, i+1, traf.Tfhd.TrackID, end, len(r.data))
+		}
+		out = append(out, Sample{
+			Data:              r.data[offset:end],
+			Duration:          s.Dur,
+			CompositionOffset: s.CompositionTimeOffset,
+			Sync:              s.IsSync(),
+		})
+		offset = end
+	}
+	return out, nil
 }
 
 // trackExtends is the defaults box of a track, or nil when the file declares

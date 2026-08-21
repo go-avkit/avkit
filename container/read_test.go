@@ -436,20 +436,30 @@ func TestAudioObjectTypeOfAnUnreadableConfig(t *testing.T) {
 	}
 }
 
-func TestFragmentedSamplesReportsAFragmentItCannotRead(t *testing.T) {
-	original := fragmentSamples
-	defer func() { fragmentSamples = original }()
-	fragmentSamples = func(*mp4.Fragment, *mp4.TrexBox) ([]mp4.FullSample, error) {
-		return nil, errors.New("unreadable fragment")
-	}
+func TestFragmentedSamplesOfAMultiTrackFragment(t *testing.T) {
+	// One fragment carrying both tracks is what a joined file looks like, and
+	// what a player reads: every track of it must be readable.
+	sps, pps, w, h := avcParameterSets(t)
 	var buf bytes.Buffer
 	m := NewMuxer(&buf)
-	id, err := m.AddTrack(videoConfig(t))
+	video, err := m.AddTrack(TrackConfig{Kind: Video, Codec: "avc1", Timescale: 12800,
+		Width: w, Height: h, SPS: sps, PPS: pps})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.WriteSample(id, Sample{Data: []byte{1}, Duration: 10, Sync: true}); err != nil {
+	audio, err := m.AddTrack(audioConfig())
+	if err != nil {
 		t.Fatal(err)
+	}
+	videoData := [][]byte{{0, 0, 0, 2, 9, 16}, {0, 0, 0, 1, 9}}
+	audioData := [][]byte{{0xde, 0xad}, {0xbe, 0xef, 0x00}}
+	for i := range videoData {
+		if err := m.WriteSample(video, Sample{Data: videoData[i], Duration: 512, Sync: true}); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.WriteSample(audio, Sample{Data: audioData[i], Duration: 1024, Sync: true}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := m.Close(); err != nil {
 		t.Fatal(err)
@@ -458,8 +468,39 @@ func TestFragmentedSamplesReportsAFragmentItCannotRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Samples(id); err == nil {
-		t.Fatal("a fragment that cannot be read must be reported")
+	for _, c := range []struct {
+		id   uint32
+		want [][]byte
+	}{{video, videoData}, {audio, audioData}} {
+		samples, err := r.Samples(c.id)
+		if err != nil {
+			t.Fatalf("track %d: %v", c.id, err)
+		}
+		if len(samples) != len(c.want) {
+			t.Fatalf("track %d read %d samples, wrote %d", c.id, len(samples), len(c.want))
+		}
+		for i := range c.want {
+			if !bytes.Equal(samples[i].Data, c.want[i]) {
+				t.Errorf("track %d sample %d = %x, wrote %x",
+					c.id, i, samples[i].Data, c.want[i])
+			}
+		}
+	}
+}
+
+func TestTrafSamplesRejectsWhatItCannotRead(t *testing.T) {
+	r := &Reader{data: make([]byte, 4)}
+	// A track fragment with no sample run says nothing about its samples.
+	noRun := &mp4.TrafBox{Tfhd: &mp4.TfhdBox{TrackID: 1}}
+	if _, err := r.trafSamples(0, noRun, nil); !errors.Is(err, ErrNoSamples) {
+		t.Errorf("without a run: %v", err)
+	}
+	// A run naming more data than the file holds must not be read. The size
+	// flag makes the run's own sizes the ones that count.
+	trun := &mp4.TrunBox{Flags: 0x000200, Samples: []mp4.Sample{{Size: 99, Dur: 10}}}
+	past := &mp4.TrafBox{Tfhd: &mp4.TfhdBox{TrackID: 1}, Trun: trun}
+	if _, err := r.trafSamples(0, past, nil); !errors.Is(err, ErrSampleData) {
+		t.Errorf("beyond the end: %v", err)
 	}
 }
 
@@ -613,6 +654,21 @@ func TestProgressiveSamplesReportsAnUnusableChunkTable(t *testing.T) {
 	// and asking the box reader anyway panics, so this must be caught here.
 	trak.Mdia.Minf.Stbl.Stsc = &mp4.StscBox{}
 	if _, err := r.progressiveSamples(trak); !errors.Is(err, ErrNoSamples) {
+		t.Fatalf("err = %v, want ErrNoSamples", err)
+	}
+}
+
+func TestFragmentedSamplesSkipsMalformedFragments(t *testing.T) {
+	// A file whose fragments say nothing usable: no header at all, and a
+	// track fragment without one. Neither may be read, and neither panics.
+	r := &Reader{
+		data: make([]byte, 8),
+		mp4: &mp4.File{Segments: []*mp4.MediaSegment{{Fragments: []*mp4.Fragment{
+			{},
+			{Moof: &mp4.MoofBox{Trafs: []*mp4.TrafBox{{}}}},
+		}}}},
+	}
+	if _, err := r.fragmentedSamples(1); !errors.Is(err, ErrNoSamples) {
 		t.Fatalf("err = %v, want ErrNoSamples", err)
 	}
 }
