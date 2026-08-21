@@ -36,11 +36,38 @@ type Reader struct {
 	file  *File
 	mp4   *mp4.File
 	traks map[uint32]*mp4.TrakBox
+	// ts holds the tracks of a transport stream, whose samples are read in
+	// one pass rather than addressed through tables.
+	ts map[uint32]*tsTrack
+}
+
+// newTSReader reads a transport stream in one pass: it has no table to seek
+// with, so its tracks are converted as they are met.
+func newTSReader(data []byte) (*Reader, error) {
+	tracks, err := readTS(data)
+	if err != nil {
+		return nil, err
+	}
+	r := &Reader{data: data, ts: map[uint32]*tsTrack{}, traks: map[uint32]*mp4.TrakBox{}}
+	file := &File{Format: "mpegts", Timescale: TSTimescale}
+	for _, t := range tracks {
+		file.Tracks = append(file.Tracks, t.track)
+		if t.track.Duration > file.Duration {
+			file.Duration = t.track.Duration
+		}
+		r.ts[t.track.ID] = t
+	}
+	r.file = file
+	return r, nil
 }
 
 // NewReader reads the structure of an MP4 and prepares its sample tables.
 func NewReader(data []byte) (*Reader, error) {
-	if format := Sniff(data); format != FormatMP4 {
+	switch format := Sniff(data); format {
+	case FormatMP4:
+	case FormatMPEGTS:
+		return newTSReader(data)
+	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedFormat, describeFormat(format))
 	}
 	parsed, err := mp4.DecodeFile(bytes.NewReader(data))
@@ -67,6 +94,8 @@ func describeFormat(format Format) string {
 		return "matroska"
 	case FormatMP4:
 		return "mp4"
+	case FormatMPEGTS:
+		return "mpegts"
 	default:
 		return "unknown format"
 	}
@@ -99,6 +128,13 @@ func (r *Reader) TrackIDs() []uint32 {
 // TrackConfig describes a track the way Muxer.AddTrack wants it, so a track
 // can be copied without the caller reading a single box.
 func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
+	if r.ts != nil {
+		t, ok := r.ts[trackID]
+		if !ok {
+			return TrackConfig{}, fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
+		}
+		return t.config, nil
+	}
 	trak, ok := r.traks[trackID]
 	if !ok {
 		return TrackConfig{}, fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
@@ -184,6 +220,16 @@ func boxPayload(box mp4.Box) ([]byte, error) {
 
 // Samples reads every sample of a track, in decoding order.
 func (r *Reader) Samples(trackID uint32) ([]Sample, error) {
+	if r.ts != nil {
+		t, ok := r.ts[trackID]
+		if !ok {
+			return nil, fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
+		}
+		if len(t.samples) == 0 {
+			return nil, fmt.Errorf("%w: track %d", ErrNoSamples, trackID)
+		}
+		return t.samples, nil
+	}
 	trak, ok := r.traks[trackID]
 	if !ok {
 		return nil, fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)

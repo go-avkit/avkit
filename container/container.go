@@ -4,10 +4,10 @@
 // Package container reads and writes time-based media containers in pure Go
 // (CGO=0).
 //
-// Demux reads MP4/ISO-BMFF and Matroska/WebM, exposing each elementary
+// Demux reads MP4/ISO-BMFF, Matroska/WebM and MPEG-TS, exposing each elementary
 // stream's metadata (kind, codec, dimensions, timing). Reader goes further on
-// MP4, handing back a track's samples and the configuration needed to write it
-// elsewhere. Muxer writes a fragmented MP4 from tracks that arrive separately —
+// MP4 and MPEG-TS, handing back a track's samples and the configuration needed
+// to write it elsewhere — which is what turns an HLS segment into an MP4. Muxer writes a fragmented MP4 from tracks that arrive separately —
 // which is what a DASH presentation, keeping its video and audio apart,
 // requires — and never re-encodes: samples are written as handed over.
 //
@@ -106,6 +106,8 @@ func Demux(data []byte) (*File, error) {
 		return demuxMP4(data)
 	case FormatMatroska:
 		return demuxMatroska(data)
+	case FormatMPEGTS:
+		return demuxTS(data)
 	default:
 		return nil, fmt.Errorf("container: unrecognised format")
 	}
@@ -118,6 +120,7 @@ const (
 	FormatUnknown Format = iota
 	FormatMP4
 	FormatMatroska // MKV and WebM (both EBML/Matroska)
+	FormatMPEGTS   // MPEG-2 transport stream, as HLS delivers it
 )
 
 // Sniff identifies the container format from data's leading bytes.
@@ -129,6 +132,10 @@ func Sniff(data []byte) Format {
 	// Matroska/WebM: the EBML header magic 0x1A45DFA3.
 	if len(data) >= 4 && data[0] == 0x1A && data[1] == 0x45 && data[2] == 0xDF && data[3] == 0xA3 {
 		return FormatMatroska
+	}
+	// MPEG-TS: the sync byte at the head of consecutive packets.
+	if sniffTS(data) {
+		return FormatMPEGTS
 	}
 	return FormatUnknown
 }
