@@ -488,11 +488,50 @@ func TestTrafSamplesRejectsWhatItCannotRead(t *testing.T) {
 		t.Errorf("without a run: %v", err)
 	}
 	// A run naming more data than the file holds must not be read. The size
-	// flag makes the run's own sizes the ones that count.
-	trun := &mp4.TrunBox{Flags: 0x000200, Samples: []mp4.Sample{{Size: 99, Dur: 10}}}
-	past := &mp4.TrafBox{Tfhd: &mp4.TfhdBox{TrackID: 1}, Trun: trun}
+	// flag makes the run's own sizes the ones that count. The run is added
+	// the way a decoded file carries it, rather than by setting the field a
+	// parser fills in for convenience.
+	past := &mp4.TrafBox{Tfhd: &mp4.TfhdBox{TrackID: 1}}
+	if err := past.AddChild(&mp4.TrunBox{Flags: 0x000200,
+		Samples: []mp4.Sample{{Size: 99, Dur: 10}}}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := r.trafSamples(0, past, nil); !errors.Is(err, ErrSampleData) {
 		t.Errorf("beyond the end: %v", err)
+	}
+}
+
+// TestTrafSamplesFollowsWhereTheDataIsStated covers the two ways a track
+// fragment says where its samples sit: a base stated by the fragment header,
+// and a run that states no offset of its own and so continues where the run
+// before it ended.
+func TestTrafSamplesFollowsWhereTheDataIsStated(t *testing.T) {
+	// Four bytes of media, two samples of two, at a base of two.
+	r := &Reader{data: []byte{0xFF, 0xFF, 1, 2, 3, 4}}
+	traf := &mp4.TrafBox{Tfhd: &mp4.TfhdBox{
+		Flags: mp4.TfhdBaseDataOffsetPresentFlag, TrackID: 1, BaseDataOffset: 2,
+	}}
+	// The first run states an offset from that base; the second states none.
+	first := &mp4.TrunBox{Flags: 0x000200 | 0x000001, DataOffset: 0,
+		Samples: []mp4.Sample{{Size: 2, Dur: 10}}}
+	second := &mp4.TrunBox{Flags: 0x000200, Samples: []mp4.Sample{{Size: 2, Dur: 10}}}
+	for _, trun := range []*mp4.TrunBox{first, second} {
+		if err := traf.AddChild(trun); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := r.trafSamples(0, traf, nil)
+	if err != nil {
+		t.Fatalf("trafSamples: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("read %d samples, want 2", len(got))
+	}
+	if !bytes.Equal(got[0].Data, []byte{1, 2}) {
+		t.Errorf("the first run read % x, want 01 02 from the stated base", got[0].Data)
+	}
+	if !bytes.Equal(got[1].Data, []byte{3, 4}) {
+		t.Errorf("the second run read % x, want 03 04, continuing the first", got[1].Data)
 	}
 }
 
