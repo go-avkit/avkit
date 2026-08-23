@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/Eyevinn/mp4ff/aac"
 	"github.com/Eyevinn/mp4ff/mp4"
@@ -31,8 +32,21 @@ var (
 // needs, and Samples hands back exactly what WriteSample takes, so a track can
 // be copied from one file into another without re-encoding and without the
 // caller knowing what a sample table is.
+// FileSource is what a file offers a reader that does not hold it in memory:
+// seeking, to walk the boxes, and reading at a position, to fetch one sample
+// when it is asked for. An *os.File is one, and so is a bytes.Reader.
+type FileSource interface {
+	io.ReadSeeker
+	io.ReaderAt
+}
+
 type Reader struct {
-	data  []byte
+	data []byte
+	// at and size are set instead of data when the file is left on disk. A
+	// four-hour film's sample tables are megabytes; the film is gigabytes,
+	// and nothing here needs more than one sample of it at a time.
+	at    FileSource
+	size  int64
 	file  *File
 	mp4   *mp4.File
 	traks map[uint32]*mp4.TrakBox
@@ -63,6 +77,71 @@ func newTSReader(data []byte) (*Reader, error) {
 		r.ts[t.track.ID] = t
 	}
 	r.file = file
+	return r, nil
+}
+
+// sampleBytes is one sample's data, sliced out of what is held in memory or
+// read from the file at the position the tables state.
+func (r *Reader) sampleBytes(offset, end uint64) ([]byte, error) {
+	if end < offset {
+		return nil, fmt.Errorf("ends at %d, before it begins at %d", end, offset)
+	}
+	if held := int64(len(r.data)); held > 0 {
+		if end > uint64(held) {
+			return nil, fmt.Errorf("ends at %d of %d bytes", end, held)
+		}
+		return r.data[offset:end], nil
+	}
+	if end > uint64(r.size) {
+		return nil, fmt.Errorf("ends at %d of %d bytes", end, r.size)
+	}
+	data := make([]byte, end-offset)
+	if _, err := r.at.ReadAt(data, int64(offset)); err != nil {
+		return nil, fmt.Errorf("read %d bytes at %d: %v", len(data), offset, err)
+	}
+	return data, nil
+}
+
+// NewFileReader reads an MP4 that stays on disk: the sample tables are read,
+// the media is not, and every sample is fetched when it is asked for. It is
+// what reading a file larger than the memory to hand takes, and the price is
+// one read per sample and a copy of it.
+//
+// Only MP4 is served this way. A transport stream and a Matroska file are read
+// in one pass by their nature — a demuxer walks them from end to end — so they
+// are refused here rather than read twice as slowly.
+func NewFileReader(src FileSource, size int64) (*Reader, error) {
+	if src == nil {
+		return nil, fmt.Errorf("%w: no file to read", ErrUnsupportedFormat)
+	}
+	// Enough for every signature Sniff knows: a transport stream is the one
+	// that takes the longest look, at several of its 188-byte packets.
+	head := make([]byte, 4<<10)
+	n, err := src.ReadAt(head, 0)
+	if n == 0 && err != nil {
+		return nil, fmt.Errorf("container: read the head of the file: %w", err)
+	}
+	if format := Sniff(head[:n]); format != FormatMP4 {
+		return nil, fmt.Errorf("%w: %s is read whole, not from disk",
+			ErrUnsupportedFormat, describeFormat(format))
+	}
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("container: rewind the file: %w", err)
+	}
+	parsed, err := mp4.DecodeFile(src, mp4.WithDecodeMode(mp4.DecModeLazyMdat))
+	if err != nil {
+		return nil, fmt.Errorf("container: decode mp4: %w", err)
+	}
+	file, err := mp4File(parsed)
+	if err != nil {
+		return nil, err
+	}
+	r := &Reader{at: src, size: size, file: file, mp4: parsed, traks: map[uint32]*mp4.TrakBox{}}
+	if moov := movieBox(parsed); moov != nil {
+		for _, trak := range moov.Traks {
+			r.traks[trak.Tkhd.TrackID] = trak
+		}
+	}
 	return r, nil
 }
 
@@ -359,12 +438,13 @@ func (r *Reader) trafSamples(moofStart uint64, traf *mp4.TrafBox, trex *mp4.Trex
 		}
 		for i, s := range trun.Samples {
 			end := offset + uint64(s.Size)
-			if end > uint64(len(r.data)) {
-				return nil, fmt.Errorf("%w: sample %d of track %d ends at %d of %d bytes",
-					ErrSampleData, i+1, traf.Tfhd.TrackID, end, len(r.data))
+			data, err := r.sampleBytes(offset, end)
+			if err != nil {
+				return nil, fmt.Errorf("%w: sample %d of track %d: %v",
+					ErrSampleData, i+1, traf.Tfhd.TrackID, err)
 			}
 			out = append(out, Sample{
-				Data:              r.data[offset:end],
+				Data:              data,
 				Duration:          s.Dur,
 				CompositionOffset: s.CompositionTimeOffset,
 				Sync:              s.IsSync(),
@@ -423,13 +503,13 @@ func (r *Reader) progressiveSamples(trak *mp4.TrakBox) ([]Sample, error) {
 		for i := uint32(0); i < chunk.NrSamples && sampleNr <= count; i++ {
 			size := stbl.Stsz.GetSampleSize(int(sampleNr))
 			end := offset + uint64(size)
-			if end > uint64(len(r.data)) {
-				return nil, fmt.Errorf("%w: sample %d ends at %d of %d bytes",
-					ErrSampleData, sampleNr, end, len(r.data))
+			data, err := r.sampleBytes(offset, end)
+			if err != nil {
+				return nil, fmt.Errorf("%w: sample %d: %v", ErrSampleData, sampleNr, err)
 			}
 			_, dur := stbl.Stts.GetDecodeTime(sampleNr)
 			s := Sample{
-				Data:     r.data[offset:end],
+				Data:     data,
 				Duration: dur,
 				Sync:     true,
 			}
