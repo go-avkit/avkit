@@ -136,8 +136,28 @@ func BufferedSegment() WebMOption {
 // WebM allows, "matroska" as soon as one does not, because a file declaring
 // itself WebM while carrying AVC or AAC is one a strict player is right to
 // refuse.
+// measureEBML encodes into memory, to learn how long something will be rather
+// than to write it. Nothing there can fail on a full disk or a broken pipe, so
+// it is a seam: the guards below are real — a document the encoder refuses
+// would silently make every position wrong — and staging is the only way to
+// reach them.
+var measureEBML = ebml.Marshal
+
+// webmCounter is the writer with a tally, because a cue states where a cluster
+// begins and nothing else knows how far the file has got.
+type webmCounter struct {
+	w io.Writer
+	n uint64
+}
+
+func (c *webmCounter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += uint64(n)
+	return n, err
+}
+
 type WebMMuxer struct {
-	w        io.Writer
+	w        *webmCounter
 	settings webmSettings
 
 	entries []webmTrackEntry
@@ -150,6 +170,13 @@ type WebMMuxer struct {
 	clusterOpen  bool
 	clusterStart uint64
 	clusters     []webmCluster // buffered mode only
+	// cues says where each cluster begins, counted from the first byte
+	// inside the segment. A player seeking to a time reads them instead of
+	// walking the file cluster by cluster.
+	cues []webm.CuePoint
+	// segmentStart is how many bytes precede the segment's content, known
+	// once the header is out. The buffered mode learns it at Close instead.
+	segmentStart uint64
 }
 
 // webmTrack is one track's writing state.
@@ -207,10 +234,41 @@ type webmStreamDoc struct {
 	Segment webmOpenSegment `ebml:"Segment,size=unknown"`
 }
 
+// webmHeaderDoc is the EBML header alone, and webmOpenSegmentDoc the segment
+// that follows it. Written apart, they leave the position of the segment's
+// first byte known, which is what every cue is counted from.
+type webmHeaderDoc struct {
+	Header webm.EBMLHeader `ebml:"EBML"`
+}
+
+type webmOpenSegmentDoc struct {
+	Segment webmOpenSegment `ebml:"Segment,size=unknown"`
+}
+
 type webmSegment struct {
 	Info    webmInfo      `ebml:"Info"`
 	Tracks  webmTracks    `ebml:"Tracks"`
 	Cluster []webmCluster `ebml:"Cluster"`
+	Cues    *webm.Cues    `ebml:"Cues,omitempty"`
+}
+
+// webmHeadDoc is what precedes the clusters inside a segment. It is marshalled
+// on its own only to be measured: a cue counts from the first byte inside the
+// segment, so the length of what comes before the first cluster is part of
+// every position.
+type webmHeadDoc struct {
+	Info   webmInfo   `ebml:"Info"`
+	Tracks webmTracks `ebml:"Tracks"`
+}
+
+// webmClusterDoc is one cluster, marshalled on its own to be measured.
+type webmClusterDoc struct {
+	Cluster webmCluster `ebml:"Cluster"`
+}
+
+// webmCuesDoc is the cue index the streaming mode writes after its clusters.
+type webmCuesDoc struct {
+	Cues webm.Cues `ebml:"Cues"`
 }
 
 type webmOpenSegment struct {
@@ -296,7 +354,7 @@ func NewWebMMuxer(w io.Writer, opts ...WebMOption) *WebMMuxer {
 	for _, opt := range opts {
 		opt(&settings)
 	}
-	return &WebMMuxer{w: w, settings: settings, byID: map[uint32]*webmTrack{}}
+	return &WebMMuxer{w: &webmCounter{w: w}, settings: settings, byID: map[uint32]*webmTrack{}}
 }
 
 // AddTrack declares a track and returns its identifier, which is the Matroska
@@ -748,14 +806,28 @@ func (m *WebMMuxer) flushTails() error {
 // sample knows.
 func (m *WebMMuxer) begin() error {
 	if !m.settings.buffered {
-		doc := webmStreamDoc{
-			Header: m.ebmlHeader(),
-			Segment: webmOpenSegment{
-				Info:   m.info(0),
-				Tracks: webmTracks{TrackEntry: m.entries},
-			},
+		// The header goes out on its own so that what the segment holds can
+		// be placed: everything after it is at a known distance from the
+		// first byte inside the segment, which is what a cue states.
+		if err := ebml.Marshal(&webmHeaderDoc{Header: m.ebmlHeader()}, m.w); err != nil {
+			return fmt.Errorf("container: write webm header: %w", err)
 		}
-		if err := ebml.Marshal(&doc, m.w); err != nil {
+		info, tracks := m.info(0), webmTracks{TrackEntry: m.entries}
+		// The segment element costs its identifier plus the length of the
+		// size it states, and how many bytes that takes is the encoder's
+		// choice, not a constant worth guessing: encoding the segment and its
+		// content apart is what says where the content begins.
+		var segment, content bytes.Buffer
+		if err := measureEBML(&webmOpenSegmentDoc{
+			Segment: webmOpenSegment{Info: info, Tracks: tracks},
+		}, &segment); err != nil {
+			return fmt.Errorf("container: write webm header: %w", err)
+		}
+		if err := measureEBML(&webmHeadDoc{Info: info, Tracks: tracks}, &content); err != nil {
+			return fmt.Errorf("container: write webm header: %w", err)
+		}
+		m.segmentStart = m.w.n + uint64(segment.Len()-content.Len())
+		if _, err := m.w.Write(segment.Bytes()); err != nil {
 			return fmt.Errorf("container: write webm header: %w", err)
 		}
 	}
@@ -777,15 +849,40 @@ func (m *WebMMuxer) needNewCluster(tick uint64, t *webmTrack, sync bool) bool {
 	return sync && t == m.tracks[0] && relative >= int64(m.clusterTicks())
 }
 
-// openCluster starts a cluster at this tick.
+// openCluster starts a cluster at this tick, and notes where it begins so the
+// file can say where to seek for that time.
 func (m *WebMMuxer) openCluster(tick uint64) error {
 	if m.settings.buffered {
+		// The position is not known until every cluster has been encoded, so
+		// the buffered mode fills it in at Close.
 		m.clusters = append(m.clusters, webmCluster{Timecode: tick})
-	} else if err := ebml.Marshal(&webmOpenCluster{Cluster: webmClusterHead{Timecode: tick}}, m.w); err != nil {
-		return fmt.Errorf("container: write cluster at %d: %w", tick, err)
+		m.noteCue(tick, 0)
+	} else {
+		// Where the cluster begins is read before it is written, and kept
+		// only once it has been: an index pointing at a cluster a full disk
+		// swallowed would send a player into nothing.
+		at := m.w.n - m.segmentStart
+		if err := ebml.Marshal(&webmOpenCluster{Cluster: webmClusterHead{Timecode: tick}}, m.w); err != nil {
+			return fmt.Errorf("container: write cluster at %d: %w", tick, err)
+		}
+		m.noteCue(tick, at)
 	}
 	m.clusterStart, m.clusterOpen = tick, true
 	return nil
+}
+
+// noteCue records that a cluster covering this time begins at this position.
+// A cue names one track — the first declared, which is the one whose sync
+// samples decide where a cluster starts — because that is the track a player
+// seeks on.
+func (m *WebMMuxer) noteCue(tick, position uint64) {
+	m.cues = append(m.cues, webm.CuePoint{
+		CueTime: tick,
+		CueTrackPositions: []webm.CueTrackPosition{{
+			CueTrack:           uint64(m.tracks[0].id),
+			CueClusterPosition: position,
+		}},
+	})
 }
 
 // writeBlock adds one block to the open cluster.
@@ -836,7 +933,7 @@ func (m *WebMMuxer) Close() error {
 		// Every cluster is already out; a track declared and never fed still
 		// deserves the header that names it.
 		if m.started {
-			return nil
+			return m.writeCues()
 		}
 		doc := webmStreamDoc{
 			Header: m.ebmlHeader(),
@@ -850,16 +947,72 @@ func (m *WebMMuxer) Close() error {
 		}
 		return nil
 	}
+	info := m.info(m.duration())
+	tracks := webmTracks{TrackEntry: m.entries}
+	if err := m.placeCues(info, tracks); err != nil {
+		return err
+	}
 	doc := webmSizedDoc{
 		Header: m.ebmlHeader(),
 		Segment: webmSegment{
-			Info:    m.info(m.duration()),
-			Tracks:  webmTracks{TrackEntry: m.entries},
+			Info:    info,
+			Tracks:  tracks,
 			Cluster: m.clusters,
+			Cues:    m.cueIndex(),
 		},
 	}
 	if err := ebml.Marshal(&doc, m.w); err != nil {
 		return fmt.Errorf("container: write webm segment: %w", err)
+	}
+	return nil
+}
+
+// writeCues writes the cue index after the clusters, which is where a segment
+// of unknown size can have it: nothing states in advance where it will be, so a
+// player finds it by reading on, and seeks by it once it has.
+func (m *WebMMuxer) writeCues() error {
+	cues := m.cueIndex()
+	if cues == nil {
+		return nil
+	}
+	if err := ebml.Marshal(&webmCuesDoc{Cues: *cues}, m.w); err != nil {
+		return fmt.Errorf("container: write cues: %w", err)
+	}
+	return nil
+}
+
+// cueIndex is the index to write, or nothing when there is no cluster to point
+// at: an index of nothing is worse than none, since a player trusts it.
+func (m *WebMMuxer) cueIndex() *webm.Cues {
+	if len(m.cues) == 0 {
+		return nil
+	}
+	return &webm.Cues{CuePoint: m.cues}
+}
+
+// placeCues fills in where each cluster of a buffered segment begins. The
+// positions cannot be counted while writing, because nothing is written until
+// Close; they are measured instead, by encoding what precedes the clusters and
+// then each cluster in turn. The encoder is deterministic, which is what makes
+// a measured length the length it will have.
+func (m *WebMMuxer) placeCues(info webmInfo, tracks webmTracks) error {
+	if len(m.cues) == 0 {
+		return nil
+	}
+	var head bytes.Buffer
+	if err := measureEBML(&webmHeadDoc{Info: info, Tracks: tracks}, &head); err != nil {
+		return fmt.Errorf("container: measure the segment head: %w", err)
+	}
+	at := uint64(head.Len())
+	for i := range m.clusters {
+		if i < len(m.cues) {
+			m.cues[i].CueTrackPositions[0].CueClusterPosition = at
+		}
+		var one bytes.Buffer
+		if err := measureEBML(&webmClusterDoc{Cluster: m.clusters[i]}, &one); err != nil {
+			return fmt.Errorf("container: measure cluster %d: %w", i, err)
+		}
+		at += uint64(one.Len())
 	}
 	return nil
 }
