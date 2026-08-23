@@ -226,9 +226,13 @@ func TestWebMMuxerRoundTripsThroughDemuxAndEBML(t *testing.T) {
 	if f.Segment.Info.Duration != 0 {
 		t.Errorf("duration = %v, want none in a streaming segment", f.Segment.Info.Duration)
 	}
-	if f.Segment.SeekHead != nil || f.Segment.Cues != nil {
-		t.Errorf("this muxer writes no SeekHead and no Cues, got %+v / %+v",
-			f.Segment.SeekHead, f.Segment.Cues)
+	// The file says where its clusters are; it still does not carry a
+	// SeekHead saying where that index itself is.
+	if f.Segment.Cues == nil || len(f.Segment.Cues.CuePoint) == 0 {
+		t.Error("the file names no cluster position")
+	}
+	if f.Segment.SeekHead != nil {
+		t.Errorf("this muxer writes no SeekHead, got %+v", f.Segment.SeekHead)
 	}
 	if len(f.Segment.Tracks.TrackEntry) != 2 {
 		t.Fatalf("track entries = %+v", f.Segment.Tracks.TrackEntry)
@@ -1270,6 +1274,8 @@ func TestWebMWriteFailuresAreReported(t *testing.T) {
 			reported["header"] = true
 		case strings.Contains(failure.Error(), "write cluster at"):
 			reported["cluster"] = true
+		case strings.Contains(failure.Error(), "write cues"):
+			reported["cues"] = true
 		case strings.Contains(failure.Error(), "write block group on track"):
 			reported["block group"] = true
 		case strings.Contains(failure.Error(), "write block on track"):
@@ -1278,7 +1284,7 @@ func TestWebMWriteFailuresAreReported(t *testing.T) {
 			t.Fatalf("with room for %d bytes, an unnamed failure: %v", limit, failure)
 		}
 	}
-	for _, phase := range []string{"header", "cluster", "block", "block group"} {
+	for _, phase := range []string{"header", "cluster", "block", "block group", "cues"} {
 		if !reported[phase] {
 			t.Errorf("no run failed while writing the %s", phase)
 		}
@@ -1549,5 +1555,206 @@ func TestWebMMuxerTakesWhatTheMatroskaReaderHandsBack(t *testing.T) {
 		if written[i].Sync != samples[i].Sync {
 			t.Errorf("sample %d sync = %v, want %v", i, written[i].Sync, samples[i].Sync)
 		}
+	}
+}
+
+// clusterID is the element a cue position must land on.
+var clusterID = []byte{0x1F, 0x43, 0xB6, 0x75}
+
+// segmentContentAt is where a segment's content begins in the file, and it is
+// checked rather than assumed: every cue position is a distance from there.
+func segmentContentAt(t *testing.T, data []byte, sized bool) int {
+	t.Helper()
+	at := bytes.Index(data, segmentID)
+	if at < 0 {
+		t.Fatal("the file holds no segment")
+	}
+	after := at + len(segmentID)
+	if !sized {
+		if !bytes.HasPrefix(data[after:], unknownSize) {
+			t.Fatalf("the segment states % x, want the unknown-size marker % x",
+				data[after:after+len(unknownSize)], unknownSize)
+		}
+		return after + len(unknownSize)
+	}
+	// A stated size is a variable-length integer: its first byte says how
+	// many bytes it takes by where its highest set bit is.
+	first := data[after]
+	length := 1
+	for mask := byte(0x80); mask != 0 && first&mask == 0; mask >>= 1 {
+		length++
+	}
+	return after + length
+}
+
+// TestWebMCuesPointAtRealClusters is the whole point of a cue index: a player
+// seeking to a time reads a position out of it and jumps there. A position that
+// lands anywhere but on a cluster sends it into the middle of a frame, which is
+// worse than having no index at all — so the assertion is on what the bytes at
+// that position are, not on the index existing.
+func TestWebMCuesPointAtRealClusters(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		opts  []WebMOption
+		sized bool
+	}{
+		{"written as it goes", []WebMOption{ClusterDuration(100 * time.Millisecond)}, false},
+		{"held until the end", []WebMOption{
+			ClusterDuration(100 * time.Millisecond), BufferedSegment()}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Thirteen frames at 1/29.97 s with a keyframe every sixth: three
+			// clusters, so an index of one entry would prove nothing.
+			data := writeWebMScript(t, 13, 0, tc.opts...)
+			f := readWebM(t, data)
+			if len(f.Segment.Cluster) != 3 {
+				t.Fatalf("clusters = %d, want 3", len(f.Segment.Cluster))
+			}
+			if f.Segment.Cues == nil {
+				t.Fatal("the file carries no cue index")
+			}
+			points := f.Segment.Cues.CuePoint
+			if len(points) != len(f.Segment.Cluster) {
+				t.Fatalf("cue points = %d, want one per cluster (%d)",
+					len(points), len(f.Segment.Cluster))
+			}
+			base := segmentContentAt(t, data, tc.sized)
+			for i, point := range points {
+				if len(point.CueTrackPositions) != 1 {
+					t.Fatalf("cue %d names %d tracks", i, len(point.CueTrackPositions))
+				}
+				pos := point.CueTrackPositions[0]
+				if pos.CueTrack != 1 {
+					t.Errorf("cue %d names track %d, want the one a player seeks on",
+						i, pos.CueTrack)
+				}
+				at := base + int(pos.CueClusterPosition)
+				if at+len(clusterID) > len(data) {
+					t.Fatalf("cue %d points past the end of the file", i)
+				}
+				if got := data[at : at+len(clusterID)]; !bytes.Equal(got, clusterID) {
+					t.Fatalf("cue %d points at % x, want a cluster (% x)", i, got, clusterID)
+				}
+				// And at the cluster holding the time it names.
+				if point.CueTime != f.Segment.Cluster[i].Timecode {
+					t.Errorf("cue %d states time %d, the cluster it points at starts at %d",
+						i, point.CueTime, f.Segment.Cluster[i].Timecode)
+				}
+			}
+		})
+	}
+}
+
+// TestWebMWithNothingToIndexCarriesNoCues checks a file with no cluster states
+// no index rather than an empty one, which a player would trust.
+func TestWebMWithNothingToIndexCarriesNoCues(t *testing.T) {
+	var buf bytes.Buffer
+	m := NewWebMMuxer(&buf)
+	if _, err := m.AddTrack(webmVideoConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	f := readWebM(t, buf.Bytes())
+	if f.Segment.Cues != nil {
+		t.Fatalf("cues = %+v, want none for a file holding nothing", f.Segment.Cues)
+	}
+}
+
+// TestWebMReportsAFailureToMeasure covers the guards around the encodings done
+// to learn a length. They cannot fail on a disk, which is exactly why they are
+// worth guarding: a document the encoder refused would leave every cue position
+// counted from the wrong place, and a wrong position is worse than none.
+func TestWebMReportsAFailureToMeasure(t *testing.T) {
+	original := measureEBML
+	defer func() { measureEBML = original }()
+	refused := errors.New("staged refusal")
+
+	// Each of these paths measures more than once, and every measurement
+	// decides where a cluster will be said to be, so each is staged to fail
+	// in turn.
+	for _, tc := range []struct {
+		name   string
+		opts   []WebMOption
+		failOn int
+	}{
+		{"as it goes, the segment", nil, 1},
+		{"as it goes, its content", nil, 2},
+		{"held until the end, the head", []WebMOption{BufferedSegment()}, 1},
+		{"held until the end, a cluster", []WebMOption{BufferedSegment()}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			measureEBML = func(v any, w io.Writer, opts ...ebml.MarshalOption) error {
+				if calls++; calls == tc.failOn {
+					return refused
+				}
+				return original(v, w, opts...)
+			}
+			var buf bytes.Buffer
+			m := NewWebMMuxer(&buf, tc.opts...)
+			id, err := m.AddTrack(webmVideoConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = m.WriteSample(id, Sample{
+				Data: webmSampleData(id, 0), Duration: webmVideoFrame, Sync: true,
+			})
+			if err == nil {
+				err = m.Close()
+			}
+			if !errors.Is(err, refused) {
+				t.Fatalf("err = %v, want the staged refusal reported", err)
+			}
+		})
+	}
+}
+
+// TestWebMClosesAfterAFailedWrite checks the file can be closed once a write
+// has failed: there is no cluster to index then, and a caller closing to let go
+// of the writer must not be met with a second failure.
+func TestWebMClosesAfterAFailedWrite(t *testing.T) {
+	// Exactly enough room for what precedes the first cluster, measured on a
+	// run of the very same shape that worked: the header goes out, the
+	// cluster does not, and no position is recorded for a cluster that was
+	// never written.
+	var reference bytes.Buffer
+	ref := NewWebMMuxer(&reference)
+	refID, err := ref.AddTrack(webmVideoConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ref.WriteSample(refID, Sample{
+		Data: webmSampleData(refID, 0), Duration: webmVideoFrame, Sync: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ref.Close(); err != nil {
+		t.Fatal(err)
+	}
+	limit := bytes.Index(reference.Bytes(), clusterID)
+	if limit <= 0 {
+		t.Fatal("the reference file holds no cluster to measure against")
+	}
+	w := &webmShortWriter{limit: limit}
+	m := NewWebMMuxer(w)
+	id, err := m.AddTrack(webmVideoConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = m.WriteSample(id, Sample{
+		Data: webmSampleData(id, 0), Duration: webmVideoFrame, Sync: true,
+	})
+	if err == nil {
+		err = m.WriteSample(id, Sample{
+			Data: webmSampleData(id, 1), Duration: webmVideoFrame, Sync: true,
+		})
+	}
+	if !errors.Is(err, errWebMShortWriter) {
+		t.Fatalf("the writer was expected to run out of room: %v", err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close after a failed write: %v", err)
 	}
 }
