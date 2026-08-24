@@ -63,7 +63,7 @@ type Sample struct {
 type TrackConfig struct {
 	Kind Kind
 	// Codec is the sample entry to write: "avc1", "avc3", "hvc1", "hev1",
-	// "av01", "vp08", "vp09", "mp4a", "Opus", "ac-3", "ec-3".
+	// "av01", "vp08", "vp09", "mjpg", "mp4a", "Opus", "ac-3", "ec-3".
 	Codec string
 	// Timescale is the unit of every duration of this track, per second.
 	Timescale uint32
@@ -279,6 +279,10 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 		if err := setEC3Entry(trak, dec3); err != nil {
 			return fmt.Errorf("%w: ec-3: %v", ErrTrackConfig, err)
 		}
+	case "mjpg":
+		if err := describeMJPEG(trak, cfg); err != nil {
+			return err
+		}
 	case "mp4a":
 		if cfg.SampleRate <= 0 {
 			return fmt.Errorf("%w: mp4a needs a sample rate", ErrTrackConfig)
@@ -308,6 +312,7 @@ var (
 	decodeAv1CBox = mp4.DecodeAv1C
 	decodeDac3Box = mp4.DecodeDac3
 	setVPxEntry   = (*mp4.TrakBox).SetVPxDescriptor
+	setMJpegEntry = (*mp4.TrakBox).SetMJpegDescriptor
 	setAC3Entry   = (*mp4.TrakBox).SetAC3Descriptor
 	setEC3Entry   = (*mp4.TrakBox).SetEC3Descriptor
 	decodeDec3Box = mp4.DecodeDec3
@@ -473,6 +478,34 @@ func vpxConfig(codec string, cfg TrackConfig) (*mp4.VppCBox, error) {
 		TransferCharacteristics: v.TransferCharacteristics,
 		MatrixCoefficients:      v.MatrixCoefficients,
 	}, nil
+}
+
+// describeMJPEG writes the sample entry of a motion JPEG track, as ISO/IEC
+// 23008-12 Annex H defines it for JPEG image sequences: every sample is a
+// complete JPEG image, which is what an encoder built on the standard library's
+// image/jpeg produces.
+//
+// A caller whose samples are not complete images — the same tables in front of
+// every one of them, the entropy-coded data alone in each — states that shared
+// prefix in CodecConfig, and it is written as the jpgC box a decoder prepends.
+func describeMJPEG(trak *mp4.TrakBox, cfg TrackConfig) error {
+	switch {
+	case cfg.Width <= 0 || cfg.Height <= 0:
+		return fmt.Errorf("%w: mjpg needs its frame size", ErrTrackConfig)
+	case cfg.Width > maxFrameSide || cfg.Height > maxFrameSide:
+		return fmt.Errorf("%w: mjpg frame of %dx%d does not fit a sample entry",
+			ErrTrackConfig, cfg.Width, cfg.Height)
+	}
+	// A nil prefix and an empty one mean different things to the library: nil
+	// writes no jpgC at all, which is what a stream of whole images wants.
+	var prefix []byte
+	if len(cfg.CodecConfig) > 0 {
+		prefix = cfg.CodecConfig
+	}
+	if err := setMJpegEntry(trak, uint16(cfg.Width), uint16(cfg.Height), prefix); err != nil {
+		return fmt.Errorf("%w: mjpg: %v", ErrTrackConfig, err)
+	}
+	return nil
 }
 
 // maxFrameSide is the largest frame side a sample entry can state.
