@@ -266,7 +266,10 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 			cfg.CodecConfig = payload
 		}
 	case stsd.Mp4a != nil && stsd.Mp4a.Esds != nil:
-		cfg.AudioObjectType = audioObjectType(stsd.Mp4a.Esds)
+		// A record this cannot read leaves the track described as the sample
+		// entry described it, which is what this did before the record was
+		// read at all.
+		_ = aacTrackConfig(&cfg, audioSpecificConfig(stsd.Mp4a.Esds))
 	case stsd.Opus != nil && stsd.Opus.Dops != nil:
 		d := stsd.Opus.Dops
 		cfg.Channels = int(d.OutputChannelCount)
@@ -304,19 +307,74 @@ func vpxFromBox(v *mp4.VppCBox) *VPxConfig {
 	}
 }
 
-// audioObjectType reads the AAC profile out of the audio specific config the
-// esds descriptor carries. A config that cannot be read leaves the profile at
-// zero, which the muxer reads as AAC-LC.
-func audioObjectType(esds *mp4.EsdsBox) byte {
+// audioSpecificConfig is the AAC configuration record an esds descriptor
+// carries, or nil when it carries none.
+func audioSpecificConfig(esds *mp4.EsdsBox) []byte {
 	dec := esds.DecConfigDescriptor
 	if dec == nil || dec.DecSpecificInfo == nil || len(dec.DecSpecificInfo.DecConfig) == 0 {
-		return 0
+		return nil
 	}
-	asc, err := aac.DecodeAudioSpecificConfig(bytes.NewReader(dec.DecSpecificInfo.DecConfig))
+	return dec.DecSpecificInfo.DecConfig
+}
+
+// aacTrackConfig applies an AAC track's AudioSpecificConfig over what the
+// container's own fields said.
+//
+// The record travels as CodecConfig, because it is the only normative
+// description an AAC track has: the packets carry no ADTS header and nothing
+// before the first one says what profile or what channel layout they are, so a
+// decoder set up from anything else is a decoder set up from a guess. A caller
+// that hands it to a real decoder — go-macos/audiotoolbox does — needs it, and
+// before this it was read, mined for one byte, and thrown away.
+//
+// The channel count is taken from it too, and that is the point. The mp4a
+// sample entry's channelcount is a template field, and it is wrong often enough
+// to matter: afconvert writes 2 into it for a MONO AAC track, measured, and a
+// decoder configured for two channels on that track fails on the third packet.
+// Table 1.19's channelConfiguration is normative and says 1. Configuration 0
+// means "the bitstream says", and then the container's number is the best there
+// is and is left alone.
+//
+// The sample rate is NOT overridden. An HE-AAC config states the CORE rate and
+// doubles it through spectral band replication, so the record and the sample
+// entry are both right about different things, and the sample entry's is the
+// one a caller wants: the rate the decoder outputs. The record is used only
+// where nothing else stated a rate at all.
+//
+// A record that cannot be read is reported, and it is the caller that decides:
+// an MP4 keeps the rest of the track description, which is what it did before
+// this, and a Matroska file refuses the track, which is what it did before this.
+func aacTrackConfig(cfg *TrackConfig, asc []byte) error {
+	if len(asc) == 0 {
+		return nil
+	}
+	decoded, err := aac.DecodeAudioSpecificConfig(bytes.NewReader(asc))
 	if err != nil {
-		return 0
+		return err
 	}
-	return asc.ObjectType
+	cfg.CodecConfig = asc
+	cfg.AudioObjectType = decoded.ObjectType
+	if n := aacChannels(decoded.ChannelConfiguration); n > 0 {
+		cfg.Channels = n
+	}
+	if cfg.SampleRate == 0 {
+		cfg.SampleRate = decoded.SamplingFrequency
+	}
+	return nil
+}
+
+// aacChannels is how many channels an AudioSpecificConfig's
+// channelConfiguration means, ISO/IEC 14496-3 Table 1.19. It is not the field:
+// configuration 7 is 7.1, which is EIGHT channels. Zero means the bitstream
+// states the layout and this cannot know, and so does anything past the table.
+func aacChannels(configuration byte) int {
+	switch configuration {
+	case 1, 2, 3, 4, 5, 6:
+		return int(configuration)
+	case 7:
+		return 8
+	}
+	return 0
 }
 
 // hevcParameterSets pulls the three parameter set kinds out of an hvcC record.
