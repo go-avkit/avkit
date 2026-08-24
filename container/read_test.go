@@ -415,16 +415,86 @@ func TestFragmentedSamplesOfATrackWithoutAny(t *testing.T) {
 	}
 }
 
-func TestAudioObjectTypeOfAnUnreadableConfig(t *testing.T) {
-	if got := audioObjectType(&mp4.EsdsBox{}); got != 0 {
-		t.Errorf("without a descriptor = %d", got)
+func TestAudioSpecificConfigOfAnUnreadableDescriptor(t *testing.T) {
+	if got := audioSpecificConfig(&mp4.EsdsBox{}); got != nil {
+		t.Errorf("without a descriptor = %x, want nil", got)
 	}
 	esds := &mp4.EsdsBox{}
-	esds.DecConfigDescriptor = &mp4.DecoderConfigDescriptor{
-		DecSpecificInfo: &mp4.DecSpecificInfoDescriptor{DecConfig: []byte{0xff}},
+	esds.DecConfigDescriptor = &mp4.DecoderConfigDescriptor{}
+	if got := audioSpecificConfig(esds); got != nil {
+		t.Errorf("without a specific info descriptor = %x, want nil", got)
 	}
-	if got := audioObjectType(esds); got != 0 {
-		t.Errorf("with a config that cannot be read = %d", got)
+	esds.DecConfigDescriptor.DecSpecificInfo = &mp4.DecSpecificInfoDescriptor{}
+	if got := audioSpecificConfig(esds); got != nil {
+		t.Errorf("with an empty specific info = %x, want nil", got)
+	}
+	esds.DecConfigDescriptor.DecSpecificInfo.DecConfig = []byte{0x11, 0x90}
+	if got := audioSpecificConfig(esds); string(got) != "\x11\x90" {
+		t.Errorf("with a config = %x, want 1190", got)
+	}
+}
+
+// TestAACTrackConfig covers the one place the container's own fields are
+// overruled, and the several places they are not.
+func TestAACTrackConfig(t *testing.T) {
+	// Nothing stated changes nothing.
+	cfg := TrackConfig{Channels: 2, SampleRate: 48000}
+	if err := aacTrackConfig(&cfg, nil); err != nil {
+		t.Errorf("aacTrackConfig(nil) = %v", err)
+	}
+	if cfg.Channels != 2 || cfg.CodecConfig != nil {
+		t.Errorf("an absent config changed the track to %+v", cfg)
+	}
+
+	// A config that cannot be read is reported and changes nothing: the
+	// caller decides whether that is fatal.
+	cfg = TrackConfig{Channels: 2, SampleRate: 48000}
+	if err := aacTrackConfig(&cfg, []byte{0xff}); err == nil {
+		t.Error("aacTrackConfig(unreadable) returned no error")
+	}
+	if cfg.Channels != 2 || cfg.CodecConfig != nil {
+		t.Errorf("an unreadable config changed the track to %+v", cfg)
+	}
+
+	// AAC-LC, 48 kHz, MONO — the case the sample entry gets wrong. afconvert
+	// writes channelcount 2 into the mp4a entry of a mono AAC track, and a
+	// decoder that believed it fails a few packets in.
+	cfg = TrackConfig{Channels: 2, SampleRate: 48000}
+	if err := aacTrackConfig(&cfg, []byte{0x11, 0x88}); err != nil {
+		t.Fatalf("aacTrackConfig(mono) = %v", err)
+	}
+	if cfg.Channels != 1 {
+		t.Errorf("a mono config left the track at %d channels; Table 1.19 says 1", cfg.Channels)
+	}
+	if cfg.AudioObjectType != 2 {
+		t.Errorf("profile = %d, want 2 (AAC-LC)", cfg.AudioObjectType)
+	}
+	if string(cfg.CodecConfig) != "\x11\x88" {
+		t.Errorf("CodecConfig = %x, want the record as it stands", cfg.CodecConfig)
+	}
+	if cfg.SampleRate != 48000 {
+		t.Errorf("sample rate = %d, want the one the container stated", cfg.SampleRate)
+	}
+
+	// A rate is taken from the record only when nothing else stated one.
+	cfg = TrackConfig{Channels: 2}
+	if err := aacTrackConfig(&cfg, []byte{0x11, 0x90}); err != nil {
+		t.Fatalf("aacTrackConfig = %v", err)
+	}
+	if cfg.SampleRate != 48000 {
+		t.Errorf("sample rate = %d, want 48000 from the record", cfg.SampleRate)
+	}
+}
+
+// TestAACChannels is Table 1.19, and the one row of it that is not the number
+// it is written as.
+func TestAACChannels(t *testing.T) {
+	for configuration, want := range map[byte]int{
+		0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 8, 8: 0, 15: 0,
+	} {
+		if got := aacChannels(configuration); got != want {
+			t.Errorf("aacChannels(%d) = %d, want %d", configuration, got, want)
+		}
 	}
 }
 

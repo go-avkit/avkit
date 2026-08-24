@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/Eyevinn/mp4ff/aac"
 	"github.com/Eyevinn/mp4ff/avc"
 	"github.com/Eyevinn/mp4ff/hevc"
 	"github.com/Eyevinn/mp4ff/mp4"
@@ -512,17 +511,11 @@ func mkvCodecPrivate(cfg *TrackConfig, te mkvTrackEntry) error {
 		cfg.SampleRate = int(head.InputSampleRate)
 	case "mp4a":
 		// AAC in Matroska may leave its audio specific config out, and then
-		// the profile is the AAC-LC a zero stands for.
-		if len(te.CodecPrivate) == 0 {
-			return nil
-		}
-		asc, err := aac.DecodeAudioSpecificConfig(bytes.NewReader(te.CodecPrivate))
-		if err != nil {
+		// the profile is the AAC-LC a zero stands for. When it states one,
+		// it is the normative description of the track and travels whole:
+		// see aacTrackConfig.
+		if err := aacTrackConfig(cfg, te.CodecPrivate); err != nil {
 			return fmt.Errorf("%w: %s audio specific config: %v", ErrTrackConfig, te.CodecID, err)
-		}
-		cfg.AudioObjectType = asc.ObjectType
-		if cfg.SampleRate == 0 {
-			cfg.SampleRate = asc.SamplingFrequency
 		}
 	case "vp08", "vp09":
 		cfg.VPx = mkvVPx(te.Video)
