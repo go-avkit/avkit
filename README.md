@@ -2,7 +2,6 @@
 
 [![ci](https://github.com/go-avkit/avkit/actions/workflows/ci.yml/badge.svg)](https://github.com/go-avkit/avkit/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/go-avkit/avkit.svg)](https://pkg.go.dev/github.com/go-avkit/avkit)
-[![Go Report Card](https://goreportcard.com/badge/github.com/go-avkit/avkit)](https://goreportcard.com/report/github.com/go-avkit/avkit)
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
 Pure-Go (CGO=0) audio/video toolkit. It reads and writes time-based media
