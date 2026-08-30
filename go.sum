@@ -1,5 +1,7 @@
 github.com/Eyevinn/mp4ff v0.55.0 h1:wFShr5eqcJaVd15/uPMe747sAWPbz7dl2TfhusDx+Kk=
 github.com/Eyevinn/mp4ff v0.55.0/go.mod h1:AhC+bOI7GSZmzuN4zFY9U76qMedbHI+8BdQXWrC9+8U=
+github.com/Eyevinn/mp4ff v0.56.0 h1:K81hqadHOLqQP+Rr610dwy7Cn3tLLEejCljzIfcNo+k=
+github.com/Eyevinn/mp4ff v0.56.0/go.mod h1:AhC+bOI7GSZmzuN4zFY9U76qMedbHI+8BdQXWrC9+8U=
 github.com/asticode/go-astikit v0.30.0 h1:DkBkRQRIxYcknlaU7W7ksNfn4gMFsB0tqMJflxkRsZA=
 github.com/asticode/go-astikit v0.30.0/go.mod h1:h4ly7idim1tNhaVkdVBeXQZEE3L0xblP7fCWbgwipF0=
 github.com/asticode/go-astits v1.16.0 h1:MgyLnG30oRiQsHWQNXA29ZS6i7UNN/OGcPdgH86JJqg=
