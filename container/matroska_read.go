@@ -362,6 +362,27 @@ func mkvTimeFrames(trackID uint32, frames []mkvFrame, perFrame, segDuration int6
 		var duration int64
 		if i+1 < len(frames) {
 			duration = decode[i+1] - decode[i]
+			// A frame measures itself against the next one, and gets nothing
+			// when the two share a timestamp -- which a source muxer that
+			// forgot to advance its clock writes, and which ten files of one
+			// album on the machine this was written for do.
+			//
+			// The ladder that answers it is the one below, written for the last
+			// frame of a track: what the block states, then the track's default
+			// duration, then the frame before. It was reached from ONE caller,
+			// so a collision anywhere else refused the whole file. A file that
+			// states none of those still refuses, which is what keeps this from
+			// inventing a duration nothing measured.
+			//
+			// What is left of the SEGMENT is not offered here: it measures the
+			// tail, not a gap between two frames that are both inside it.
+			if duration <= 0 {
+				mid, err := mkvLastDuration(trackID, f.stated, perFrame, 0, out)
+				if err != nil {
+					return nil, err
+				}
+				duration = mid
+			}
 		} else {
 			last, err := mkvLastDuration(trackID, f.stated, perFrame, segDuration-decode[i], out)
 			if err != nil {
