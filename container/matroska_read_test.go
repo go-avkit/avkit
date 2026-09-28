@@ -805,8 +805,21 @@ func TestMkvLastDurationWalksEverySource(t *testing.T) {
 	}
 }
 
-func TestReaderRefusesTimesNoSampleTableCanState(t *testing.T) {
-	// Two frames shown at the same time leave the first lasting nothing.
+// TestReaderTakesAColldingFrameFromWhatTheTrackStates.
+//
+// ⛔ Two frames shown at the same time leave the first measuring nothing, and
+// this used to refuse the whole file. It is what a source muxer that forgot to
+// advance its clock writes: ten files of one album on the machine this was
+// written for could not be remuxed for it, every one of them stating a
+// DefaultDuration all along.
+//
+// A sample table CAN state this duration -- the track says how long a frame
+// lasts -- so refusing was not a limit of the format. The ladder that answers it
+// was already written for the last frame of a track and reached from that one
+// caller only.
+func TestReaderTakesACollidingFrameFromWhatTheTrackStates(t *testing.T) {
+	// The premise: the track states a default duration, so something in the
+	// file does measure this frame. Without it there is nothing to take.
 	same := timedDoc(0, 10_000_000, []mkvBlockGroup{
 		{Block: simple(1, 0, true, []byte("a"))},
 		{Block: simple(1, 0, true, []byte("b"))},
@@ -815,16 +828,46 @@ func TestReaderRefusesTimesNoSampleTableCanState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReader: %v", err)
 	}
-	if _, err := r.Samples(1); !errors.Is(err, ErrMatroska) {
-		t.Fatalf("a sample lasting nothing: %v, want ErrMatroska", err)
+	got, err := r.Samples(1)
+	if err != nil {
+		t.Fatalf("Samples: %v", err)
 	}
+	if len(got) != 2 {
+		t.Fatalf("%d samples, want 2", len(got))
+	}
+	for i, s := range got {
+		if s.Duration == 0 {
+			t.Errorf("sample %d lasts nothing, and the track states 10 ms", i+1)
+		}
+	}
+}
+
+// TestReaderStillRefusesAColldingFrameNothingMeasures is the control: with no
+// default duration, no segment duration and no frame before it, nothing in the
+// file says how long the frame lasts, and inventing one would be worse than
+// saying so.
+func TestReaderStillRefusesACollidingFrameNothingMeasures(t *testing.T) {
+	same := timedDoc(0, 0, []mkvBlockGroup{
+		{Block: simple(1, 0, true, []byte("a"))},
+		{Block: simple(1, 0, true, []byte("b"))},
+	}, 0, 0)
+	r, err := NewReader(marshalDoc(t, same))
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	if _, err := r.Samples(1); !errors.Is(err, ErrMatroska) {
+		t.Fatalf("a frame nothing measures: %v, want ErrMatroska", err)
+	}
+}
+
+func TestReaderRefusesTimesNoSampleTableCanState(t *testing.T) {
 	// Frames three thousand million ticks apart last longer than a sample
 	// table can say.
 	far := timedDoc(0, 10_000_000, []mkvBlockGroup{
 		{Block: simple(1, 0, true, []byte("a"))},
 		{Block: simple(1, 0, true, []byte("b"))},
 	}, 0, 5_000_000_000)
-	r, err = NewReader(marshalDoc(t, far))
+	r, err := NewReader(marshalDoc(t, far))
 	if err != nil {
 		t.Fatalf("NewReader: %v", err)
 	}
