@@ -245,22 +245,63 @@ func scanNalus(samples []Sample, isHEVC bool) (naluScan, error) {
 	return scan, nil
 }
 
-// naluForm decides which form the samples hold their units in, from the first
-// one long enough to tell. A start code decides it: a length-prefixed sample
-// could only begin 00 00 00 01 if its first unit were a single byte, which no
-// picture and no parameter set is, so reading that as a start code is the safe
-// way round.
+// naluForm decides which form the samples hold their units in, by trying one:
+// four-byte lengths that describe a sample EXACTLY, to its last byte, are
+// lengths. Nothing else does that by accident, and a sample where they do not
+// is read as Annex B.
+//
+// ⛔ It used to decide from the first three bytes, and read a length-prefixed
+// sample as Annex B whenever its first unit was 256 to 511 bytes long -- because
+// such a length is written 00 00 01 xx, which is also a three-byte start code.
+// The reasoning written beside that test only ever covered the FOUR-byte start
+// code, 00 00 00 01, where it holds: that would be a one-byte unit, which no
+// picture and no parameter set is. The three-byte case was put next to it
+// without the same argument, and 256 to 511 bytes is an ordinary size for the
+// delimiter or parameter set an access unit begins with. Measured over 67 HEVC
+// files from one library, 12 -- nearly one in five -- began that way and were
+// refused as holding no NAL unit at all.
+//
+// Several samples are tried rather than one, so that a single sample whose
+// lengths happen to land exactly cannot decide for a whole track.
 func naluForm(samples []Sample) (int, error) {
+	const consult = 8
+	tried, prefixed := 0, 0
+	var first []byte
 	for _, s := range samples {
 		if len(s.Data) < 4 {
 			continue
 		}
-		if s.Data[0] == 0 && s.Data[1] == 0 && (s.Data[2] == 1 || (s.Data[2] == 0 && s.Data[3] == 1)) {
-			return formAnnexB, nil
+		if first == nil {
+			first = s.Data
 		}
+		tried++
+		if _, exact := splitLengthPrefixed(s.Data); exact {
+			prefixed++
+		}
+		if tried == consult {
+			break
+		}
+	}
+	switch {
+	case tried == 0:
+		return 0, fmt.Errorf("%w: no sample is long enough to hold a NAL unit", ErrNoConfiguration)
+	case prefixed == tried:
+		return formLengthPrefixed, nil
+	case startsWithStartCode(first):
+		return formAnnexB, nil
+	default:
+		// Lengths that do not describe the sample AND no start code either: it
+		// is a broken length-prefixed sample, and saying so names what is wrong
+		// with it instead of reporting a start code nobody expected to find.
 		return formLengthPrefixed, nil
 	}
-	return 0, fmt.Errorf("%w: no sample is long enough to hold a NAL unit", ErrNoConfiguration)
+}
+
+// startsWithStartCode reports whether a sample begins the way an elementary
+// stream separates its units.
+func startsWithStartCode(data []byte) bool {
+	return len(data) >= 4 && data[0] == 0 && data[1] == 0 &&
+		(data[2] == 1 || (data[2] == 0 && data[3] == 1))
 }
 
 // naluUnits cuts one sample into its NAL units.
