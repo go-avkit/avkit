@@ -33,9 +33,10 @@ const nsScale = uint32(time.Second / time.Nanosecond)
 type RemuxOption func(*remuxSettings)
 
 type remuxSettings struct {
-	mux        []MuxOption
-	drop       map[uint32]bool
-	strictSync bool
+	mux         []MuxOption
+	drop        map[uint32]bool
+	strictSync  bool
+	conformHVC1 bool
 }
 
 // MuxOptions passes options on to the Muxer writing the output.
@@ -205,7 +206,13 @@ func readSource(src *Reader, set *remuxSettings) ([]sourceTrack, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, sourceTrack{id: id, cfg: cfg, samples: samples})
+		t := sourceTrack{id: id, cfg: cfg, samples: samples}
+		if set.conformHVC1 {
+			if t, err = conformTrack(t); err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, t)
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("%w: every track was dropped", ErrNoTracks)
