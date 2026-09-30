@@ -623,7 +623,18 @@ func (r *Reader) progressiveSamples(trak *mp4.TrakBox) ([]Sample, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%w: sample %d: %v", ErrSampleData, sampleNr, err)
 			}
-			_, dur := stbl.Stts.GetDecodeTime(sampleNr)
+			// mp4ff v0.57.0 returns an error here where v0.56 panicked, and
+			// it reports one case the panic never did: an stts table that
+			// covers fewer samples than the sample count claims. That is a
+			// malformed file, not a programming mistake, so it belongs in the
+			// return value rather than in a crash.
+			_, dur, err := stbl.Stts.GetDecodeTime(sampleNr)
+			if err != nil {
+				// Wrapped rather than given a new exported sentinel: no caller
+				// has asked to distinguish this, and ErrSampleData is about a
+				// table pointing OUTSIDE the file, which this is not.
+				return nil, fmt.Errorf("container: sample %d decode time: %w", sampleNr, err)
+			}
 			s := Sample{
 				Data:     data,
 				Duration: dur,
