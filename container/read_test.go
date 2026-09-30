@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/Eyevinn/mp4ff/bits"
@@ -771,5 +772,38 @@ func TestFragmentedSamplesSkipsMalformedFragments(t *testing.T) {
 	}
 	if _, err := r.fragmentedSamples(1); !errors.Is(err, ErrNoSamples) {
 		t.Fatalf("err = %v, want ErrNoSamples", err)
+	}
+}
+
+// TestProgressiveSamplesRejectsAnSttsThatRunsOut covers the branch mp4ff
+// v0.57.0 created. Before it, SttsBox.GetDecodeTime PANICKED on a bad sample
+// number and simply ran off the end of a short table; now it returns an error,
+// and a malformed file must come back as one rather than as a crash or a
+// silently wrong duration.
+//
+// The stsz claims two samples and the stts covers one. That is a real shape:
+// a truncated or hand-edited file, not a programming mistake.
+func TestProgressiveSamplesRejectsAnSttsThatRunsOut(t *testing.T) {
+	data := make([]byte, 64)
+	r := &Reader{data: data}
+	trak := sampleTable(t, []uint32{4, 4}, []uint32{0, 8}, 1)
+
+	// The control: with the table as built, both samples read.
+	if _, err := r.progressiveSamples(trak); err != nil {
+		t.Fatalf("the fixture is already broken, so the assertion below is free: %v", err)
+	}
+
+	stbl := trak.Mdia.Minf.Stbl
+	stbl.Stts = &mp4.SttsBox{SampleCount: []uint32{1}, SampleTimeDelta: []uint32{100}}
+
+	_, err := r.progressiveSamples(trak)
+	if err == nil {
+		t.Fatal("an stts covering fewer samples than the stsz claims was accepted")
+	}
+	if !strings.Contains(err.Error(), "decode time") {
+		t.Errorf("err = %v, want it to name the decode time it could not read", err)
+	}
+	if !strings.Contains(err.Error(), "sample 2") {
+		t.Errorf("err = %v, want it to name WHICH sample", err)
 	}
 }
