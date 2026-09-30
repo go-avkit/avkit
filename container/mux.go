@@ -657,9 +657,15 @@ func (m *Muxer) Flush() error {
 	if !m.buffering() {
 		return nil
 	}
+	// Only the tracks that have something to write. A track fragment declared
+	// for a track with no samples in it carries nothing, and readers in the wild
+	// -- including this package's own, until it was fixed -- refuse the file for
+	// it.
 	ids := make([]uint32, 0, len(m.tracks))
 	for _, t := range m.tracks {
-		ids = append(ids, t.id)
+		if len(t.pending) > 0 {
+			ids = append(ids, t.id)
+		}
 	}
 	m.sequence++
 	frag, err := newFragment(m.sequence, ids)

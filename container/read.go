@@ -523,9 +523,21 @@ func (r *Reader) fragmentedSamples(trackID uint32) ([]Sample, error) {
 // header, and a run that states nothing continues where the one before it
 // ended; what a run leaves out, the track defaults supply.
 func (r *Reader) trafSamples(moofStart uint64, traf *mp4.TrafBox, trex *mp4.TrexBox) ([]Sample, error) {
+	// ⛔ A track fragment with no sample run is legal and means what it says:
+	// this track has no samples in this fragment. ISO/IEC 14496-12 puts zero or
+	// more trun boxes in a traf, and a stream whose tracks do not divide evenly
+	// into fragments -- audio and video at different rates, or one track ending
+	// first -- produces them as a matter of course.
+	//
+	// Refusing it lost whole files, and one of the muxers doing it was OUR OWN:
+	// Flush declares a track fragment for every track and then fills only the
+	// ones holding samples, so this package wrote files it could not read back.
+	// Two Matroska files in one library failed to remux for exactly that reason.
+	//
+	// A track with no samples ANYWHERE is still refused, by the caller, which is
+	// the check that was actually wanted.
 	if len(traf.Truns) == 0 {
-		return nil, fmt.Errorf("%w: track fragment %d has no sample run",
-			ErrNoSamples, traf.Tfhd.TrackID)
+		return nil, nil
 	}
 	// Data is placed against the fragment header, unless the header states an
 	// absolute base of its own.

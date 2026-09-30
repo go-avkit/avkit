@@ -552,10 +552,18 @@ func TestFragmentedSamplesOfAMultiTrackFragment(t *testing.T) {
 
 func TestTrafSamplesRejectsWhatItCannotRead(t *testing.T) {
 	r := &Reader{data: make([]byte, 4)}
-	// A track fragment with no sample run says nothing about its samples.
+	// ⛔ A track fragment with no sample run holds no samples, and that is a
+	// statement rather than the absence of one: ISO/IEC 14496-12 puts zero or
+	// more trun boxes in a traf, and a stream whose tracks do not divide evenly
+	// into fragments produces them as a matter of course. Refusing it lost whole
+	// files. A track with no samples ANYWHERE is still refused, by the caller.
 	noRun := &mp4.TrafBox{Tfhd: &mp4.TfhdBox{TrackID: 1}}
-	if _, err := r.trafSamples(0, noRun, nil); !errors.Is(err, ErrNoSamples) {
+	samples, err := r.trafSamples(0, noRun, nil)
+	if err != nil {
 		t.Errorf("without a run: %v", err)
+	}
+	if len(samples) != 0 {
+		t.Errorf("without a run: %d samples", len(samples))
 	}
 	// A run naming more data than the file holds must not be read. The size
 	// flag makes the run's own sizes the ones that count. The run is added
