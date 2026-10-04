@@ -62,6 +62,29 @@ func main() {
 `container.Sniff` identifies the format from the leading bytes without a full
 parse; `container.Demux` dispatches to the right demuxer.
 
+## MP4 files mp4ff refuses on its own
+
+Two shapes that ISO/IEC 14496-12 allows, and that `ffprobe` reads, are refused by
+mp4ff. go-avkit reads them, the same way through `Demux`, `NewReader`,
+`NewFileReader` and `OpenFile`:
+
+- **Several adjacent `mdat` boxes.** A writer that flushes a recording in pieces
+  leaves its media in two or three boxes, one after the other. Samples are found
+  by absolute offset, so the boundaries mean nothing to a reader, and mp4ff is
+  shown the run as one box. Only the 4-byte size field is changed, and only in a
+  view of the file. The file itself is not written to, and samples are still
+  read from it. Boxes with something between them, a run too long for a 32-bit
+  size, and the mdat boxes of a fragmented file are still refused.
+- **Bytes after a complete movie box**: a stray byte, zero padding, or a header
+  announcing a box that is not there. The movie box says where every sample is,
+  so what follows it describes nothing a reader needs.
+
+Measured over 2375 MP4 files: 17 are refused. 16 of them `ffprobe` refuses too
+(no movie box), and the last one is an AVI file with a `.mp4` name.
+
+Edit lists (`elst`) are not applied: samples come back in decode order, once
+each, as the sample tables list them.
+
 ## Guarantees
 
 - **Pure Go, CGO=0.** No `libav`, no `exec` to `ffmpeg`.

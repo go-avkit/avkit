@@ -28,6 +28,10 @@
 // stretch between two time offsets, join files that match, leave a track out —
 // none of which touches a sample's bytes.
 //
+// Every MP4 entry point decodes the same way, so a file one of them accepts the
+// others accept too. That includes two shapes mp4ff refuses on its own: media
+// in several adjacent mdat boxes, and bytes after a complete movie box.
+//
 // Codec bitstream decoding lives in sibling packages.
 package container
 

@@ -15,7 +15,8 @@ import (
 // projects its box tree onto the unified File/Track metadata. Container parsing
 // is delegated to mp4ff; this file only maps its structures.
 func demuxMP4(data []byte) (*File, error) {
-	mf, err := mp4.DecodeFile(bytes.NewReader(data))
+	held := bytes.NewReader(data)
+	mf, err := decodeMP4(held, held, int64(len(data)))
 	if err != nil {
 		return nil, err
 	}
