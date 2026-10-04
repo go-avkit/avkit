@@ -19,7 +19,26 @@ model, and converts the payloads each container spells differently.
 
 | Package     | What it does |
 |-------------|--------------|
-| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of an MP4 or a transport stream, one file or a sequence of segments; mux a fragmented MP4 or an MPEG-TS from tracks delivered separately; copy, cut, concatenate and drop tracks with `Remux`, `Cut` and `Concat`. No re-encoding anywhere. |
+| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of an MP4 or a transport stream, one file or a sequence of segments; mux a fragmented or a progressive MP4, or an MPEG-TS, from tracks delivered separately; copy, cut, join, concatenate and drop tracks with `Remux`, `Cut`, `Join` and `Concat`; and rewrite an HEVC track's sample entry to `hvc1` with `ConformHVC1`. No re-encoding anywhere. |
+
+### Why `ConformHVC1` is there
+
+An HEVC track in an MP4 may declare itself `hev1` or `hvc1`. The two differ in
+where the parameter sets live — `hvc1` carries them in the sample entry,
+`hev1` allows them in the stream — and **macOS refuses `hev1`**: measured over a
+library of 1807 HEVC files, QuickLook produced a thumbnail for every `hvc1` file
+and for none of the `hev1` ones, while ffmpeg decoded both without complaint.
+
+`ConformHVC1` moves the sets into the entry and rewrites the four-character code,
+which is a change of container and not of pictures: the samples are the same
+bytes. `CheckHVC1` answers the question without changing anything, so a caller
+can tell a file that needs it from one that does not.
+
+⛔ It takes the **stream** as authority wherever the samples state a set, keeps
+the entry's sets where they do not, and **refuses** a stream whose sets change
+part way through — because a single entry cannot describe two of them, and
+silently keeping the first would produce a file that decodes correctly until it
+does not.
 
 ## Install
 
