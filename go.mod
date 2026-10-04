@@ -1,6 +1,6 @@
 module github.com/go-avkit/avkit
 
-go 1.26.6
+go 1.27.1
 
 require (
 	github.com/Eyevinn/mp4ff v0.57.0
