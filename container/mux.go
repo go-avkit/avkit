@@ -30,6 +30,18 @@ var (
 	// ErrUnsupportedCodec means the codec cannot be described in a sample
 	// entry by this muxer yet.
 	ErrUnsupportedCodec = errors.New("container: unsupported codec")
+
+	// ErrNotInSamples means the codec is known, and its configuration is not
+	// something its samples can state.
+	//
+	// ⛔ It WRAPS ErrUnsupportedCodec, so a caller written before it existed
+	// still matches. The distinction is worth making because the two refusals
+	// call for opposite answers: this one says the configuration is in the
+	// CONTAINER — an Opus track's identification header, an AC-3 track's bit
+	// stream information, a VP8 track's level — and should be taken from there,
+	// while a plain ErrUnsupportedCodec says there is nothing to take.
+	ErrNotInSamples = fmt.Errorf("%w: not stated by the samples", ErrUnsupportedCodec)
+
 	// ErrClosed means the muxer was used after Close.
 	ErrClosed = errors.New("container: muxer is closed")
 	// ErrSample means the sample cannot be written as given.
