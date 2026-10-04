@@ -82,6 +82,43 @@ jobs:
       matrix:
         include:
           - { goarch: riscv64, qemu: qemu-riscv64-static }
+          # loong64 carries a known upstream code-generation defect that this
+          # lane cannot fully rule out -- golang/go#81000. On LOONG64 all four
+          # float-to-integer ops are declared with a floating-point output for
+          # an integer result (LOONG64Ops.go: TRUNCFW/TRUNCDW/TRUNCFV/TRUNCDV,
+          # each `reg: fp11`). An integer that inherits an FP register is then
+          # spilled with an 8-byte MOVD; where that value is a uint8 in a
+          # 1-byte slot, the spill destroys its neighbour. CL 820040 wraps the
+          # conversions in MOVWfpgp/MOVVfpgp so the integer lands in a GP
+          # register.
+          #
+          # go1.27.1 does NOT contain that CL. Read in the released toolchain
+          # rather than inferred from a changelog: LOONG64.rules still reads
+          #
+          #   (Cvt64Fto32 ...) => (TRUNCDW ...)
+          #
+          # with TRUNCDW still declared `reg: fp11`. The 1.27 backport,
+          # golang/go#81147, is open with milestone Go1.27.2.
+          #
+          # What that means here, measured rather than assumed:
+          #
+          #   GOARCH=loong64 go build -gcflags=-S ./... | grep -oE 'TRUNC(FW|DW|FV|DV)'
+          #
+          # emits 15 TRUNCDV for this module under go1.27.1, from nine
+          # functions -- vp9StreamConfig, demuxMatroska, newMatroskaReader,
+          # mkvTrack, mkvTrackConfig, (*Muxer).WriteSample, (*Muxer).shouldFlush,
+          # (*ProgressiveMuxer).WriteSample and (*ProgressiveMuxer).chunkLimit.
+          # All nine are duration-and-limit arithmetic landing in a uint64, not
+          # in a uint8, so the spill that corrupts a neighbouring byte has no
+          # byte to corrupt. The other six go-avkit modules emit none of the
+          # four ops at all, and are structurally immune.
+          #
+          # The lane below is green on loong64, and it is not blind: those nine
+          # functions are covered, so the suite executes them under qemu. Treat
+          # that as support, not proof -- go-gfx/gfx established the same
+          # defect on real LoongArch silicon (cfarm401) and explicitly NOT from
+          # qemu, and pins its own loong64 lane to go1.26.4 for it. If this
+          # lane ever goes red on loong64 alone, suspect this before the code.
           - { goarch: loong64, qemu: qemu-loongarch64-static }
           - { goarch: ppc64le, qemu: qemu-ppc64le-static }
           - { goarch: s390x,   qemu: qemu-s390x-static }
