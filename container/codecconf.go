@@ -119,9 +119,17 @@ func ConfigLanguage(language string) ConfigOption {
 // never modified.
 //
 // A codec whose configuration is not in its samples, or whose bitstream this
-// cannot read soundly, is refused with ErrUnsupportedCodec rather than
+// cannot read soundly, is refused rather than
 // described by guess, because a wrong configuration is silent — the file plays
 // as garbage.
+//
+// ⛔ Two different refusals used to be indistinguishable. Both carried
+// ErrUnsupportedCodec, so a caller could not tell "I know this codec, and its
+// samples cannot describe it" from "I do not know this codec" — and the two call
+// for opposite answers: the first says take the configuration from the
+// container, which has it, and the second says give up. The first is now
+// [ErrNotInSamples], which WRAPS ErrUnsupportedCodec so that every caller
+// matching the old sentinel still matches.
 func ConfigFromSamples(codec string, samples []Sample, opts ...ConfigOption) (StreamConfig, error) {
 	var settings configSettings
 	for _, opt := range opts {
@@ -175,7 +183,7 @@ func ConfigFromSamples(codec string, samples []Sample, opts ...ConfigOption) (St
 
 // refuse says why a codec's configuration cannot come from its samples.
 func refuse(codec, why string) (StreamConfig, error) {
-	return StreamConfig{}, fmt.Errorf("%w: %s: %s", ErrUnsupportedCodec, codec, why)
+	return StreamConfig{}, fmt.Errorf("%w: %s: %s", ErrNotInSamples, codec, why)
 }
 
 // naluScan is what the NAL units of a track's samples hold.

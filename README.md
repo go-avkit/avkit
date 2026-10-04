@@ -40,6 +40,65 @@ part way through — because a single entry cannot describe two of them, and
 silently keeping the first would produce a file that decodes correctly until it
 does not.
 
+## Functional coverage
+
+What this reads and writes, measured from the code rather than remembered. The
+table is held by `TestTheCoverageOfConfigFromSamplesIsWhatTheREADMESays`, so
+adding a codec to the dispatch without adding it here fails the suite.
+
+### Containers
+
+| | sniff | demux | mux |
+|---|---|---|---|
+| MP4 / ISO-BMFF | ✓ | ✓ one file, a sequence of segments, or fragmented | ✓ fragmented **and** progressive |
+| Matroska / WebM | ✓ | ✓ | ✓ |
+| MPEG-TS | ✓ | ✓ | ✓ |
+
+Nothing else: no AVI, no FLV, no Ogg, no WAV, no MXF, and no HLS or DASH
+manifests. A file that is none of the three sniffs as `FormatUnknown` rather
+than being guessed at.
+
+### Per-track configuration, from the samples
+
+`ConfigFromSamples` has **three** answers, and they are not two:
+
+| | codecs | what it means |
+|---|---|---|
+| **derived from the samples** | `avc1`, `avc3`, `hvc1`, `hev1`, `av01`, `vp09`, `mp4a` | the elementary stream states its own configuration, and it is read out of it |
+| **stated by the container** | `vp08`, `opus`, `ac-3`, `ec-3` | `ErrNotInSamples`. The codec is known and its samples **cannot** describe it — VP8 defines no level, an Opus stream carries no identification header, an AC-3 sync frame's bit stream information is not read here. Take the configuration from the container, which has it |
+| **not known** | everything else | `ErrUnsupportedCodec` alone. There is nothing to take |
+
+⛔ The middle row used to be indistinguishable from the last: both carried
+`ErrUnsupportedCodec`, so a caller could not tell "take it from the container"
+from "give up". `ErrNotInSamples` **wraps** the older sentinel, so code written
+before it existed still matches.
+
+### Tracks a container can carry
+
+| | video | audio |
+|---|---|---|
+| MP4 demux | any — the four-character code is read from the sample entry, not from a list | any |
+| MP4 mux | `avc1`, `hvc1`, `av01`, `vp08`, `vp09`, `mjpg` | `mp4a`, `opus`, `ac-3`, `ec-3` |
+| Matroska demux | AVC, HEVC, AV1, VP8, VP9 | AAC, AC-3, E-AC-3, FLAC, Opus, Vorbis |
+| WebM mux | AV1, VP8, VP9 | AAC, Opus, Vorbis |
+| MPEG-TS | `avc1`, `hvc1`, `av01` in, `avc1`/`hvc1` out | `mp4a` |
+
+### What is deliberately absent
+
+**No re-encoding, anywhere, and no decoding.** Nothing here turns a sample into
+pixels or into audio. Remuxing, cutting, joining and concatenating move the same
+sample bytes between containers; a codec that cannot be carried is refused
+rather than transcoded.
+
+The bitstream syntax itself lives in sibling modules —
+[`h264`](https://github.com/go-avkit/h264) (and the derivations of clause 8.2),
+[`h265`](https://github.com/go-avkit/h265), [`vp8`](https://github.com/go-avkit/vp8),
+[`vp9`](https://github.com/go-avkit/vp9),
+[`boolcoder`](https://github.com/go-avkit/boolcoder) and
+[`bitstream`](https://github.com/go-avkit/bitstream). **There is no AAC, Opus,
+FLAC, AC-3 or AV1 bitstream reader** in the organisation: those codecs are
+handled here only as far as a container needs them.
+
 ## Install
 
 ```sh
