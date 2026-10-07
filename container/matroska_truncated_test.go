@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 )
@@ -209,5 +210,163 @@ func TestPutEbmlSizeKeepsTheWidth(t *testing.T) {
 	}
 	if putEbmlSize(b[:2], 1, 4) {
 		t.Error("a write past the end of the buffer was allowed")
+	}
+}
+
+// --- malformed buffers, driven straight at the walk -------------------------
+//
+// These are the defensive branches. Driving them through a muxer would need a
+// muxer willing to write rubbish, so the bytes are built here instead: it is
+// the same code under test and the malformation is visible in the test.
+
+// ebmlElem builds one element: an ID written as-is, then a size of the given
+// width, then the payload.
+func ebmlElem(id []byte, width int, payload []byte) []byte {
+	size := make([]byte, width)
+	if !putEbmlSize(size, uint64(len(payload)), width) {
+		panic("test: size does not fit the width asked for")
+	}
+	out := append([]byte{}, id...)
+	out = append(out, size...)
+	return append(out, payload...)
+}
+
+var (
+	idEBMLHeader = []byte{0x1A, 0x45, 0xDF, 0xA3}
+	idSegment    = []byte{0x18, 0x53, 0x80, 0x67}
+	idInfo       = []byte{0x15, 0x49, 0xA9, 0x66}
+	idCluster    = []byte{0x1F, 0x43, 0xB6, 0x75}
+	idTimecode   = []byte{0xE7}
+)
+
+func TestCompleteMatroskaPrefixRefusesWhatItCannotRescue(t *testing.T) {
+	header := ebmlElem(idEBMLHeader, 1, []byte{0x01})
+	for _, c := range []struct {
+		name string
+		data []byte
+	}{
+		{"empty", nil},
+		{"a leading zero is not an id", []byte{0x00, 0x01}},
+		{"an id with no size after it", []byte{0xEC}},
+		{"a first element whose size runs past the end",
+			append(append([]byte{}, idEBMLHeader...), 0x50, 0xFF)},
+		{"a first element of unknown size",
+			append(append([]byte{}, idEBMLHeader...), 0xFF)},
+		{"something that is neither header nor Segment",
+			ebmlElem(idInfo, 1, []byte{0x01})},
+		{"a header but no Segment", header},
+		{"a Segment header cut before any child",
+			append(header, append(append([]byte{}, idSegment...), 0x41)...)},
+		{"a Segment with not one complete child",
+			append(header, append(append(append([]byte{}, idSegment...), 0x50, 0x10), idInfo...)...)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, ok := completeMatroskaPrefix(c.data); ok {
+				t.Error("claimed to rescue a prefix from bytes that hold none")
+			}
+		})
+	}
+}
+
+// A file that is whole is not truncation, and saying so would send every caller
+// down the wrong branch.
+func TestCompleteMatroskaPrefixSaysNothingWasDropped(t *testing.T) {
+	info := ebmlElem(idInfo, 1, []byte{0x01, 0x02})
+	seg := ebmlElem(idSegment, 2, info)
+	data := append(ebmlElem(idEBMLHeader, 1, []byte{0x01}), seg...)
+	if _, ok := completeMatroskaPrefix(data); ok {
+		t.Error("a complete file was reported as truncated")
+	}
+}
+
+// The Segment's declared end is the limit: children are not looked for past it,
+// so a Segment that declares less than it contains cannot drag bytes that are
+// not its own into the prefix.
+func TestWalkStopsAtTheDeclaredSegmentEnd(t *testing.T) {
+	info := ebmlElem(idInfo, 1, []byte{0x01, 0x02})
+	seg := ebmlElem(idSegment, 2, info)
+	trailing := ebmlElem(idInfo, 1, []byte{0x09})
+	data := append(append(ebmlElem(idEBMLHeader, 1, []byte{0x01}), seg...), trailing...)
+	prefix, ok := completeMatroskaPrefix(data)
+	if !ok {
+		t.Fatal("the trailing bytes should have been seen as a cut")
+	}
+	if len(prefix) >= len(data) {
+		t.Errorf("prefix is %d of %d bytes: the walk went past the Segment", len(prefix), len(data))
+	}
+}
+
+func TestWalkSegmentChildrenStopsAtEachMalformation(t *testing.T) {
+	cluster := func(payload []byte) []byte {
+		return append(append(append([]byte{}, idCluster...), 0xFF), payload...) // unknown size
+	}
+	good := ebmlElem(idInfo, 1, []byte{0x01})
+	for _, c := range []struct {
+		name string
+		tail []byte
+	}{
+		{"a child whose id is a zero byte", []byte{0x00}},
+		{"a child with no size after its id", []byte{0xEC}},
+		{"a child whose size runs past the end", append(append([]byte{}, idInfo...), 0x50, 0xFF)},
+		{"a grandchild whose id is a zero byte", cluster([]byte{0x00})},
+		{"a grandchild of unknown size", cluster(append(append([]byte{}, idTimecode...), 0xFF))},
+		{"a grandchild whose size runs past the end",
+			cluster(append(append([]byte{}, idTimecode...), 0x50, 0xFF))},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := append(append([]byte{}, good...), c.tail...)
+			if end := walkSegmentChildren(data, 0); end != len(good) {
+				t.Errorf("walk ended at %d; want %d, just past the one whole child", end, len(good))
+			}
+		})
+	}
+}
+
+// A prefix that cuts cleanly but still means nothing to the parser must report
+// the ORIGINAL error, not a truncation the caller could act on.
+func TestAPrefixTheParserStillRefusesReportsTheOriginalError(t *testing.T) {
+	// A Segment holding one complete element that is not a Matroska child, and
+	// trailing bytes so the walk sees a cut.
+	odd := ebmlElem([]byte{0xBF}, 1, []byte{0x01, 0x02}) // CRC-32, legal but not a Segment child
+	seg := ebmlElem(idSegment, 2, odd)
+	data := append(append(ebmlElem(idEBMLHeader, 1, []byte{0x01}), seg...), 0xEC)
+	_, err := newMatroskaReader(data)
+	if err == nil {
+		t.Fatal("rubbish was accepted")
+	}
+	if errors.Is(err, ErrTruncated) {
+		t.Errorf("reported as truncated, which promises a usable reader: %v", err)
+	}
+}
+
+// With several inputs the refusal names which one, because the whole difficulty
+// of a truncated file is that nothing downstream can see it.
+func TestJoinAndConcatNameTheTruncatedInput(t *testing.T) {
+	data := truncatedFixture(t, 120)
+	whole, err := NewReader(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, err := NewReader(data[:len(data)*3/4])
+	if err != nil && !errors.Is(err, ErrTruncated) {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		run  func() error
+	}{
+		{"Concat", func() error { return Concat(io.Discard, []*Reader{whole, part}) }},
+		{"Join", func() error { return Join(io.Discard, []*Reader{whole, part}) }},
+		{"JoinProgressive", func() error { return JoinProgressive(io.Discard, []*Reader{whole, part}) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := c.run()
+			if !errors.Is(err, ErrTruncated) {
+				t.Fatalf("did not refuse the truncated input: %v", err)
+			}
+			if !strings.Contains(err.Error(), "input 2") {
+				t.Errorf("the refusal does not say which input: %v", err)
+			}
+		})
 	}
 }

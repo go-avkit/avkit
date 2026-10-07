@@ -92,6 +92,7 @@ func putEbmlSize(b []byte, value uint64, width int) bool {
 // fail the strict parse for the same reason the whole file did.
 func completeMatroskaPrefix(data []byte) (prefix []byte, cut bool) {
 	segStart, segSizeAt, segSizeWidth, segUnknown := -1, -1, 0, false
+	var segSize uint64
 	for i := 0; i < len(data); {
 		id, idWidth, _, ok := ebmlVint(data, i, true)
 		if !ok {
@@ -103,7 +104,7 @@ func completeMatroskaPrefix(data []byte) (prefix []byte, cut bool) {
 		}
 		header := idWidth + szWidth
 		if id == ebmlIDSegment {
-			segStart, segSizeAt, segSizeWidth, segUnknown = i+header, i+idWidth, szWidth, unknown
+			segStart, segSizeAt, segSizeWidth, segUnknown, segSize = i+header, i+idWidth, szWidth, unknown, size
 			break
 		}
 		if unknown || i+header+int(size) > len(data) {
@@ -118,7 +119,15 @@ func completeMatroskaPrefix(data []byte) (prefix []byte, cut bool) {
 		return nil, false // no Segment at all: nothing this can rescue
 	}
 
-	end := walkSegmentChildren(data, segStart)
+	// Children are looked for inside the Segment and no further. A Segment that
+	// declares less than it contains is malformed, and walking past its end
+	// would both keep bytes that are not its children and make the rewritten
+	// size overflow the width the file used.
+	limit := len(data)
+	if !segUnknown && segStart+int(segSize) < limit {
+		limit = segStart + int(segSize)
+	}
+	end := walkSegmentChildren(data[:limit], segStart)
 	if end == segStart {
 		return nil, false // not one complete child: there is nothing to hand back
 	}
@@ -129,9 +138,10 @@ func completeMatroskaPrefix(data []byte) (prefix []byte, cut bool) {
 	prefix = make([]byte, end)
 	copy(prefix, data[:end])
 	if !segUnknown {
-		if !putEbmlSize(prefix[segSizeAt:], uint64(end-segStart), segSizeWidth) {
-			return nil, false
-		}
+		// Cannot fail: end is capped at the Segment's declared end just above,
+		// so the length written is never longer than the one already encoded in
+		// this width.
+		putEbmlSize(prefix[segSizeAt:], uint64(end-segStart), segSizeWidth)
 	}
 	return prefix, true
 }
