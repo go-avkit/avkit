@@ -33,10 +33,40 @@ const nsScale = uint32(time.Second / time.Nanosecond)
 type RemuxOption func(*remuxSettings)
 
 type remuxSettings struct {
-	mux         []MuxOption
-	drop        map[uint32]bool
-	strictSync  bool
-	conformHVC1 bool
+	mux            []MuxOption
+	drop           map[uint32]bool
+	strictSync     bool
+	conformHVC1    bool
+	allowTruncated bool
+}
+
+// AllowTruncated lets an input that ended before its structure did be written
+// out anyway.
+//
+// Without it these refuse such an input, which is the point of the refusal: the
+// output would be an ordinary file with nothing in it saying that media is
+// missing from the end, and no later reader could tell. With it the caller has
+// said so, and the output is what was actually there.
+func AllowTruncated() RemuxOption {
+	return func(s *remuxSettings) { s.allowTruncated = true }
+}
+
+// refuseTruncated stops a partial input from becoming an output that claims to
+// be whole. It names which input, because the whole difficulty of a truncated
+// file is that nothing downstream can see it.
+func refuseTruncated(srcs []*Reader, set *remuxSettings) error {
+	if set.allowTruncated {
+		return nil
+	}
+	for i, src := range srcs {
+		if src != nil && src.Truncated() {
+			if len(srcs) > 1 {
+				return fmt.Errorf("input %d: %w (pass AllowTruncated to write it anyway)", i+1, ErrTruncated)
+			}
+			return fmt.Errorf("%w (pass AllowTruncated to write it anyway)", ErrTruncated)
+		}
+	}
+	return nil
 }
 
 // MuxOptions passes options on to the Muxer writing the output.
@@ -158,6 +188,9 @@ func Concat(w io.Writer, srcs []*Reader, opts ...RemuxOption) error {
 		return fmt.Errorf("%w: no input", ErrNoTracks)
 	}
 	set := settingsFor(opts)
+	if err := refuseTruncated(srcs, set); err != nil {
+		return err
+	}
 	inputs := make([][]sourceTrack, 0, len(srcs))
 	for i, src := range srcs {
 		tracks, err := readSource(src, set)

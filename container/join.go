@@ -29,6 +29,9 @@ func Join(w io.Writer, srcs []*Reader, opts ...RemuxOption) error {
 	if len(srcs) == 0 {
 		return fmt.Errorf("%w: no input", ErrNoTracks)
 	}
+	if err := refuseTruncated(srcs, settingsFor(opts)); err != nil {
+		return err
+	}
 	m := NewMuxer(w, settingsFor(opts).mux...)
 	if err := joinInto(m, srcs, opts...); err != nil {
 		return err
@@ -41,6 +44,9 @@ func Join(w io.Writer, srcs []*Reader, opts ...RemuxOption) error {
 func JoinProgressive(w io.Writer, srcs []*Reader, opts ...RemuxOption) error {
 	if len(srcs) == 0 {
 		return fmt.Errorf("%w: no input", ErrNoTracks)
+	}
+	if err := refuseTruncated(srcs, settingsFor(opts)); err != nil {
+		return err
 	}
 	m := NewProgressiveMuxer(w)
 	if err := joinInto(m, srcs, opts...); err != nil {

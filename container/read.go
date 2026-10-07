@@ -54,6 +54,9 @@ type Reader struct {
 	// addressed through tables: those of a transport stream, and those of
 	// several streams read as one.
 	ts map[uint32]*tsTrack
+	// truncated is set when the file ended before its structure did and only
+	// the complete prefix was kept. See ErrTruncated.
+	truncated bool
 	// mkv holds the tracks of a Matroska or WebM file, read in one pass as
 	// well, but each carrying what went wrong with it: a file may hold a
 	// track this package cannot describe next to tracks it can.
@@ -244,6 +247,14 @@ func movieBox(f *mp4.File) *mp4.MoovBox {
 
 // File returns the container's metadata, as Demux reports it.
 func (r *Reader) File() *File { return r.file }
+
+// Truncated says the file ended before its structure did and that this reader
+// holds only what came before the cut.
+//
+// It exists so the fact SURVIVES the reader: Remux and the operations beside it
+// take a *Reader, and without this they would copy a partial file into one that
+// claims to be whole. See ErrTruncated.
+func (r *Reader) Truncated() bool { return r.truncated }
 
 // TrackIDs lists the tracks, in file order.
 func (r *Reader) TrackIDs() []uint32 {
