@@ -128,12 +128,9 @@ func NewFileReader(src FileSource, size int64) (*Reader, error) {
 	if _, err := src.Seek(0, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("container: rewind the file: %w", err)
 	}
-	parsed, err := mp4.DecodeFile(src, mp4.WithDecodeMode(mp4.DecModeLazyMdat))
+	parsed, err := decodeMP4(src, src, size, mp4.WithDecodeMode(mp4.DecModeLazyMdat))
 	if err != nil {
-		parsed, err = usableDespite(parsed, err)
-		if err != nil {
-			return nil, fmt.Errorf("container: decode mp4: %w", err)
-		}
+		return nil, fmt.Errorf("container: decode mp4: %w", err)
 	}
 	file, err := mp4File(parsed)
 	if err != nil {
@@ -161,16 +158,14 @@ func NewReader(data []byte) (*Reader, error) {
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedFormat, describeFormat(format))
 	}
-	parsed, err := mp4.DecodeFile(bytes.NewReader(data))
+	// The same decode as NewFileReader's, because the two entry points must not
+	// disagree about whether a file can be read: OpenFile falls back from one to
+	// the other, and a file accepted on disk and refused in memory would be a
+	// defect of its own.
+	held := bytes.NewReader(data)
+	parsed, err := decodeMP4(held, held, int64(len(data)))
 	if err != nil {
-		// The same tolerance as NewFileReader's, because the two entry points
-		// must not disagree about whether a file can be read: OpenFile falls
-		// back from one to the other, and a file accepted on disk and refused in
-		// memory would be a defect of its own.
-		parsed, err = usableDespite(parsed, err)
-		if err != nil {
-			return nil, fmt.Errorf("container: decode mp4: %w", err)
-		}
+		return nil, fmt.Errorf("container: decode mp4: %w", err)
 	}
 	file, err := mp4File(parsed)
 	if err != nil {

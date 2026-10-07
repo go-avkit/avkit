@@ -52,6 +52,10 @@ func TestATailAfterTheMovieBoxDoesNotLoseTheFile(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: %v", name, err)
 			}
+			// Demux decodes the same way, so it must agree.
+			if _, err := Demux(data); err != nil {
+				t.Errorf("Demux: %v", err)
+			}
 			tracks := r.File().VideoTracks()
 			if len(tracks) != 1 {
 				t.Fatalf("%d video tracks", len(tracks))
