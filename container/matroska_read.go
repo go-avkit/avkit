@@ -119,8 +119,23 @@ type mkvFrame struct {
 // one pass, the way a transport stream is.
 func newMatroskaReader(data []byte) (*Reader, error) {
 	doc, groups, err := unmarshalMatroska(data)
+	truncated := false
 	if err != nil {
-		return nil, err
+		// A file that ends mid-cluster is the normal state of a download in
+		// progress, and refusing it whole costs essentially all of it. Cut at
+		// the last complete element and parse THAT strictly: a success then
+		// says the kept bytes really were well formed, which tolerating
+		// ebml-go's read errors could never say.
+		prefix, cut := completeMatroskaPrefix(data)
+		if !cut {
+			return nil, err
+		}
+		var retry error
+		doc, groups, retry = unmarshalMatroska(prefix)
+		if retry != nil {
+			return nil, err // the original error is the honest one to report
+		}
+		data, truncated = prefix, true
 	}
 	scale := doc.Segment.Info.TimecodeScale
 	if scale == 0 {
@@ -139,7 +154,7 @@ func newMatroskaReader(data []byte) (*Reader, error) {
 		number := ref.block.TrackNumber
 		blocks[number] = append(blocks[number], mkvBlockOf(ref))
 	}
-	r := &Reader{data: data, mkv: map[uint32]*mkvReadTrack{}}
+	r := &Reader{data: data, mkv: map[uint32]*mkvReadTrack{}, truncated: truncated}
 	file := &File{Format: matroskaFormat(doc.Header.DocType), Timescale: timescale}
 	segDuration := int64(doc.Segment.Info.Duration)
 	for _, te := range doc.Segment.Tracks.TrackEntry {
@@ -151,6 +166,12 @@ func newMatroskaReader(data []byte) (*Reader, error) {
 		r.mkv[t.track.ID] = t
 	}
 	r.file = file
+	if truncated {
+		// The reader is returned WITH the error, not instead of it: a caller
+		// writing the ordinary `if err != nil` keeps the old refusal, and only
+		// one that asks for the bytes gets them.
+		return r, fmt.Errorf("%w", ErrTruncated)
+	}
 	return r, nil
 }
 

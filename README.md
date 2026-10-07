@@ -163,6 +163,56 @@ Measured over 2375 MP4 files: 17 are refused. 16 of them `ffprobe` refuses too
 Edit lists (`elst`) are not applied: samples come back in decode order, once
 each, as the sample tables list them.
 
+## A Matroska file that ends before its structure does
+
+A download in progress, or one that stopped, is a Matroska file cut mid-cluster.
+It used to be refused whole — `unexpected EOF`, and nothing of it readable —
+which costs essentially the entire file: `ffmpeg` says `File ended prematurely`
+and still remuxes 16 645 456 bytes of a 16 777 216-byte one.
+
+`NewReader` now reads what came before the cut and returns it **together with**
+`ErrTruncated`:
+
+```go
+r, err := container.NewReader(data)
+if err != nil && !errors.Is(err, container.ErrTruncated) {
+    return err          // anything else is still fatal
+}
+// r is usable; r.Truncated() is true
+```
+
+A caller that writes the ordinary `if err != nil { return err }` keeps the old
+refusal **exactly**, which is why the sentinel comes with the reader rather than
+instead of it: the safe behaviour stays the default and the useful one is one
+line away.
+
+Measured on a 120-sample file of many clusters, cut at a byte boundary:
+
+| cut at | samples kept |
+|---|---|
+| 90% | 120 / 120 |
+| 75% | 105 / 120 |
+| 50% | 69 / 120 |
+| 25% | 33 / 120 |
+
+**The strictness is not traded away.** ebml-go has an ignore-unknown mode that
+swallows read and size errors and returns whatever it had — a truncated file
+would read as a *short* one, with a duration and a sample count that are simply
+wrong and nothing downstream able to tell. That mode stays off. Instead the file
+is cut at the last complete element boundary and **that prefix is parsed
+strictly**, so a parse that succeeds still says the bytes really were well
+formed. A cluster written with an unknown size — the normal shape of anything
+recorded live — is walked from the inside, which is what makes the loss
+proportionate to the cut rather than total.
+
+`ErrTruncated` does not claim the file was cut cleanly: a file damaged in the
+middle stops the walk at the damage and reports the same thing, because from
+here the two are indistinguishable.
+
+`Remux`, `Cut`, `Concat` and `Join` **refuse** a truncated input, since the
+output would be an ordinary file with nothing in it saying media is missing from
+the end. `AllowTruncated()` says to write it anyway.
+
 ## Guarantees
 
 - **Pure Go, CGO=0.** No `libav`, no `exec` to `ffmpeg`.
