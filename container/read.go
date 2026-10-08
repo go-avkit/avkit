@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/Eyevinn/mp4ff/aac"
 	"github.com/Eyevinn/mp4ff/mp4"
@@ -183,6 +184,29 @@ func NewReader(data []byte) (*Reader, error) {
 	return r, nil
 }
 
+// mp4StartDelay reads a track's encoder priming out of its edit list.
+//
+// An edit list can express a great deal, and only one shape is read here: a
+// single entry starting at a positive media time, which is how priming is
+// written and what Matroska's CodecDelay means. Anything else -- several
+// entries, an empty edit, a rate other than 1 -- describes a presentation this
+// package does not reproduce, and reading a delay out of it would state
+// something the output does not do.
+func mp4StartDelay(trak *mp4.TrakBox, timescale uint32) time.Duration {
+	if trak == nil || trak.Edts == nil || trak.Edts.Elst == nil || timescale == 0 {
+		return 0
+	}
+	entries := trak.Edts.Elst[0].Entries
+	if len(entries) != 1 {
+		return 0
+	}
+	e := entries[0]
+	if e.MediaTime <= 0 || e.MediaRateInteger != 1 || e.MediaRateFraction != 0 {
+		return 0
+	}
+	return time.Duration(e.MediaTime) * time.Second / time.Duration(timescale)
+}
+
 // describeFormat names a format for an error message.
 func describeFormat(format Format) string {
 	switch format {
@@ -304,6 +328,7 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 		Channels:   track.Channels,
 		SampleRate: track.SampleRate,
 		Language:   track.Language,
+		StartDelay: mp4StartDelay(trak, track.Timescale),
 	}
 	stsd := trak.Mdia.Minf.Stbl.Stsd
 	switch {

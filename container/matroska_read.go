@@ -10,6 +10,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Eyevinn/mp4ff/avc"
 	"github.com/Eyevinn/mp4ff/hevc"
@@ -499,10 +500,12 @@ func mkvTrackConfig(te mkvTrackEntry, timescale uint32) (TrackConfig, error) {
 		return TrackConfig{}, fmt.Errorf("%w: matroska codec id %q", ErrUnsupportedCodec, te.CodecID)
 	}
 	cfg := TrackConfig{
-		Kind:      kindFromTrackType(te.TrackType),
-		Codec:     codec,
-		Timescale: timescale,
-		Language:  te.Language,
+		Kind:  kindFromTrackType(te.TrackType),
+		Codec: codec,
+		// CodecDelay is nanoseconds, which is what StartDelay counts in too.
+		StartDelay: time.Duration(te.CodecDelay),
+		Timescale:  timescale,
+		Language:   te.Language,
 	}
 	if te.Video != nil {
 		cfg.Width, cfg.Height = int(te.Video.PixelWidth), int(te.Video.PixelHeight)
