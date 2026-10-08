@@ -163,6 +163,26 @@ Measured over 2375 MP4 files: 17 are refused. 16 of them `ffprobe` refuses too
 Edit lists (`elst`) are not applied: samples come back in decode order, once
 each, as the sample tables list them.
 
+## VP9 out of Matroska
+
+Matroska states no VP9 profile and no level: both live in the frame header, and
+there is no `CodecPrivate` to carry them. `vpcC` has no value for "unknown" —
+zero is a real profile but not a real level — so remuxing such a track used to
+fail with `vp09 needs a level; 0 is not one`.
+
+`Remux`, `Cut`, `Concat` and `Join` now read the configuration **out of the
+frames** when the container could not state it, through the same
+`ConfigFromSamples` a caller can use directly.
+
+The reader is unchanged and still reports only what the container says. That is
+deliberate: a level could also be derived from the container's width, height and
+frame rate, and it would be a worse description — the profile would stay at zero
+and the colour at "unspecified", where the frame header states both. The
+container is not made to claim knowledge it does not have.
+
+A VP9 track whose samples cannot describe it either is still refused, naming the
+track, rather than written with a `vpcC` of zeroes.
+
 ## A Matroska file that ends before its structure does
 
 A download in progress, or one that stopped, is a Matroska file cut mid-cluster.
