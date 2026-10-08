@@ -274,7 +274,30 @@ func readSource(src *Reader, set *remuxSettings) ([]sourceTrack, error) {
 // is timed and how long it runs, and a frame size that disagreed with the
 // container's would be a different question from this one.
 func describeFromSamples(cfg TrackConfig, samples []Sample) (TrackConfig, error) {
-	if cfg.Codec != "vp09" || cfg.VPx == nil || cfg.VPx.Level != 0 || len(samples) == 0 {
+	if len(samples) == 0 {
+		return cfg, nil
+	}
+	// AC-3 and Enhanced AC-3 state their configuration inside every frame, and
+	// Matroska usually carries no CodecPrivate for them at all, so a track read
+	// from one arrives with nothing the MP4 sample entry can be built from.
+	if (cfg.Codec == "ac-3" || cfg.Codec == "ec-3") && len(cfg.CodecConfig) == 0 {
+		got, err := ac3TrackConfig(cfg.Codec, samples)
+		if err != nil {
+			return cfg, fmt.Errorf("%w: %s track states no configuration and its frames do not either: %v",
+				ErrTrackConfig, cfg.Codec, err)
+		}
+		out := cfg
+		out.CodecConfig = got.CodecConfig
+		// The container may have stated these; the frames are the authority.
+		if got.Channels > 0 {
+			out.Channels = got.Channels
+		}
+		if got.SampleRate > 0 {
+			out.SampleRate = got.SampleRate
+		}
+		return out, nil
+	}
+	if cfg.Codec != "vp09" || cfg.VPx == nil || cfg.VPx.Level != 0 {
 		return cfg, nil
 	}
 	derived, err := ConfigFromSamples(cfg.Codec, samples, SampleTimescale(cfg.Timescale))

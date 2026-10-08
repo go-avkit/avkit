@@ -194,6 +194,32 @@ time at rate 1, which is what priming looks like. Several entries, an empty edit
 or another rate describe a presentation this package does not reproduce, and
 reading a delay out of one would state something the output does not do.
 
+## AC-3 and Enhanced AC-3 out of Matroska
+
+Matroska usually carries **no `CodecPrivate` for AC-3 or E-AC-3** — those codecs
+state their configuration inside every frame instead. So a track read from one
+arrived with nothing an MP4 sample entry could be built from, and the muxer
+refused it: `a dec3 record is at least 5 bytes, not 0`.
+
+The sync frame is now read, and the `dac3` or `dec3` record built from what it
+says: sample rate code, bit stream identification and mode, channel mode, the
+low-frequency channel, and the rate. `Remux` and the operations beside it fill
+it in through the same `describeFromSamples` that serves VP9.
+
+⛔ Which syntax follows the sync word is decided by a field **29 bits past it**:
+a bit stream identification above ten is Enhanced AC-3, whose header shares
+nothing with AC-3's beyond those first sixteen bits. It is read ahead without
+consuming, as the format requires.
+
+⛔ The frame-length table is **not a formula**. At 48 kHz and 32 kHz the length
+is proportional to the rate; at 44.1 kHz it is not, and two codes of the same
+rate differ by one word because a frame there cannot hold a whole number of
+samples. It is transcribed, not computed.
+
+Only what the two records need is read. This is not a decoder, and a dependent
+substream — which describes part of another stream rather than a track — is
+passed over in favour of the independent one that states the track.
+
 ## VP9 out of Matroska
 
 Matroska states no VP9 profile and no level: both live in the frame header, and
