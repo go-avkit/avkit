@@ -62,6 +62,10 @@ type mkvTrackEntry struct {
 	// nanoseconds — not in timestamp ticks, which is what every other
 	// duration of a Matroska file is counted in.
 	DefaultDuration uint64 `ebml:"DefaultDuration,omitempty"`
+	// CodecDelay is the encoder priming at the head of the track, in
+	// nanoseconds: media the decoder consumes and does not present. An MP4
+	// says the same thing with an edit list.
+	CodecDelay uint64 `ebml:"CodecDelay,omitempty"`
 }
 
 type mkvVideo struct {

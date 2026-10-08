@@ -103,6 +103,23 @@ type TrackConfig struct {
 	// this record, and unlike AVC or HEVC the bitstream keeps it out of the
 	// sample data, so a caller remuxing VP9 has to state it.
 	VPx *VPxConfig
+	// StartDelay is media at the head of the track that is decoded but not
+	// presented: an encoder's priming, which an AAC encoder emits as one
+	// frame of about 21 ms at 48 kHz.
+	//
+	// Each container states it in its own way -- Matroska as CodecDelay, an
+	// MP4 as an edit list -- and a remux that dropped it would hand the
+	// output a frame the input never presented, so the two tracks would part
+	// company by that much. Readers fill it in from whichever form the source
+	// used, and Muxer.AddTrack writes an edit list for it; a caller that knows
+	// better can overwrite it.
+	//
+	// It is not PreSkip. PreSkip is Opus stating its own priming inside its
+	// identification header, in samples at 48 kHz, and it travels with the
+	// codec configuration wherever the track goes. StartDelay is what the
+	// CONTAINER says, for any codec, and it has to be rewritten into the
+	// form the output container uses.
+	StartDelay time.Duration
 }
 
 // VPxConfig is what the vpcC record says about a VP8 or VP9 track. The colour
@@ -181,6 +198,45 @@ type muxTrack struct {
 	buffered  uint64 // duration of pending samples, in timescale units
 }
 
+// writeStartDelay states a track's encoder priming as an edit list.
+//
+// An edit list says which media each stretch of the presentation comes from.
+// One entry whose media_time is the priming means "present from there on", so
+// the primed frames are decoded -- a decoder needs them -- and not shown. That
+// is the MP4 spelling of what Matroska writes as CodecDelay.
+//
+// segment_duration is left at zero, which this file format reads as "to the end
+// of the media". The alternative is the track's duration in the MOVIE
+// timescale, and a muxer writing fragments does not know it when the header
+// goes out: writing a wrong one would cut the track short, where zero cannot.
+func writeStartDelay(trak *mp4.TrakBox, cfg TrackConfig) {
+	if cfg.StartDelay <= 0 {
+		return
+	}
+	// The priming is counted in the track's own timescale, the same one its
+	// sample durations use, and rounded to the NEAREST tick. A timescale too
+	// coarse to hold it exactly is common -- Matroska counts in milliseconds by
+	// default, so a 21.333 ms AAC priming becomes 21 -- and rounding down would
+	// leave a sliver of the priming audible where rounding to nearest does not.
+	media := (int64(cfg.StartDelay)*int64(cfg.Timescale) + int64(time.Second)/2) / int64(time.Second)
+	if media <= 0 {
+		// A delay shorter than half a tick cannot be stated, and a whole tick
+		// would move the track by more than the delay it describes.
+		return
+	}
+	elst := &mp4.ElstBox{Version: 1}
+	elst.Entries = append(elst.Entries, mp4.ElstEntry{
+		SegmentDuration: 0, MediaTime: media, MediaRateInteger: 1,
+	})
+	edts := &mp4.EdtsBox{}
+	// AddChild appends to Children, which is what the encoder writes; Elst is
+	// filled only when a file is DECODED. Setting both keeps the tree in memory
+	// saying the same thing as the bytes it will become.
+	edts.AddChild(elst)
+	edts.Elst = append(edts.Elst, elst)
+	trak.AddChild(edts)
+}
+
 // NewMuxer returns a Muxer writing to w.
 func NewMuxer(w io.Writer, opts ...MuxOption) *Muxer {
 	settings := muxSettings{fragmentDuration: DefaultFragmentDuration, brand: DefaultBrand}
@@ -215,6 +271,7 @@ func (m *Muxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	if err := describe(trak, cfg); err != nil {
 		return 0, err
 	}
+	writeStartDelay(trak, cfg)
 	t := &muxTrack{id: trak.Tkhd.TrackID, timescale: cfg.Timescale}
 	m.tracks = append(m.tracks, t)
 	m.byID[t.id] = t

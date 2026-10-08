@@ -163,6 +163,37 @@ Measured over 2375 MP4 files: 17 are refused. 16 of them `ffprobe` refuses too
 Edit lists (`elst`) are not applied: samples come back in decode order, once
 each, as the sample tables list them.
 
+## Encoder priming survives a remux
+
+An AAC encoder emits a frame before the media proper — about 21 ms at 48 kHz —
+which a decoder consumes and does not present. Matroska states it as
+`CodecDelay`, an MP4 as an edit list, and a remux that dropped it handed the
+output a frame the input never presented: audio and video parted company by that
+much, and the output was lossless for video only.
+
+`TrackConfig.StartDelay` now carries it. Readers fill it in from whichever form
+the source used, `Muxer.AddTrack` writes an edit list for it, and a caller who
+knows better can overwrite it. Nothing has to be asked for.
+
+It is not `PreSkip`. `PreSkip` is Opus stating its own priming inside its
+identification header, and it travels with the codec configuration wherever the
+track goes. `StartDelay` is what the **container** says, for any codec, and it
+has to be rewritten into the form the output container uses.
+
+Both directions are covered, since a fix for only one of them would be half a
+fix: a Matroska `CodecDelay` becomes an `elst` on the way out, and an MP4's
+`elst` is read back on the way in.
+
+**The precision is the output track's timescale.** Matroska counts in
+milliseconds by default and that timescale is carried over, so a 21.333 ms
+priming is stated as 21 — rounded to the nearest tick, not down. That is a third
+of a millisecond lost where a whole 21.333 ms frame was gained before.
+
+Only one shape of edit list is read: a single entry starting at a positive media
+time at rate 1, which is what priming looks like. Several entries, an empty edit
+or another rate describe a presentation this package does not reproduce, and
+reading a delay out of one would state something the output does not do.
+
 ## VP9 out of Matroska
 
 Matroska states no VP9 profile and no level: both live in the frame header, and
