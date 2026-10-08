@@ -239,6 +239,9 @@ func readSource(src *Reader, set *remuxSettings) ([]sourceTrack, error) {
 		if err != nil {
 			return nil, err
 		}
+		if cfg, err = describeFromSamples(cfg, samples); err != nil {
+			return nil, err
+		}
 		t := sourceTrack{id: id, cfg: cfg, samples: samples}
 		if set.conformHVC1 {
 			if t, err = conformTrack(t); err != nil {
@@ -250,6 +253,41 @@ func readSource(src *Reader, set *remuxSettings) ([]sourceTrack, error) {
 	if len(out) == 0 {
 		return nil, fmt.Errorf("%w: every track was dropped", ErrNoTracks)
 	}
+	return out, nil
+}
+
+// describeFromSamples fills in what the container could not state.
+//
+// Matroska carries no VP9 profile and no level -- both live in the frame
+// header -- so a VP9 track read from it arrives with a vpcC the muxer must
+// refuse: zero is a real profile but not a real level, and writing it would put
+// a value in the box that no decoder can interpret.
+//
+// The answer is taken from the BITSTREAM rather than guessed from the
+// container. Deriving a level from the container's width, height and frame rate
+// would be possible, and it would be worse: it would leave the profile at zero
+// and the colour at "unspecified", describing the track less well than the
+// frames describe themselves. ConfigFromSamples reads the uncompressed header,
+// which states all of it.
+//
+// Only the vpcC record is taken. The container is still what says how the track
+// is timed and how long it runs, and a frame size that disagreed with the
+// container's would be a different question from this one.
+func describeFromSamples(cfg TrackConfig, samples []Sample) (TrackConfig, error) {
+	if cfg.Codec != "vp09" || cfg.VPx == nil || cfg.VPx.Level != 0 || len(samples) == 0 {
+		return cfg, nil
+	}
+	derived, err := ConfigFromSamples(cfg.Codec, samples, SampleTimescale(cfg.Timescale))
+	if err != nil {
+		return cfg, fmt.Errorf("%w: %s track %s states no level and its samples do not either: %v",
+			ErrTrackConfig, cfg.Codec, cfg.Kind, err)
+	}
+	// derived.VPx is never nil here: the guard above admits only "vp09", and
+	// ConfigFromSamples sends that to vp9StreamConfig, which either fails or
+	// returns a StreamConfig whose VPx it has just filled. A check would be a
+	// branch no test could reach.
+	out := cfg
+	out.VPx = derived.VPx
 	return out, nil
 }
 
