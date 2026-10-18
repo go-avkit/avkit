@@ -224,6 +224,8 @@ type webmTrack struct {
 	endTick uint64
 	// webmCodec is what the codec this track carries is allowed in.
 	inWebM bool
+	// aspect is a video track's sample aspect ratio: see webmAspect.
+	aspect webmAspect
 	// fixedFrames says the codec decodes every frame to the same length, as
 	// AAC does (1024 samples, or 960; ISO/IEC 14496-3 §4.5.1.1), and
 	// prevUnits is the duration of the frame before the held one. A last
@@ -380,6 +382,102 @@ type webmTrackEntry struct {
 type webmVideo struct {
 	PixelWidth  uint64 `ebml:"PixelWidth"`
 	PixelHeight uint64 `ebml:"PixelHeight"`
+	// The display size states the shape of a pixel (RFC 9559 §5.1.4.1.28.12
+	// to .14): see webmAspect. Zero is its absence, as a display size cannot be
+	// zero and DisplayUnit's default is 0.
+	DisplayWidth  uint64 `ebml:"DisplayWidth,omitempty"`
+	DisplayHeight uint64 `ebml:"DisplayHeight,omitempty"`
+	DisplayUnit   uint64 `ebml:"DisplayUnit,omitempty"`
+}
+
+// mkvDisplayAspectRatio is the DisplayUnit saying the display size is a display
+// aspect ratio rather than a size in pixels (RFC 9559 Table 10).
+const mkvDisplayAspectRatio = 3
+
+// webmAspect is a video track's sample aspect ratio, in the two forms a
+// Matroska track can state it, worked out when the track is added and written
+// once the document type is known (see trackEntries).
+//
+// It follows ffmpeg's matroskaenc (mkv_write_video_track). A WebM file states
+// the size the frame is shown at in pixels -- DisplayWidth the frame's width
+// scaled by the ratio and rounded to the nearest pixel, as av_rescale rounds
+// it, and DisplayHeight the frame's height -- because that is the form the WebM
+// guidelines give a browser; it is left out when the rounded width is the
+// frame's own. Any other Matroska file states the display aspect ratio itself,
+// DisplayUnit 3, which is exact: here it is reduced exactly, where matroskaenc
+// approximates it within 2^20 (av_reduce), and it is written for every ratio
+// that is not square, where matroskaenc skips it when the rounded pixel width
+// happens to equal the frame's. A ratio nobody knows is DisplayUnit 4,
+// "unknown", in a Matroska file, as matroskaenc writes it, and nothing in a
+// WebM one; without either, the display size defaults to the pixel size and
+// would state square pixels the source never claimed.
+type webmAspect struct {
+	known, square bool
+	// webmWidth is the WebM display width; darW and darH the reduced display
+	// aspect ratio.
+	webmWidth, darW, darH uint64
+}
+
+// webmAspectOf works out a video track's display size, refusing a ratio whose
+// display size Matroska cannot hold: matroskaenc refuses a display width past
+// INT_MAX ("Overflow in display width"), and a display width that rounds to
+// nothing, or a ratio whose products overflow 64 bits, describes no frame
+// either.
+func webmAspectOf(cfg TrackConfig) (webmAspect, error) {
+	h, v := cfg.SARWidth, cfg.SARHeight
+	if h <= 0 || v <= 0 {
+		return webmAspect{}, nil
+	}
+	nh, nl := bits.Mul64(uint64(cfg.Width), uint64(h))
+	dh, dl := bits.Mul64(uint64(cfg.Height), uint64(v))
+	if nh != 0 || dh != 0 {
+		return webmAspect{}, fmt.Errorf("%w: %s aspect ratio %d:%d of a %dx%d frame does not fit a display size",
+			ErrTrackConfig, cfg.Codec, h, v, cfg.Width, cfg.Height)
+	}
+	// Rounded to the nearest, half up: the frame's width is positive, so this
+	// is av_rescale's AV_ROUND_NEAR_INF. Half the divisor cannot carry past 64
+	// bits into a quotient that does not fit, since the sum stays below twice
+	// the product, which fitted.
+	lo, carry := bits.Add64(nl, uint64(v)/2, 0)
+	width, _ := bits.Div64(carry, lo, uint64(v))
+	if width == 0 || width > math.MaxInt32 {
+		return webmAspect{}, fmt.Errorf("%w: %s aspect ratio %d:%d makes the %d-pixel frame %d pixels wide",
+			ErrTrackConfig, cfg.Codec, h, v, cfg.Width, width)
+	}
+	d := gcd(nl, dl)
+	return webmAspect{known: true, square: h == v, webmWidth: width, darW: nl / d, darH: dl / d}, nil
+}
+
+// video is the Video element stating the ratio in the form the document type
+// calls for.
+func (a webmAspect) video(v webmVideo, webm bool) *webmVideo {
+	switch {
+	case !a.known && !webm:
+		v.DisplayUnit = mkvDisplayUnknown
+	case !a.known:
+	case webm:
+		if a.webmWidth != v.PixelWidth {
+			v.DisplayWidth, v.DisplayHeight = a.webmWidth, v.PixelHeight
+		}
+	case !a.square:
+		v.DisplayWidth, v.DisplayHeight, v.DisplayUnit = a.darW, a.darH, mkvDisplayAspectRatio
+	}
+	return &v
+}
+
+// trackEntries are the track entries to write, each video track's stating its
+// aspect ratio in the form the document type calls for, which only the whole
+// set of tracks decides.
+func (m *WebMMuxer) trackEntries() []webmTrackEntry {
+	webm := m.ebmlHeader().DocType == "webm"
+	entries := make([]webmTrackEntry, len(m.entries))
+	for i, e := range m.entries {
+		if e.Video != nil {
+			e.Video = m.tracks[i].aspect.video(*e.Video, webm)
+		}
+		entries[i] = e
+	}
+	return entries
 }
 
 type webmAudio struct {
@@ -485,8 +583,14 @@ func (m *WebMMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
+	var aspect webmAspect
+	if codec.kind == Video {
+		if aspect, err = webmAspectOf(cfg); err != nil {
+			return 0, err
+		}
+	}
 	t := &webmTrack{id: uint32(number), timescale: cfg.Timescale, inWebM: codec.inWebM, edit: edit,
-		fixedFrames: codec.id == "A_AAC"}
+		fixedFrames: codec.id == "A_AAC", aspect: aspect}
 	if codec.kind == Subtitle {
 		t.cues, t.cueForm = &cueAssembler{}, codec.id
 	}

@@ -239,7 +239,7 @@ func mkvAttachmentsOf(md *Metadata, docType string) []mkvAttachments {
 func (m *WebMMuxer) segmentHead(duration float64) webmHeadDoc {
 	return webmHeadDoc{
 		Info:        m.info(duration),
-		Tracks:      webmTracks{TrackEntry: m.entries},
+		Tracks:      webmTracks{TrackEntry: m.trackEntries()},
 		Attachments: mkvAttachmentsOf(m.metadata, m.ebmlHeader().DocType),
 		Tags:        mkvTagsOf(m.metadata),
 	}

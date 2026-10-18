@@ -102,7 +102,10 @@ type TrackConfig struct {
 	// §12.1.4), and state the track header's width as the frame scaled by it,
 	// as ffmpeg's movenc does. That box matters most for VP8 and VP9, whose
 	// bitstreams have no aspect ratio of their own: without it a player is
-	// told nothing. Readers fill it in where the container states it: an MP4's
+	// told nothing. WebMMuxer writes it as the track's display size: the
+	// display aspect ratio in a Matroska file, the width the frame is shown at
+	// in a WebM one, and DisplayUnit 4, "unknown", in a Matroska file when it
+	// is zero. Readers fill it in where the container states it: an MP4's
 	// pasp box, or a Matroska track's DisplayWidth and DisplayHeight, which
 	// default to the pixel size and so state square pixels when absent.
 	SARWidth, SARHeight int

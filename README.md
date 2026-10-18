@@ -684,7 +684,23 @@ under `DisplayUnit` 4; the MP4 reader takes it from `pasp`. Both MP4 muxers writ
 a known ratio as `pasp`, reduced, and scale the track header's width by it, as
 ffmpeg's movenc does; an unknown one writes nothing. A WebM written by ffmpeg
 with `setsar=4/3` remuxes to an MP4 `ffprobe` reads as `427:320`, as ffmpeg's own
-`-c copy` does. The WebM muxer does not write a display size yet.
+`-c copy` does.
+
+The WebM muxer writes the ratio as a display size, the way ffmpeg's matroskaenc
+does (`mkv_write_video_track`), in the form the document type allows. A Matroska
+file states the display aspect ratio itself, `DisplayUnit` 3 (RFC 9559
+§5.1.4.1.28.12 to .14, Table 10), reduced exactly; a WebM file states the width
+the frame is shown at in pixels, rounded to the nearest, and the frame's height;
+square pixels write neither, the default display size stating them; and an
+unknown ratio is `DisplayUnit` 4 in a Matroska file and nothing in a WebM one. An
+H.264 MP4 made by ffmpeg with `setsar=4/3` at 320x240 copied to Matroska read
+back as `1:1` before this and reads `4:3` now, written `16x9` under unit 3 as
+ffmpeg's own copy is; its VP9 counterpart copied to WebM reads `427:320`, written
+`427x240` as ffmpeg's is. Two departures from matroskaenc, both towards stating
+the ratio exactly: it approximates the display aspect ratio within 2^20, and skips
+it whenever the rounded pixel width equals the frame's. A ratio whose display
+width would round to nothing or pass 2^31 - 1 is refused, as matroskaenc refuses
+the second.
 
 ## A Matroska file that ends before its structure does
 
