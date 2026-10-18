@@ -390,6 +390,31 @@ of the copy of a 2 s stereo file is 768 samples long, as the source's is.
 Matroska to MP4 is not covered: the Matroska reader does not read
 `DiscardPadding` back.
 
+## The two rates of an HE-AAC track
+
+HE-AAC codes an AAC core at half the rate it is heard at, and spectral band
+replication (SBR) restores the upper band. Matroska states both rates,
+`SamplingFrequency` and `OutputSamplingFrequency` (RFC 9559 §5.1.4.1.29.1 and
+.29.2), and ffmpeg's matroskaenc fills them from the `AudioSpecificConfig`
+(`get_aac_sample_rates`): the core rate, and the extension rate when the record
+signals SBR. `WebMMuxer` wrote the track's own rate as `SamplingFrequency` and no
+output rate; it now writes what matroskaenc writes. The record is read the way
+ffmpeg's `ff_mpeg4audio_get_config_gb` reads it, which finds both ways the
+`AudioSpecificConfig` syntax (ISO/IEC 14496-3 Table 1.15) signals SBR: the
+hierarchical one, object type 5 or 29, and the backward-compatible sync
+extension `0x2B7` after an AAC-LC configuration, which mp4ff's decoder does not
+read. An AAC-LC track states its own rate and no
+output rate, ffmpeg's own five-byte record (sync extension, SBR absent) included.
+
+The Matroska reader takes `OutputSamplingFrequency` as the track's rate where it
+is stated, as ffmpeg's matroskadec does. It used to take `SamplingFrequency`, so
+ffmpeg's Matroska copy of an HE-AAC MP4 read back as 22 050 Hz audio and an MP4
+written from it stated 22 050 in its sample entry. Measured on Apple's HE-AAC
+(`aac_at -profile:a 4`, record `13 90 56 e5 a0`, 44.1 kHz stereo) and ffmpeg
+9.0.2's `-c copy` of it: avkit's Matroska copy stated 44100 and no output rate
+before, and states 22050 and 44100 now, as ffmpeg's does; both files read back
+at 44 100 Hz.
+
 ## A segment index for DASH on-demand
 
 `NewMuxer(w, container.SegmentIndex())` writes one segment index box (`sidx`,

@@ -109,7 +109,23 @@ type mkvColour struct {
 
 type mkvAudio struct {
 	SamplingFrequency float64 `ebml:"SamplingFrequency"`
-	Channels          uint64  `ebml:"Channels"`
+	// OutputSamplingFrequency is the rate a decoder outputs when spectral band
+	// replication doubles the coded one (RFC 9559 §5.1.4.1.29.2); absent, it
+	// is SamplingFrequency (Table 19).
+	OutputSamplingFrequency float64 `ebml:"OutputSamplingFrequency,omitempty"`
+	Channels                uint64  `ebml:"Channels"`
+}
+
+// rate is the rate the track decodes to: OutputSamplingFrequency where it is
+// stated, SamplingFrequency otherwise. It is the one ffmpeg's matroskadec gives
+// the stream (par->sample_rate = out_samplerate), and the one an MP4 sample entry
+// states: an HE-AAC track written by ffmpeg says 22050 and 44100 here, and the
+// track is 44100 Hz audio.
+func (a *mkvAudio) rate() int {
+	if a.OutputSamplingFrequency > 0 {
+		return int(a.OutputSamplingFrequency)
+	}
+	return int(a.SamplingFrequency)
 }
 
 // mkvLeafLimit caps the leaf elements ebml-go will read from a document of n
@@ -183,7 +199,7 @@ func mkvTrack(te mkvTrackEntry, timescale uint32, duration uint64) Track {
 	}
 	if te.Audio != nil {
 		tr.Channels = int(te.Audio.Channels)
-		tr.SampleRate = int(te.Audio.SamplingFrequency)
+		tr.SampleRate = te.Audio.rate()
 	}
 	return tr
 }

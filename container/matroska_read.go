@@ -558,7 +558,7 @@ func mkvTrackConfig(te mkvTrackEntry, timescale uint32) (TrackConfig, error) {
 		cfg.SARWidth, cfg.SARHeight = mkvAspect(te.Video)
 	}
 	if te.Audio != nil {
-		cfg.Channels, cfg.SampleRate = int(te.Audio.Channels), int(te.Audio.SamplingFrequency)
+		cfg.Channels, cfg.SampleRate = int(te.Audio.Channels), te.Audio.rate()
 	}
 	if codec == codecWebVTT {
 		// The WebM mapping files descriptions and metadata under a track

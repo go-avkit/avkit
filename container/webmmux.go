@@ -482,7 +482,10 @@ func (m *WebMMuxer) trackEntries() []webmTrackEntry {
 
 type webmAudio struct {
 	SamplingFrequency float64 `ebml:"SamplingFrequency"`
-	Channels          uint64  `ebml:"Channels"`
+	// OutputSamplingFrequency is written for an AAC track whose configuration
+	// signals spectral band replication: see webmAACRates.
+	OutputSamplingFrequency float64 `ebml:"OutputSamplingFrequency,omitempty"`
+	Channels                uint64  `ebml:"Channels"`
 }
 
 type webmCluster struct {
@@ -882,7 +885,8 @@ var unlaceVorbisHeaders = func(r io.Reader, size int64) (ebml.Unlacer, error) {
 // the rebuilt record was two. The record is decoded first, only to be checked,
 // and the Audio element's channel count is the one its channelConfiguration
 // states (ISO/IEC 14496-3 Table 1.19), the track's only where it leaves that
-// to the bitstream.
+// to the bitstream. Its rates are the record's too, as matroskaenc states them:
+// see webmAACRates.
 //
 // Without a record, one is built from the fields, and the channel count goes
 // through Table 1.19 rather than into the four-bit field as it stands: 7 is
@@ -916,6 +920,7 @@ func webmAACPrivate(cfg TrackConfig) (webmCodecPrivate, error) {
 	if err := asc.Encode(&buf); err != nil {
 		return webmCodecPrivate{}, fmt.Errorf("%w: A_AAC configuration: %v", ErrTrackConfig, err)
 	}
+	webmAACRates(audio, buf.Bytes())
 	return webmCodecPrivate{private: buf.Bytes(), audio: audio}, nil
 }
 
@@ -956,6 +961,7 @@ func webmAACRecord(cfg TrackConfig) (webmCodecPrivate, error) {
 	if err != nil {
 		return webmCodecPrivate{}, err
 	}
+	webmAACRates(audio, cfg.CodecConfig)
 	return webmCodecPrivate{private: bytes.Clone(cfg.CodecConfig), audio: audio}, nil
 }
 
