@@ -10,7 +10,9 @@
 // write it elsewhere — which is what turns an HLS segment, or a WebM, into an
 // MP4. Muxer writes a fragmented MP4 from tracks that arrive separately —
 // which is what a DASH presentation, keeping its video and audio apart,
-// requires — and never re-encodes: samples are written as handed over.
+// requires — and never re-encodes: samples are written as handed over; with
+// SegmentIndex it puts a sidx in front of the fragments, so that one file
+// serves as a DASH on-demand representation.
 // ProgressiveMuxer writes those same tracks as an ordinary MP4 instead — one
 // mdat and the sample tables that address it — which is what a player with no
 // streaming stack, a hardware decoder, or a tool that seeks by sample table

@@ -149,6 +149,8 @@ type MuxOption func(*muxSettings)
 type muxSettings struct {
 	fragmentDuration time.Duration
 	brand            string
+	index            bool
+	indexMemoryLimit uint64
 }
 
 // FragmentDuration sets how much media a fragment holds. A value of zero or
@@ -176,7 +178,8 @@ func Brand(b string) MuxOption {
 //
 // It is what joining separately delivered streams needs — a DASH presentation
 // keeps video and audio apart — and it never re-encodes: samples are written as
-// handed over.
+// handed over. Asked for a SegmentIndex, it also writes the sidx boxes that make
+// the file a DASH on-demand representation a client can fetch by byte range.
 type Muxer struct {
 	w        io.Writer
 	settings muxSettings
@@ -187,6 +190,9 @@ type Muxer struct {
 	started  bool
 	closed   bool
 	sequence uint32
+	// index is what a Muxer asked for a SegmentIndex keeps until Close;
+	// nil otherwise.
+	index *segmentIndex
 }
 
 // muxTrack is one track's writing state.
@@ -239,11 +245,18 @@ func writeStartDelay(trak *mp4.TrakBox, cfg TrackConfig) {
 
 // NewMuxer returns a Muxer writing to w.
 func NewMuxer(w io.Writer, opts ...MuxOption) *Muxer {
-	settings := muxSettings{fragmentDuration: DefaultFragmentDuration, brand: DefaultBrand}
+	settings := muxSettings{
+		fragmentDuration: DefaultFragmentDuration, brand: DefaultBrand,
+		indexMemoryLimit: DefaultMediaMemoryLimit,
+	}
 	for _, opt := range opts {
 		opt(&settings)
 	}
-	return &Muxer{w: w, settings: settings, byID: map[uint32]*muxTrack{}}
+	m := &Muxer{w: w, settings: settings, byID: map[uint32]*muxTrack{}}
+	if settings.index {
+		m.index = newSegmentIndex(w, settings.indexMemoryLimit)
+	}
+	return m
 }
 
 // AddTrack declares a track and returns its identifier. Every track must be
@@ -677,11 +690,8 @@ func (m *Muxer) WriteSample(trackID uint32, s Sample) error {
 	if !ok {
 		return fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
 	}
-	if !m.started {
-		if err := m.init.Encode(m.w); err != nil {
-			return fmt.Errorf("container: write init segment: %w", err)
-		}
-		m.started = true
+	if err := m.begin(); err != nil {
+		return err
 	}
 	if m.shouldFlush(t, s) {
 		if err := m.Flush(); err != nil {
@@ -741,14 +751,38 @@ func (m *Muxer) Flush() error {
 	if err != nil {
 		return fmt.Errorf("container: create fragment %d: %w", m.sequence, err)
 	}
+	var indexed []trackSpan
+	if m.index != nil {
+		indexed = spans(m.tracks)
+	}
 	for _, t := range m.tracks {
 		for _, s := range t.pending {
 			frag.AddFullSampleToTrack(s, t.id)
 		}
 		t.pending, t.buffered = nil, 0
 	}
-	if err := frag.Encode(m.w); err != nil {
+	if m.index != nil {
+		err = m.index.write(m.w, frag, indexed)
+	} else {
+		err = frag.Encode(m.w)
+	}
+	if err != nil {
 		return fmt.Errorf("container: write fragment %d: %w", m.sequence, err)
+	}
+	return nil
+}
+
+// begin writes the initialisation segment, once, before anything else.
+func (m *Muxer) begin() error {
+	if m.started {
+		return nil
+	}
+	if err := m.init.Encode(m.w); err != nil {
+		return fmt.Errorf("container: write init segment: %w", err)
+	}
+	m.started = true
+	if m.index != nil {
+		return m.index.begin()
 	}
 	return nil
 }
@@ -773,14 +807,16 @@ func (m *Muxer) Close() error {
 		m.closed = true
 		return ErrNoTracks
 	}
-	if !m.started {
-		if err := m.init.Encode(m.w); err != nil {
-			m.closed = true
-			return fmt.Errorf("container: write init segment: %w", err)
-		}
-		m.started = true
+	if err := m.begin(); err != nil {
+		m.closed = true
+		return err
 	}
 	err := m.Flush()
 	m.closed = true
+	if err == nil && m.index != nil {
+		// The index states every fragment, so it is written once the last
+		// one is.
+		err = m.index.finish(m.w, m.tracks)
+	}
 	return err
 }
