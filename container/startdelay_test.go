@@ -18,9 +18,9 @@ import (
 const aacPriming = 1024 * time.Second / 48000
 
 // mkvWithCodecDelay writes a Matroska holding one AAC track that states a
-// priming. Our own WebM muxer writes CodecDelay only for Opus, so the document
-// is built directly, which is also how the other Matroska tests make a fixture
-// they could not otherwise produce.
+// priming. The document is built directly, as the other Matroska tests build a
+// fixture, so the reader is tested against a file this package's muxer did not
+// write.
 func mkvWithCodecDelay(t *testing.T, delay time.Duration) []byte {
 	t.Helper()
 	return marshalDoc(t, &mkvReadDoc{
@@ -154,6 +154,68 @@ func TestAnMP4EditListSurvivesARemux(t *testing.T) {
 	}
 	if want := 21 * time.Millisecond; cfg.StartDelay != want {
 		t.Errorf("after a second remux the delay is %v; want %v", cfg.StartDelay, want)
+	}
+}
+
+// TestWebMMuxerWritesTheStartDelayAsCodecDelay is the MP4-to-Matroska copy that
+// presented the AAC priming frame: the WebM muxer wrote CodecDelay for Opus only,
+// so the edit list of the source was dropped and the track came out 21 ms late
+// against its video. ffmpeg writes the same priming as CodecDelay 21333333 ns.
+func TestWebMMuxerWritesTheStartDelayAsCodecDelay(t *testing.T) {
+	src, err := NewReader(writeOneTrack(t, TrackConfig{
+		Kind: Audio, Codec: "mp4a", Timescale: 48000, SampleRate: 48000, Channels: 2,
+		StartDelay: aacPriming,
+	}, 3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := src.TrackConfig(src.TrackIDs()[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StartDelay != aacPriming {
+		t.Fatalf("precondition: the MP4 states %v of priming, want %v", cfg.StartDelay, aacPriming)
+	}
+	var out bytes.Buffer
+	m := NewWebMMuxer(&out)
+	if _, err := m.AddTrack(cfg); err != nil {
+		t.Fatalf("AddTrack: %v", err)
+	}
+	// A video track's StartDelay is not a codec delay: Matroska has none for
+	// video, and ffmpeg writes one for audio only.
+	sps, pps, w, h := avcParameterSets(t)
+	if _, err := m.AddTrack(TrackConfig{Kind: Video, Codec: "avc1", Timescale: 1000,
+		Width: w, Height: h, SPS: sps, PPS: pps, StartDelay: 80 * time.Millisecond}); err != nil {
+		t.Fatalf("AddTrack(video): %v", err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	var doc mkvReadDoc
+	if err := ebml.Unmarshal(bytes.NewReader(out.Bytes()), &doc); err != nil {
+		t.Fatalf("read the Matroska back: %v", err)
+	}
+	entries := doc.Segment.Tracks.TrackEntry
+	if len(entries) != 2 {
+		t.Fatalf("%d track entries, want 2", len(entries))
+	}
+	if entries[0].CodecDelay != uint64(aacPriming) {
+		t.Errorf("audio CodecDelay = %d ns, want %d", entries[0].CodecDelay, uint64(aacPriming))
+	}
+	if entries[1].CodecDelay != 0 {
+		t.Errorf("video CodecDelay = %d ns, want none", entries[1].CodecDelay)
+	}
+	// And this package's reader turns it back into the same StartDelay.
+	back, err := NewReader(out.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := back.TrackConfig(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.StartDelay != aacPriming {
+		t.Errorf("read back a start delay of %v, want %v", got.StartDelay, aacPriming)
 	}
 }
 

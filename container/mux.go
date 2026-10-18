@@ -111,8 +111,9 @@ type TrackConfig struct {
 	// MP4 as an edit list -- and a remux that dropped it would hand the
 	// output a frame the input never presented, so the two tracks would part
 	// company by that much. Readers fill it in from whichever form the source
-	// used, and Muxer.AddTrack writes an edit list for it; a caller that knows
-	// better can overwrite it.
+	// used, Muxer.AddTrack writes an edit list for it, and WebMMuxer.AddTrack
+	// the CodecDelay of an audio track whose codec states none of its own; a
+	// caller that knows better can overwrite it.
 	//
 	// It is not PreSkip. PreSkip is Opus stating its own priming inside its
 	// identification header, in samples at 48 kHz, and it travels with the
