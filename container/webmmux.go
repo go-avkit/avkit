@@ -112,30 +112,6 @@ func BufferedSegment() WebMOption {
 	return func(s *webmSettings) { s.buffered = true }
 }
 
-// WebMMuxer writes a Matroska file: the EBML header, a segment naming every
-// track, then one cluster after another.
-//
-// It is the counterpart of Muxer — the same tracks, the same samples, the same
-// refusals — for the container a browser plays without a plugin, and like Muxer
-// it never re-encodes: samples are written as handed over.
-//
-// By default nothing is buffered and nothing is seeked: the segment and every
-// cluster are written with their size left unknown, so the file is playable as
-// it is produced and can be streamed straight into an HTTP response. A player
-// reading such a file loses three things, and a caller who can hold the file in
-// memory gets them back with BufferedSegment:
-//
-//   - the duration, which Info cannot state before the last sample is known, so
-//     a player shows no total time and no seek bar until it has read the file;
-//   - the segment's size, which a player has to reach the end of the file to
-//     learn;
-//   - a cue point index, which this muxer never writes in either mode, so
-//     seeking means scanning cluster by cluster.
-//
-// The document type follows the tracks: "webm" while every track holds a codec
-// WebM allows, "matroska" as soon as one does not, because a file declaring
-// itself WebM while carrying AVC or AAC is one a strict player is right to
-// refuse.
 // measureEBML encodes into memory, to learn how long something will be rather
 // than to write it. Nothing there can fail on a full disk or a broken pipe, so
 // it is a seam: the guards below are real — a document the encoder refuses
@@ -156,6 +132,38 @@ func (c *webmCounter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// WebMMuxer writes a Matroska file: the EBML header, a segment naming every
+// track, then one cluster after another, then the Cues that index them.
+//
+// It is the counterpart of Muxer — the same tracks, the same samples, the same
+// refusals — for the container a browser plays without a plugin, and like Muxer
+// it never re-encodes: samples are written as handed over.
+//
+// By default nothing is buffered: the segment and every cluster are written
+// with their size left unknown, so the file is playable as it is produced and
+// can be streamed straight into an HTTP response. A player reading such a file
+// loses two things, and a caller who can hold the file in memory gets them
+// back with BufferedSegment:
+//
+//   - the duration, which Info cannot state before the last sample is known, so
+//     a player shows no total time and no seek bar until it has read the file;
+//   - the segment's size, which a player has to reach the end of the file to
+//     learn.
+//
+// Cues are written in every mode, after the last cluster. A SeekHead saying
+// where they are, and where Info, Tracks and every other Top-Level Element
+// before the first cluster are (RFC 9559 §6.3), opens the segment when the file
+// can carry a complete one: always in the buffered mode, and in the streaming
+// mode when the writer is an [io.Seeker], which is sent the SeekHead with room
+// to spare and seeked back to at Close to add the Cues to it, as ffmpeg does. A
+// streamed segment to a writer that cannot seek has no SeekHead: the Cues are
+// not known when it would have to be written, and §6.3 wants a SeekHead that
+// names every Top-Level Element or none.
+//
+// The document type follows the tracks: "webm" while every track holds a codec
+// WebM allows, "matroska" as soon as one does not, because a file declaring
+// itself WebM while carrying AVC or AAC is one a strict player is right to
+// refuse.
 type WebMMuxer struct {
 	w        *webmCounter
 	settings webmSettings
@@ -177,6 +185,16 @@ type WebMMuxer struct {
 	// segmentStart is how many bytes precede the segment's content, known
 	// once the header is out. The buffered mode learns it at Close instead.
 	segmentStart uint64
+
+	// seeker is the writer of a streamed segment when it can seek, which is
+	// what lets it carry a SeekHead; nil otherwise. origin is where the
+	// writer was when the muxer started on it.
+	seeker io.Seeker
+	origin int64
+	// seeks are the entries of that SeekHead before the Cues are known, and
+	// seekReserve the room it and its Void take at the head of the segment.
+	seeks       []webmSeek
+	seekReserve int
 }
 
 // webmTrack is one track's writing state.
@@ -240,18 +258,12 @@ type webmSizedDoc struct {
 	Segment webmSegment     `ebml:"Segment"`
 }
 
-// webmStreamDoc is the same file with the segment's size left unknown, so the
-// clusters that follow can be written one at a time to a writer that cannot
-// seek. webm.SegmentStream would say the same, but it holds its clusters in a
-// slice, and a slice is what a streaming muxer does not have.
-type webmStreamDoc struct {
-	Header  webm.EBMLHeader `ebml:"EBML"`
-	Segment webmOpenSegment `ebml:"Segment,size=unknown"`
-}
-
 // webmHeaderDoc is the EBML header alone, and webmOpenSegmentDoc the segment
-// that follows it. Written apart, they leave the position of the segment's
-// first byte known, which is what every cue is counted from.
+// that follows it with its size left unknown, so the clusters that follow can
+// be written one at a time to a writer that cannot seek. webm.SegmentStream
+// would say the same, but it holds its clusters in a slice, and a slice is what
+// a streaming muxer does not have. Written apart, the two leave the position of
+// the segment's first byte known, which is what every cue is counted from.
 type webmHeaderDoc struct {
 	Header webm.EBMLHeader `ebml:"EBML"`
 }
@@ -261,10 +273,12 @@ type webmOpenSegmentDoc struct {
 }
 
 type webmSegment struct {
-	Info    webmInfo      `ebml:"Info"`
-	Tracks  webmTracks    `ebml:"Tracks"`
-	Cluster []webmCluster `ebml:"Cluster"`
-	Cues    *webm.Cues    `ebml:"Cues,omitempty"`
+	SeekHead *webmSeekHead `ebml:"SeekHead,omitempty"`
+	Void     []byte        `ebml:"Void,omitempty"`
+	Info     webmInfo      `ebml:"Info"`
+	Tracks   webmTracks    `ebml:"Tracks"`
+	Cluster  []webmCluster `ebml:"Cluster"`
+	Cues     *webm.Cues    `ebml:"Cues,omitempty"`
 }
 
 // webmHeadDoc is what precedes the clusters inside a segment. It is marshalled
@@ -287,8 +301,10 @@ type webmCuesDoc struct {
 }
 
 type webmOpenSegment struct {
-	Info   webmInfo   `ebml:"Info"`
-	Tracks webmTracks `ebml:"Tracks"`
+	SeekHead *webmSeekHead `ebml:"SeekHead,omitempty"`
+	Void     []byte        `ebml:"Void,omitempty"`
+	Info     webmInfo      `ebml:"Info"`
+	Tracks   webmTracks    `ebml:"Tracks"`
 }
 
 type webmInfo struct {
@@ -375,13 +391,18 @@ type webmBlockMore struct {
 }
 
 // NewWebMMuxer returns a WebMMuxer writing to w. It writes to w as samples
-// arrive and never closes it.
+// arrive and never closes it; a w that is also an [io.Seeker] is seeked back
+// once, at Close, to name the Cues in the SeekHead.
 func NewWebMMuxer(w io.Writer, opts ...WebMOption) *WebMMuxer {
 	settings := webmSettings{clusterDuration: DefaultClusterDuration, tick: DefaultTimestampScale}
 	for _, opt := range opts {
 		opt(&settings)
 	}
-	return &WebMMuxer{w: &webmCounter{w: w}, settings: settings, byID: map[uint32]*webmTrack{}}
+	m := &WebMMuxer{w: &webmCounter{w: w}, settings: settings, byID: map[uint32]*webmTrack{}}
+	if s, ok := w.(io.Seeker); ok && !settings.buffered {
+		m.seeker = s
+	}
+	return m
 }
 
 // AddTrack declares a track and returns its identifier, which is the Matroska
@@ -967,16 +988,19 @@ func (m *WebMMuxer) begin() error {
 		// size it states, and how many bytes that takes is the encoder's
 		// choice, not a constant worth guessing: encoding the segment and its
 		// content apart is what says where the content begins.
-		var segment, content bytes.Buffer
-		if err := measureEBML(&webmOpenSegmentDoc{
-			Segment: webmOpenSegment{Info: info, Tracks: tracks},
-		}, &segment); err != nil {
+		content, seeks, err := measureHead(&webmHeadDoc{Info: info, Tracks: tracks})
+		if err != nil {
 			return fmt.Errorf("container: write webm header: %w", err)
 		}
-		if err := measureEBML(&webmHeadDoc{Info: info, Tracks: tracks}, &content); err != nil {
+		open := webmOpenSegment{Info: info, Tracks: tracks}
+		if m.seeker != nil {
+			m.openSeekHead(&open, seeks)
+		}
+		var segment bytes.Buffer
+		if err := measureEBML(&webmOpenSegmentDoc{Segment: open}, &segment); err != nil {
 			return fmt.Errorf("container: write webm header: %w", err)
 		}
-		m.segmentStart = m.w.n + uint64(segment.Len()-content.Len())
+		m.segmentStart = m.w.n + uint64(segment.Len()-content.Len()-m.seekReserve)
 		if _, err := m.w.Write(segment.Bytes()); err != nil {
 			return fmt.Errorf("container: write webm header: %w", err)
 		}
@@ -1092,33 +1116,47 @@ func (m *WebMMuxer) Close() error {
 	if !m.settings.buffered {
 		// Every cluster is already out; a track declared and never fed still
 		// deserves the header that names it.
-		if m.started {
-			return m.writeCues()
+		if !m.started {
+			return m.begin()
 		}
-		doc := webmStreamDoc{
-			Header: m.ebmlHeader(),
-			Segment: webmOpenSegment{
-				Info:   m.info(0),
-				Tracks: webmTracks{TrackEntry: m.entries},
-			},
+		// Where the Cues begin is read before they are written, as a
+		// cluster's is.
+		cuesAt := m.w.n - m.segmentStart
+		if err := m.writeCues(); err != nil {
+			return err
 		}
-		if err := ebml.Marshal(&doc, m.w); err != nil {
-			return fmt.Errorf("container: write webm header: %w", err)
+		if m.seeker != nil && len(m.cues) > 0 {
+			return m.rewriteSeekHead(cuesAt)
 		}
 		return nil
 	}
 	info := m.info(m.duration())
 	tracks := webmTracks{TrackEntry: m.entries}
-	if err := m.placeCues(info, tracks); err != nil {
+	head, seeks, err := measureHead(&webmHeadDoc{Info: info, Tracks: tracks})
+	if err != nil {
+		return fmt.Errorf("container: measure the segment head: %w", err)
+	}
+	// Everything after the SeekHead is placed past the room it takes, which
+	// is fixed by how many entries it can hold and not by what they say.
+	reserve := webmSeekReserve(len(seeks) + 1)
+	placeSeeks(seeks, uint64(reserve))
+	cuesAt, err := m.placeCues(uint64(reserve + head.Len()))
+	if err != nil {
 		return err
 	}
+	if len(m.cues) > 0 {
+		seeks = append(seeks, cuesSeek(cuesAt))
+	}
+	seekHead, void := webmSeekRegion(seeks, reserve)
 	doc := webmSizedDoc{
 		Header: m.ebmlHeader(),
 		Segment: webmSegment{
-			Info:    info,
-			Tracks:  tracks,
-			Cluster: m.clusters,
-			Cues:    m.cueIndex(),
+			SeekHead: seekHead,
+			Void:     void,
+			Info:     info,
+			Tracks:   tracks,
+			Cluster:  m.clusters,
+			Cues:     m.cueIndex(),
 		},
 	}
 	if err := ebml.Marshal(&doc, m.w); err != nil {
@@ -1155,26 +1193,47 @@ func (m *WebMMuxer) cueIndex() *webm.Cues {
 // Close; they are measured instead, by encoding what precedes the clusters and
 // then each cluster in turn. The encoder is deterministic, which is what makes
 // a measured length the length it will have.
-func (m *WebMMuxer) placeCues(info webmInfo, tracks webmTracks) error {
+//
+// The first cluster begins at at, past the SeekHead and the head of the
+// segment; what is returned is where the clusters end, which is where the Cues
+// begin.
+func (m *WebMMuxer) placeCues(at uint64) (uint64, error) {
 	if len(m.cues) == 0 {
-		return nil
+		return at, nil
 	}
-	var head bytes.Buffer
-	if err := measureEBML(&webmHeadDoc{Info: info, Tracks: tracks}, &head); err != nil {
-		return fmt.Errorf("container: measure the segment head: %w", err)
-	}
-	at := uint64(head.Len())
 	for i := range m.clusters {
 		if i < len(m.cues) {
 			m.cues[i].CueTrackPositions[0].CueClusterPosition = at
 		}
 		var one bytes.Buffer
 		if err := measureEBML(&webmClusterDoc{Cluster: m.clusters[i]}, &one); err != nil {
-			return fmt.Errorf("container: measure cluster %d: %w", i, err)
+			return 0, fmt.Errorf("container: measure cluster %d: %w", i, err)
 		}
 		at += uint64(one.Len())
 	}
-	return nil
+	return at, nil
+}
+
+// openSeekHead puts a SeekHead at the head of a streamed segment, naming what
+// precedes the first cluster, with room left for the Cues entry Close will add.
+//
+// A writer that says it can seek and then cannot — os.Stdout on a pipe is an
+// io.Seeker whose Seek fails — gets the segment it would have had without one:
+// a stream is still worth writing, and a SeekHead nothing will ever complete is
+// not.
+func (m *WebMMuxer) openSeekHead(open *webmOpenSegment, seeks []webmSeek) {
+	pos, err := m.seeker.Seek(0, io.SeekCurrent)
+	if err != nil {
+		m.seeker = nil
+		return
+	}
+	// The header just written is what the counter holds, so the writer was
+	// that much earlier when the muxer started.
+	m.origin = pos - int64(m.w.n)
+	m.seekReserve = webmSeekReserve(len(seeks) + 1)
+	placeSeeks(seeks, uint64(m.seekReserve))
+	m.seeks = seeks
+	open.SeekHead, open.Void = webmSeekRegion(seeks, m.seekReserve)
 }
 
 // duration is how long the longest track lasts, in segment ticks.

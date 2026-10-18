@@ -24,7 +24,9 @@
 // expects. TSMuxer writes them as an MPEG-TS, which is what an HLS segment
 // is, so remuxing runs in both directions, and WebMMuxer writes them as a
 // Matroska/WebM file — the container a browser plays with no plugin — leaving
-// the segment's size unstated when the caller cannot seek.
+// the segment's size unstated unless asked to buffer it, indexing its clusters
+// in Cues, and opening the segment with a SeekHead that names the Cues whenever
+// the file is buffered or the writer can seek.
 //
 // Reader and the muxers are counterparts: what one hands back, the others
 // take, so a track can be copied from one file into another without the caller
