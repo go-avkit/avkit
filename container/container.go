@@ -8,7 +8,12 @@
 // stream's metadata (kind, codec, dimensions, timing). Reader goes further on
 // all three, handing back a track's samples and the configuration needed to
 // write it elsewhere — which is what turns an HLS segment, or a WebM, into an
-// MP4. Muxer writes a fragmented MP4 from tracks that arrive separately —
+// MP4. Both also read, and never write, the formats that are a stream rather
+// than a container — ADTS, MPEG audio (MP3/MP2/MP1) and native FLAC — and
+// three legacy ones, Ogg (Opus, Vorbis, FLAC), WAV (linear PCM) and AVI
+// (H.264, MPEG-4 Part 2, Motion JPEG and their audio), walking each whole in
+// one pass. Muxer writes a fragmented MP4 from tracks that arrive
+// separately —
 // which is what a DASH presentation, keeping its video and audio apart,
 // requires — and never re-encodes: samples are written as handed over.
 // ProgressiveMuxer writes those same tracks as an ordinary MP4 instead — one
@@ -22,6 +27,12 @@
 // Reader and the muxers are counterparts: what one hands back, the others
 // take, so a track can be copied from one file into another without the caller
 // reading a single box.
+//
+// A transport stream carries AVC, HEVC and AV1 video and AAC, AC-3, Enhanced
+// AC-3 and MPEG audio (Layers I to III, named "mp1", "mp2" and "mp3") in both
+// directions, each as its own standard defines it; Opus is refused, no
+// published specification carrying it. The README's "MPEG-TS carriage"
+// section cites the texts.
 //
 // Remux, Cut and Concat stand on those two and offer the whole-file operations
 // a caller would otherwise reach for ffmpeg to perform — copy a file, keep the
@@ -84,7 +95,7 @@ func (t Track) DurationSeconds() float64 {
 
 // File is a demuxed container's structure.
 type File struct {
-	Format    string // "mp4" or "matroska" or "webm"
+	Format    string // "mp4", "matroska", "webm", "mpegts", "adts", "mpegaudio", "flac", "ogg", "wav" or "avi"
 	Brand     string // MP4 major brand (e.g. "isom"); "" for Matroska
 	Timescale uint32 // movie/segment timescale (units per second)
 	Duration  uint64 // overall duration in Timescale units
@@ -118,16 +129,26 @@ func (f *File) tracksOfKind(k Kind) []Track {
 // Demux sniffs data's container format and returns its demuxed structure. It
 // returns an error for an unrecognised or malformed container.
 func Demux(data []byte) (*File, error) {
-	switch Sniff(data) {
+	format := Sniff(data)
+	switch format {
 	case FormatMP4:
 		return demuxMP4(data)
 	case FormatMatroska:
 		return demuxMatroska(data)
 	case FormatMPEGTS:
 		return demuxTS(data)
-	default:
-		return nil, fmt.Errorf("container: unrecognised format")
 	}
+	if f, ok := elementaryFor(format); ok {
+		// Read whole, samples and all: these formats have no header that
+		// describes the stream, only the frames do. A stream cut short is
+		// described as far as it goes, and the cut is reported beside it.
+		r, err := newElementaryReader(f, data)
+		if r == nil {
+			return nil, err
+		}
+		return r.file, err
+	}
+	return nil, fmt.Errorf("container: unrecognised format")
 }
 
 // Format identifies a container format.
@@ -154,5 +175,7 @@ func Sniff(data []byte) Format {
 	if sniffTS(data) {
 		return FormatMPEGTS
 	}
-	return FormatUnknown
+	// The elementary streams and legacy containers, each registered by the
+	// file that reads it.
+	return sniffElementary(data)
 }

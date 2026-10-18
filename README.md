@@ -19,7 +19,7 @@ model, and converts the payloads each container spells differently.
 
 | Package     | What it does |
 |-------------|--------------|
-| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of an MP4 or a transport stream, one file or a sequence of segments; mux a fragmented or a progressive MP4, or an MPEG-TS, from tracks delivered separately; copy, cut, join, concatenate and drop tracks with `Remux`, `Cut`, `Join` and `Concat`; and rewrite an HEVC track's sample entry to `hvc1` with `ConformHVC1`. No re-encoding anywhere. |
+| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS — and, demux only, ADTS, native FLAC, Ogg and WAV — into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of an MP4 or a transport stream, one file or a sequence of segments; mux a fragmented or a progressive MP4, or an MPEG-TS, from tracks delivered separately; copy, cut, join, concatenate and drop tracks with `Remux`, `Cut`, `Join` and `Concat`; and rewrite an HEVC track's sample entry to `hvc1` with `ConformHVC1`. No re-encoding anywhere. |
 
 ### Why `ConformHVC1` is there
 
@@ -53,10 +53,63 @@ adding a codec to the dispatch without adding it here fails the suite.
 | MP4 / ISO-BMFF | ✓ | ✓ one file, a sequence of segments, or fragmented | ✓ fragmented **and** progressive |
 | Matroska / WebM | ✓ | ✓ | ✓ |
 | MPEG-TS | ✓ | ✓ | ✓ |
+| ADTS (raw AAC) | ✓ | ✓ | — |
+| MPEG audio (MP3, MP2, MP1) | ✓ | ✓ the Xing/Info/VBRI frame dropped, the LAME encoder delay kept | — |
+| native FLAC | ✓ | ✓ | — |
+| Ogg | ✓ | ✓ Opus, Vorbis and FLAC streams; Theora, Speex, VP8 and Kate named, not read | — |
+| WAV (RIFF, RF64, BW64) | ✓ | ✓ linear PCM; other format tags named, not read | — |
+| AVI (with OpenDML `AVIX` forms) | ✓ | ✓ H.264, MPEG-4 Part 2, Motion JPEG; PCM, MP3/MP2, AC-3, AAC; other FourCCs and tags named, not read | — |
 
-Nothing else: no AVI, no FLV, no Ogg, no WAV, no MXF, and no HLS or DASH
-manifests. A file that is none of the three sniffs as `FormatUnknown` rather
-than being guessed at.
+The last six are read whole, in one pass, by `Demux` and `NewReader` (not by
+`NewFileReader`, which serves MP4 alone), and are never written. Nothing else: no
+FLV, no MXF, and no HLS or DASH manifests.
+A file that is none of these sniffs as `FormatUnknown` rather than being guessed
+at.
+
+#### How the one-pass formats are read
+
+- **ADTS** (ISO/IEC 13818-7 §6.2, 14496-3 §1.A.2): each header is stripped and
+  the first becomes the `AudioSpecificConfig`; a frame of several raw data blocks
+  is refused, because an MP4 sample is one block and only a decoder can find
+  where they part. Channel configuration 0 reads, and its `TrackConfig` says why
+  it cannot be written.
+- **MPEG audio** (ISO/IEC 11172-3 and 13818-3 §2.4.1.3): frames are cut by the
+  header `parseMPAFrame` reads, as the transport stream reader does. The first
+  frame is dropped when it is a Xing, Info or VBRI frame, which describes the
+  stream and holds no audio; the LAME extension's encoder delay, plus the
+  decoder's 529 samples, becomes `TrackConfig.StartDelay`, so a remux keeps the
+  priming out of what is presented. The unofficial "MPEG 2.5" rates and free
+  format are not read.
+- **FLAC** (RFC 9639): `CodecConfig` is the marker and STREAMINFO, Matroska's
+  `A_FLAC` CodecPrivate. Frames are found where a header's CRC-8 holds, the frame
+  before it closes with a CRC-16 of zero, and the frame or sample number follows on.
+- **Ogg** (RFC 3533; RFC 7845; Vorbis I §A; RFC 9639 §10.1): page CRCs are
+  checked, packets reassembled across pages, and each packet timed from its own
+  header — the Opus TOC, the Vorbis mode, the FLAC block size. Vorbis's mode table
+  is found by reading the setup header backwards, as FFmpeg does, and **checked
+  against the granule positions**, which are normative. The last packet is cut to
+  the last granule. Opus pre-skip is `TrackConfig.PreSkip`.
+- **AVI** (Microsoft AVI RIFF reference; OpenDML 1.02): the chunks of every
+  `movi` list are walked in file order, across the `AVIX` forms that continue a
+  file past 1 GiB; neither `idx1` nor the OpenDML indexes are read, because a
+  reader that walks every chunk has nothing to seek for, and keyframes are read
+  from the frames. An empty video chunk lengthens the frame before it. Audio is
+  read from its chunks joined, as its own elementary stream would be — PCM as
+  WAV, MP3 as MP3, AC-3 frame by frame — except raw AAC, a frame a chunk.
+  ⛔ AVI states no presentation time, only an order, so **H.264 with B-slices
+  and MPEG-4 Part 2 with B-VOPs are refused**, by name, rather than handed over
+  to play out of order. `mp4v` is read and described (its decoder-specific
+  information as `CodecConfig`) and no muxer writes it yet.
+- **Streams around frames**: an ID3v2 tag at the head or between frames, an
+  ID3v1 or APEv2 tag at the tail, and resynchronisation over rubbish — but only
+  onto a frame that is followed by another one.
+- **A stream cut short** is read as far as its last whole frame, page or block,
+  and `ErrTruncated` comes back **beside** the reader, as for Matroska.
+
+Every packet of the fixtures in `container/testdata/sine.*` is compared with what
+FFmpeg's own demuxer hands over (`-c copy -f framemd5`, stored beside each). The
+one disagreement is FFmpeg's: it gives this Vorbis file's last packet a duration
+of −192, and the test holds the granule instead.
 
 ### Per-track configuration, from the samples
 
@@ -81,7 +134,18 @@ before it existed still matches.
 | MP4 mux | `avc1`, `hvc1`, `av01`, `vp08`, `vp09`, `mjpg` | `mp4a`, `opus`, `ac-3`, `ec-3` |
 | Matroska demux | AVC, HEVC, AV1, VP8, VP9 | AAC, AC-3, E-AC-3, FLAC, Opus, Vorbis |
 | WebM mux | AV1, VP8, VP9 | AAC, Opus, Vorbis |
-| MPEG-TS | `avc1`, `hvc1`, `av01` in, `avc1`/`hvc1` out | `mp4a` |
+| MPEG-TS | `avc1`, `hvc1`, `av01`, in and out | `mp4a`, `ac-3`, `ec-3`, `mp1`, `mp2`, `mp3`, in and out; **not** `opus` (see [MPEG-TS carriage](#mpeg-ts-carriage)) |
+| ADTS demux | — | `mp4a` |
+| MPEG audio demux | — | `mp1`, `mp2`, `mp3` |
+| FLAC demux | — | `fLaC` |
+| Ogg demux | — | `Opus`, `vorb`, `fLaC` |
+| AVI demux | `avc1`, `mp4v`, `mjpg` | `ipcm`, `fpcm`, `raw `, `mp1`, `mp2`, `mp3`, `ac-3`, `mp4a` |
+| WAV demux | — | `ipcm` (signed integer), `fpcm` (float), `raw ` (unsigned 8-bit) |
+
+PCM is reported under the ISO/IEC 23003-5 entries with its `pcmC` record as
+`CodecConfig`, and refused by the MP4 muxer **by name**: mp4ff does not write
+those entries yet. FLAC and MP3 into MP4 and Matroska are lot L2 of
+[#54](https://github.com/go-avkit/avkit/issues/54).
 
 ### What is deliberately absent
 
@@ -95,9 +159,11 @@ The bitstream syntax itself lives in sibling modules —
 [`h265`](https://github.com/go-avkit/h265), [`vp8`](https://github.com/go-avkit/vp8),
 [`vp9`](https://github.com/go-avkit/vp9),
 [`boolcoder`](https://github.com/go-avkit/boolcoder) and
-[`bitstream`](https://github.com/go-avkit/bitstream). **There is no AAC, Opus,
-FLAC, AC-3 or AV1 bitstream reader** in the organisation: those codecs are
-handled here only as far as a container needs them.
+[`bitstream`](https://github.com/go-avkit/bitstream). **There is no AAC, MPEG
+audio, Opus, FLAC, AC-3 or AV1 bitstream reader** in the organisation: those
+codecs are handled here only as far as a container needs them — an MPEG audio
+or AC-3 frame header, for instance, is read for the length of the frame and
+nothing more.
 
 ## Install
 
@@ -219,6 +285,78 @@ samples. It is transcribed, not computed.
 Only what the two records need is read. This is not a decoder, and a dependent
 substream — which describes part of another stream rather than a track — is
 passed over in favour of the independent one that states the track.
+
+## MPEG-TS carriage
+
+Every codec a transport stream carries has its own way of saying so, and each is
+read and written as the text that defines it says:
+
+| codec | read | written | defined by |
+|---|---|---|---|
+| AC-3 (`ac-3`) | stream type `0x81`; or private data `0x06` with the DVB `AC-3_descriptor` (`0x6A`) or the registration descriptor `"AC-3"` | `0x81`, registration `"AC-3"`, PES `stream_id` `0xBD` | ATSC A/52:2012 Annex A §3, §4.1, §4.2, §5; ETSI EN 300 468 V1.17.1 Annex D.2–D.3 |
+| Enhanced AC-3 (`ec-3`) | `0x87`; or `0x06` with the `enhanced_AC-3_descriptor` (`0x7A`) or registration `"EAC3"` | `0x87`, registration `"AC-3"`, `stream_id` `0xBD` | A/52 Annex G §2, §3.1–§3.3; EN 300 468 Annex D.4–D.5 |
+| MPEG audio (`mp1`, `mp2`, `mp3`) | `0x03` or `0x04` | `0x03` at 32/44.1/48 kHz, `0x04` at 16/22.05/24 kHz, `stream_id` `0xC0` | ISO/IEC 13818-1 Table 2-22 and 2-34; ISO/IEC 11172-3 and 13818-3 §2.4 for the frame header |
+| AV1 (`av01`) | `0x06` with registration `"AV01"`, in the start-code form or as raw OBUs | `0x06`, registration `"AV01"`, then the AV1 video descriptor (`0x80`), `stream_id` `0xBD`, every OBU behind a start code and escaped | AOM *Carriage of AV1 in MPEG-2 TS*, Working Group Draft of 25 March 2026, §2.1, §2.2, §3.1–§3.4 |
+
+**One convention is written for AC-3: ATSC's System A**, which is also what
+FFmpeg's `mpegtsenc.c` writes unless told `-mpegts_flags system_b`. The DVB form
+is read, and a DVB stream copied through `TSMuxer` comes out in the ATSC form.
+
+⛔ For Enhanced AC-3, FFmpeg writes the registration descriptor `"EAC3"` next to
+stream type `0x87`. A/52 Annex G §2 says otherwise: System A extends **the AC-3
+registration descriptor** to Enhanced AC-3 "in combination with the E-AC-3
+stream_type", and keeps `"EAC3"` for systems that have no stream type of their
+own. This package writes what the standard says. Both FFmpeg and this package
+decide by the stream type first, so both forms read in both.
+
+⛔ astits chooses a PES `stream_id` from the stream type when it is left at zero,
+and gets two of them wrong for this purpose: MPEG-1 audio (`0x03`) gets
+`private_stream_1`, and AC-3 (`0x81`) gets `0xFD`, the extended stream
+identifier, which needs a PES extension astits does not write. The identifier is
+therefore always stated.
+
+⛔ **A PES unit need not hold whole frames.** ISO/IEC 13818-1 (2.4.3.7) has a
+unit's PTS refer to the first access unit that begins in it, which only means
+something because a unit may also hold the end of the one before. FFmpeg always
+aligns them, so a reader assuming it would pass every test made from FFmpeg's
+output. A frame that straddles two units is carried over and timed from the unit
+it began in.
+
+An Enhanced AC-3 frame of a dependent substream (or of an independent substream
+other than the first) joins the frame before it: A/52 Annex G §3.3 makes the
+access unit every substream of one period, and an MP4 `ec-3` sample is that
+access unit. A `dac3` or `dec3` record is built from the first frame, as it is
+for Matroska, so a transport stream's AC-3 goes straight into an MP4.
+
+**The frames, not the program map, name the codec.** Stream types `0x03` and
+`0x04` do not say which layer they carry (FFmpeg names both `mp3` until its
+parser has seen a frame, and so does this until it has read one), and an
+E-AC-3 stream under stream type `0x81` is named `ec-3`. MPEG audio in an MP4 is
+`mp4a` with object type indication `0x6B` or `0x69` (MP4RA), which the MP4
+muxers do not write yet: they refuse `mp1`, `mp2` and `mp3` by saying so.
+
+**AV1 follows a draft**, and the draft says it should be cited only as one. It
+is still the only text that defines the carriage, and FFmpeg neither writes nor
+reads AV1 in a transport stream: `ffprobe` probes such a stream and names it
+VVC, from the start codes. Each OBU is written behind a three-byte start code
+with an `emulation_prevention_three_byte` after any two zero bytes followed by 0
+to 3 (§3.2), every OBU stating its size (§3.1 recommends it "for applications
+that need easy conversion to MP4"). ⛔ The draft does not say what happens where
+an OBU ending in zero bytes meets the next start code; such an OBU is closed with
+`0x03`, as H.264 closes an RBSP, and a reader honouring `obu_size` never sees
+it. The AV1 video descriptor copies the `av1C` record's profile, level, tier and
+colour bytes and states `hdr_wcg_idc` 3, "no indication", since an `av1C` does
+not say. Reading drops temporal delimiters, which an MP4 sample SHOULD NOT hold
+(AV1-ISOBMFF §2.4), and gives an OBU that states no size a size field. A unit
+that does not begin with a start code is read as raw OBUs, which is what this
+package read before it wrote the carriage.
+
+**Opus is refused, deliberately.** The only text that maps it onto a transport
+stream is a draft ETSI specification, *TS 1xx xxx V0.1.3 (2015-10)*, published
+by Xiph and never adopted. FFmpeg implements it (`opus_control_header`, the
+`"Opus"` registration descriptor and a DVB extension descriptor); this package
+writes what a published specification defines, and an Opus stream is not read
+either.
 
 ## VP9 out of Matroska
 
