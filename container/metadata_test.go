@@ -438,6 +438,72 @@ func TestSetMetadataRefusesWhatCannotBeWritten(t *testing.T) {
 	}
 }
 
+// onceFailingWriter refuses its first write and takes every one after it.
+type onceFailingWriter struct {
+	failed bool
+	bytes.Buffer
+}
+
+func (w *onceFailingWriter) Write(p []byte) (int, error) {
+	if !w.failed {
+		w.failed = true
+		return 0, errors.New("disk full")
+	}
+	return w.Buffer.Write(p)
+}
+
+// TestAnInitSegmentWrittenAgainHoldsOneUdta: the Muxer's initialisation
+// segment is written again on the next sample when it failed to go out, and
+// the movie box must not gain a second udta on the way -- two would state the
+// metadata twice, and a reader taking the last would read the same thing by
+// luck only.
+func TestAnInitSegmentWrittenAgainHoldsOneUdta(t *testing.T) {
+	var w onceFailingWriter
+	m := NewMuxer(&w)
+	if err := m.SetMetadata(Metadata{Title: "once"}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := m.AddTrack(videoConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sample := Sample{Data: []byte{0, 0, 0, 2, 9, 0}, Duration: 10, Sync: true}
+	if err := m.WriteSample(id, sample); err == nil {
+		t.Fatal("the failed write was not reported")
+	}
+	// Nothing went out, so the metadata may still change, and the file says
+	// what it was changed to.
+	if err := m.SetMetadata(Metadata{Title: "twice"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.WriteSample(id, sample); err != nil {
+		t.Fatalf("the second attempt: %v", err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := mp4.DecodeFile(bytes.NewReader(w.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	udtas := 0
+	for _, c := range parsed.Init.Moov.Children {
+		if _, ok := c.(*mp4.UdtaBox); ok {
+			udtas++
+		}
+	}
+	if udtas != 1 {
+		t.Errorf("the movie box holds %d udta boxes, want 1", udtas)
+	}
+	f, err := Demux(w.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Metadata.Title != "twice" {
+		t.Errorf("title = %q, want the one set last", f.Metadata.Title)
+	}
+}
+
 func TestMetadataOfOtherReaders(t *testing.T) {
 	// A transport stream has no place for metadata.
 	f, err := Demux(tsFixture(t, 3))
