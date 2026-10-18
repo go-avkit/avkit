@@ -316,10 +316,11 @@ func TestTheREADMEListsEveryFormatReadInOnePass(t *testing.T) {
 		t.Fatal("the README has lost its containers or its tracks section")
 	}
 	rows := map[string][]string{
-		"adts": {"| ADTS (raw AAC) |", "| ADTS demux |", "`mp4a`"},
-		"flac": {"| native FLAC |", "| FLAC demux |", "`fLaC`"},
-		"ogg":  {"| Ogg |", "| Ogg demux |", "`Opus`", "`vorb`"},
-		"wav":  {"| WAV (RIFF, RF64, BW64) |", "| WAV demux |", "`ipcm`", "`fpcm`", "`raw `"},
+		"adts":      {"| ADTS (raw AAC) |", "| ADTS demux |", "`mp4a`"},
+		"mpegaudio": {"| MPEG audio (MP3, MP2, MP1) |", "| MPEG audio demux |", "`mp1`", "`mp2`", "`mp3`"},
+		"flac":      {"| native FLAC |", "| FLAC demux |", "`fLaC`"},
+		"ogg":       {"| Ogg |", "| Ogg demux |", "`Opus`", "`vorb`"},
+		"wav":       {"| WAV (RIFF, RF64, BW64) |", "| WAV demux |", "`ipcm`", "`fpcm`", "`raw `"},
 	}
 	for _, f := range elementaryFormats {
 		want, listed := rows[f.name]
