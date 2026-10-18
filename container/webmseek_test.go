@@ -201,7 +201,7 @@ func TestWebMSeekHeadNamesEveryTopLevelElement(t *testing.T) {
 // what ffmpeg's matroskaenc writes at its trailer: the Segment's real size in
 // the eight bytes the unknown size took, every Cluster's likewise, and the
 // Info's Duration where a Void held its place -- the Duration the buffered mode
-// states for the same media (RFC 9559 §5.1.2.4).
+// states for the same media (RFC 9559 §5.1.2.10).
 func checkSeekableSegment(t *testing.T, data, buffered []byte) {
 	t.Helper()
 	size := segmentSizeBytes(t, data)

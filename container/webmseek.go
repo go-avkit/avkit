@@ -138,14 +138,17 @@ func cuesSeek(position uint64) webmSeek {
 //
 //   - the SeekHead, written again over the one given at the start, now naming
 //     the Cues when there are any;
-//   - the Info, written again with its Duration (RFC 9559 §5.1.2.4) where the
+//   - the Info, written again with its Duration (RFC 9559 §5.1.2.10) where the
 //     Void holding its place was, so a player shows the total time and a seek
 //     bar without reading the file to its end;
 //   - the Segment's size (§5.1, and RFC 8794 §6.2 for the unknown size it
 //     replaces), in the same eight bytes the unknown size took, so a player
 //     knows where the segment ends without reaching it. ffmpeg writes it there
 //     the same way (put_ebml_length(pb, size, 8)); eight bytes state any size up
-//     to 2^56 - 2, more than any writer here will reach.
+//     to 2^56 - 2, more than any writer here will reach;
+//   - every Cluster's size (§5.1.3) likewise. Segment and Cluster are the two
+//     elements RFC 9559 allows an unknown size, and ffmpeg writes every cluster
+//     sized, buffering it.
 //
 // Each element is rewritten at the length it had, so nothing after it moves.
 func (m *WebMMuxer) finishSeekable(cuesAt uint64) error {
