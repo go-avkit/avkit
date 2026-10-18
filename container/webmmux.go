@@ -189,6 +189,15 @@ type webmTrack struct {
 	// last written, which is what keeps the rounding from accumulating.
 	nextTime uint64
 	end      uint64
+	// shift is the composition offset of the track's first sample, taken off
+	// every presentation time so that the first frame is shown at zero, and
+	// shifted says it has been taken: a first offset of zero is one too. See
+	// WriteSample.
+	shift   int64
+	shifted bool
+	// edit is what the track's MP4 edit list says, when it has one: see
+	// webmEdit.
+	edit *webmShift
 	// endTick is the same end in file ticks. Every frame's end was converted
 	// when it was written, and refused there if the scale could not state it,
 	// so the segment's duration is the largest of them rather than a
@@ -196,6 +205,14 @@ type webmTrack struct {
 	endTick uint64
 	// webmCodec is what the codec this track carries is allowed in.
 	inWebM bool
+	// fixedFrames says the codec decodes every frame to the same length, as
+	// AAC does (1024 samples, or 960; ISO/IEC 14496-3 §4.5.1.1), and
+	// prevUnits is the duration of the frame before the held one. A last
+	// frame an MP4 states shorter than that is trimmed, and ffmpeg's mov.c
+	// reads it so: it discards what the last packet decodes past its duration
+	// (first_discard_sample, in mov_read_packet).
+	fixedFrames bool
+	prevUnits   int64
 	// held is the last frame handed over and not yet written. One frame per
 	// track is kept back so that the frame which turns out to be the last of
 	// its track can be written as a block group stating how long it lasts:
@@ -215,6 +232,12 @@ type heldFrame struct {
 	tick     uint64 // presentation time, in file ticks
 	duration uint64 // in file ticks
 	sync     bool
+	// start and units are the frame's composition time, before any shift, and
+	// its duration, both in the track's timescale; decoded is how much a
+	// decoder makes of it, which is more than units for the last frame of a
+	// track whose codec decodes every frame to the same length. They are what
+	// the frame's DiscardPadding is worked out from: see webmDiscard.
+	start, units, decoded int64
 }
 
 // The EBML tree this muxer writes. The elements come from ebml-go's own table
@@ -339,8 +362,19 @@ type webmBlockGroupElement struct {
 }
 
 type webmBlockGroup struct {
-	Block         ebml.Block `ebml:"Block"`
-	BlockDuration uint64     `ebml:"BlockDuration"`
+	Block ebml.Block `ebml:"Block"`
+	// BlockDuration is stated for the last frame of a track only, which is
+	// the one whose length nothing else in the file says.
+	BlockDuration uint64 `ebml:"BlockDuration,omitempty"`
+	// DiscardPadding is how much of the frame's end is not presented, in
+	// nanoseconds (RFC 9559 §5.1.3.5.7); left out when all of it is.
+	//
+	// ⛔ Written in eight bytes, always. ebml-go encodes a signed integer in
+	// the fewest bytes its UNSIGNED value fits, so 10 ms -- 0x989680, whose
+	// top bit is set in three bytes -- was written as three bytes and read
+	// back, by ebml-go and by ffmpeg alike, as -6777216: a padding at the
+	// START of the block. Eight bytes have room for the sign.
+	DiscardPadding int64 `ebml:"DiscardPadding,omitempty,size=8"`
 	// ReferenceBlock, when present, says this frame is not a keyframe: a
 	// block group has no flag for it. It is a time relative to this block,
 	// so it is negative, and it is left out entirely for a keyframe.
@@ -372,12 +406,17 @@ func (m *WebMMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	case cfg.Timescale == 0:
 		return 0, fmt.Errorf("%w: %s track has no timescale", ErrTrackConfig, cfg.Codec)
 	}
+	edit, err := webmEdit(cfg)
+	if err != nil {
+		return 0, err
+	}
 	number := uint64(len(m.tracks)) + 1
 	entry, codec, err := describeWebMTrack(cfg, number)
 	if err != nil {
 		return 0, err
 	}
-	t := &webmTrack{id: uint32(number), timescale: cfg.Timescale, inWebM: codec.inWebM}
+	t := &webmTrack{id: uint32(number), timescale: cfg.Timescale, inWebM: codec.inWebM, edit: edit,
+		fixedFrames: codec.id == "A_AAC"}
 	m.entries = append(m.entries, entry)
 	m.tracks = append(m.tracks, t)
 	m.byID[t.id] = t
@@ -682,6 +721,14 @@ func webmAudioFields(cfg TrackConfig, id string) (*webmAudio, error) {
 // CompositionOffset is added to its time rather than written beside it. Samples
 // are written in the order handed over: a caller interleaving several tracks
 // keeps them in step, as it must for the fragmented MP4 muxer too.
+//
+// The first sample's composition offset is then taken off every one of the
+// track's times, so its first frame is shown at zero, as the MP4 muxers' edit
+// list shows it. Without that a track that reorders its frames -- H.264 with
+// B-frames -- started late by its reordering delay while its audio started at
+// zero. A frame shown before that first one, which only a group of pictures
+// begun before the stream can have and which a decoder starting here discards,
+// would fall before the start of the track and is refused.
 func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 	switch {
 	case m.closed:
@@ -697,7 +744,13 @@ func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 	if !ok {
 		return fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
 	}
-	presentation := int64(t.nextTime) + int64(s.CompositionOffset)
+	// Kept aside until the sample is accepted: a refused first sample must not
+	// decide where the next one is shown.
+	shift := t.shift
+	if !t.shifted {
+		shift = t.edit.shift(presentationStart(s.CompositionOffset, 0))
+	}
+	presentation := int64(t.nextTime) + int64(s.CompositionOffset) - shift
 	if presentation < 0 {
 		return fmt.Errorf("%w: a composition offset of %d puts the frame at %d, before the track starts",
 			ErrSample, s.CompositionOffset, presentation)
@@ -732,8 +785,18 @@ func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 	if err := m.flushHeld(t, false); err != nil {
 		return err
 	}
-	t.held = &heldFrame{data: s.Data, tick: tick, duration: duration, sync: s.Sync}
+	// A frame decodes to at least the length of the one before it when the
+	// codec decodes every frame to the same length: a last frame stated
+	// shorter is one whose end the source does not present. See webmDiscard.
+	decoded := int64(s.Duration)
+	if t.fixedFrames {
+		decoded = max(decoded, t.prevUnits)
+	}
+	t.prevUnits = int64(s.Duration)
+	t.held = &heldFrame{data: s.Data, tick: tick, duration: duration, sync: s.Sync,
+		start: int64(t.nextTime) + int64(s.CompositionOffset), units: int64(s.Duration), decoded: decoded}
 	t.nextTime += uint64(s.Duration)
+	t.shift, t.shifted = shift, true
 	if end := uint64(presentation) + uint64(s.Duration); end > t.end {
 		t.end, t.endTick = end, endTick
 	}
@@ -760,11 +823,17 @@ func (m *WebMMuxer) flushHeld(t *webmTrack, last bool) error {
 		Keyframe:    h.sync,
 		Data:        [][]byte{h.data},
 	}
-	if !last {
+	discard := webmDiscard(t, h, last)
+	if !last && discard == 0 {
 		t.lastTick, t.hasLast = h.tick, true
 		return m.writeBlock(block)
 	}
-	group := webmBlockGroup{Block: block, BlockDuration: h.duration}
+	// A simple block has no room for a duration or a padding: the last frame,
+	// and any frame whose end is not presented, are block groups.
+	group := webmBlockGroup{Block: block, DiscardPadding: discard}
+	if last {
+		group.BlockDuration = h.duration
+	}
 	if !h.sync {
 		// A block group states no keyframe flag, so a frame that is not one
 		// names the frame before it. Two frames landing on the same tick
@@ -776,7 +845,30 @@ func (m *WebMMuxer) flushHeld(t *webmTrack, last bool) error {
 		}
 		group.ReferenceBlock = reference
 	}
+	t.lastTick, t.hasLast = h.tick, true
 	return m.writeBlockGroup(group)
+}
+
+// webmDiscard is the DiscardPadding of a frame (RFC 9559 §5.1.3.5.7): how much
+// of what it decodes to is not presented, in nanoseconds, rounded to the
+// nearest as ffmpeg's matroskaenc rescales its skip samples.
+//
+// Two things end a track's presentation before its media does, and both are
+// how ffmpeg's MP4s state the padding its AAC encoder leaves after the last
+// sample: an edit whose segment_duration stops short of the media (webmShift),
+// and a last sample whose stated duration is shorter than what it decodes to
+// (heldFrame.decoded). Matroska has neither -- a block's time and duration say
+// nothing a decoder acts on -- and states the trim as the padding of the frames
+// it cuts into, which is what a demuxer hands the decoder as samples to drop.
+// Without it a copy decodes and plays sound the source never presented.
+func webmDiscard(t *webmTrack, h *heldFrame, last bool) int64 {
+	decoded := h.units
+	if last {
+		decoded = h.decoded
+	}
+	presented := h.units - t.edit.trim(h.start, h.units)
+	padding := decoded - presented
+	return (padding*int64(time.Second) + int64(t.timescale)/2) / int64(t.timescale)
 }
 
 // flushTails writes every held frame, in the order they are meant to be read.
