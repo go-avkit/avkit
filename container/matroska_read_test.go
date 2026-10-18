@@ -940,13 +940,20 @@ func TestMkvCodecNamesEveryMappingAndRefusesTheRest(t *testing.T) {
 		"A_AC3":            "ac-3",
 		"A_AC3/BSID9":      "ac-3",
 		"A_EAC3":           "ec-3",
+		// Every text mapping this reads arrives as WebVTT.
+		"S_TEXT/WEBVTT":         "wvtt",
+		"S_TEXT/UTF8":           "wvtt",
+		"D_WEBVTT/SUBTITLES":    "wvtt",
+		"D_WEBVTT/CAPTIONS":     "wvtt",
+		"D_WEBVTT/DESCRIPTIONS": "wvtt",
+		"D_WEBVTT/METADATA":     "wvtt",
 	} {
 		got, ok := mkvCodec(id)
 		if !ok || got != want {
 			t.Fatalf("mkvCodec(%q) = %q, %v, want %q", id, got, ok, want)
 		}
 	}
-	for _, id := range []string{"S_TEXT/UTF8", "V_MPEG2", ""} {
+	for _, id := range []string{"S_TEXT/ASS", "S_TEXT/SSA", "S_VOBSUB", "S_HDMV/PGS", "V_MPEG2", ""} {
 		if got, ok := mkvCodec(id); ok {
 			t.Fatalf("mkvCodec(%q) = %q, want no mapping", id, got)
 		}
@@ -1046,7 +1053,8 @@ func TestMkvTrackConfigTakesTheAACRateFromItsConfig(t *testing.T) {
 func TestReaderKeepsTheOtherTracksOfAFileItCannotFullyDescribe(t *testing.T) {
 	doc := webmDoc()
 	doc.Segment.Tracks.TrackEntry = append(doc.Segment.Tracks.TrackEntry, mkvTrackEntry{
-		TrackNumber: 3, TrackType: mkvTrackSubtitle, CodecID: "S_TEXT/UTF8",
+		// SSA/ASS: a text mapping this package still does not convert.
+		TrackNumber: 3, TrackType: mkvTrackSubtitle, CodecID: "S_TEXT/ASS",
 	})
 	doc.Segment.Cluster[0].SimpleBlock = append(doc.Segment.Cluster[0].SimpleBlock,
 		simple(3, 0, true, []byte("hello")))
@@ -1067,7 +1075,7 @@ func TestReaderKeepsTheOtherTracksOfAFileItCannotFullyDescribe(t *testing.T) {
 			subtitle = tr
 		}
 	}
-	if subtitle.Codec != "S_TEXT/UTF8" || subtitle.Kind != Subtitle {
+	if subtitle.Codec != "S_TEXT/ASS" || subtitle.Kind != Subtitle {
 		t.Fatalf("subtitle track = %+v", subtitle)
 	}
 	if _, err := r.TrackConfig(3); !errors.Is(err, ErrUnsupportedCodec) {

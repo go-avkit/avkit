@@ -71,9 +71,25 @@ type mkvCluster struct {
 // marks a sync sample: a plain integer could not tell a reference of zero — a
 // frame referring to one at the same timestamp — from no reference at all.
 type mkvBlockGroup struct {
-	BlockDuration  uint64     `ebml:"BlockDuration,omitempty"`
-	ReferenceBlock []int64    `ebml:"ReferenceBlock,omitempty"`
-	Block          ebml.Block `ebml:"Block"`
+	BlockDuration  uint64             `ebml:"BlockDuration,omitempty"`
+	ReferenceBlock []int64            `ebml:"ReferenceBlock,omitempty"`
+	Block          ebml.Block         `ebml:"Block"`
+	BlockAdditions *mkvBlockAdditions `ebml:"BlockAdditions,omitempty"`
+}
+
+// mkvBlockAdditions is data a block carries beside its frame. The only one read
+// is the addition of an S_TEXT/WEBVTT cue, which holds its settings, identifier
+// and comments.
+type mkvBlockAdditions struct {
+	BlockMore []mkvBlockMore `ebml:"BlockMore"`
+}
+
+// mkvBlockMore is one addition. Its BlockAddID defaults to 1 when the element
+// is absent, which is what zero stands for here: the specification gives the
+// element no zero value of its own.
+type mkvBlockMore struct {
+	BlockAddID      uint64 `ebml:"BlockAddID,omitempty"`
+	BlockAdditional []byte `ebml:"BlockAdditional"`
 }
 
 // mkvReadTrack is one Matroska track, read and converted.
@@ -105,6 +121,8 @@ type mkvBlock struct {
 	time   int64
 	stated int64
 	sync   bool
+	// additional is the block's addition of ID 1, nil when it has none.
+	additional []byte
 }
 
 // mkvFrame is one frame of a track, once a laced block has been taken apart.
@@ -187,13 +205,18 @@ func mkvReadTrackOf(te mkvTrackEntry, timescale uint32, scale uint64,
 		// track's own rate better than the Audio element does.
 		t.track.Codec = t.config.Codec
 		t.track.Channels, t.track.SampleRate = t.config.Channels, t.config.SampleRate
+		t.track.Kind = t.config.Kind
 	}
 	// DefaultDuration is stated in nanoseconds; every other duration of a
 	// Matroska file is counted in timestamp ticks, so it is converted here
 	// once. A frame shorter than a tick rounds to nothing and is treated as
 	// unstated rather than as a zero-length frame.
 	perFrame := int64((te.DefaultDuration + scale/2) / scale)
-	t.samples, t.samplesErr = mkvSamples(uint32(te.TrackNumber), blocks, perFrame, segDuration)
+	if codec, _ := mkvCodec(te.CodecID); codec == codecWebVTT {
+		t.samples, t.samplesErr = mkvCueSamples(te, blocks, perFrame, timescale)
+	} else {
+		t.samples, t.samplesErr = mkvSamples(uint32(te.TrackNumber), blocks, perFrame, segDuration)
+	}
 	for _, s := range t.samples {
 		t.track.Duration += uint64(s.Duration)
 	}
@@ -291,6 +314,13 @@ func mkvBlockOf(ref mkvBlockRef) mkvBlock {
 	if ref.group != nil {
 		b.stated = int64(ref.group.BlockDuration)
 		b.sync = len(ref.group.ReferenceBlock) == 0
+		if adds := ref.group.BlockAdditions; adds != nil {
+			for _, more := range adds.BlockMore {
+				if more.BlockAddID == 0 || more.BlockAddID == mkvWebVTTAddition {
+					b.additional = more.BlockAdditional
+				}
+			}
+		}
 	}
 	return b
 }
@@ -467,6 +497,11 @@ var mkvCodecs = map[string]string{
 	"A_OPUS":           "Opus",
 	"A_VORBIS":         "vorb",
 	"A_FLAC":           "fLaC",
+	// Both text mappings become WebVTT: SRT's cue text is a subset of
+	// WebVTT's, and ISO/IEC 14496-30 defines no SRT sample entry to carry it
+	// as it is.
+	mkvWebVTT: codecWebVTT,
+	mkvSRT:    codecWebVTT,
 }
 
 // mkvCodecFamilies maps the CodecIDs Matroska writes with a suffix: A_AAC and
@@ -477,6 +512,9 @@ var mkvCodecFamilies = []struct{ prefix, codec string }{
 	{"A_AAC", "mp4a"},
 	{"A_EAC3", "ec-3"},
 	{"A_AC3", "ac-3"},
+	// SUBTITLES, CAPTIONS, DESCRIPTIONS and METADATA: the same cues, which
+	// an MP4 has one sample entry for.
+	{webmWebVTTAll, codecWebVTT},
 }
 
 // mkvCodec is the sample entry a Matroska CodecID names.
@@ -512,6 +550,12 @@ func mkvTrackConfig(te mkvTrackEntry, timescale uint32) (TrackConfig, error) {
 	}
 	if te.Audio != nil {
 		cfg.Channels, cfg.SampleRate = int(te.Audio.Channels), int(te.Audio.SamplingFrequency)
+	}
+	if codec == codecWebVTT {
+		// The WebM mapping files descriptions and metadata under a track
+		// type of their own, 0x21; read as cues, they are subtitles all the
+		// same, which is the only kind an MP4 text track has.
+		cfg.Kind = Subtitle
 	}
 	if err := mkvCodecPrivate(&cfg, te); err != nil {
 		return TrackConfig{}, err
@@ -564,6 +608,16 @@ func mkvCodecPrivate(cfg *TrackConfig, te mkvTrackEntry) error {
 		}
 	case "vp08", "vp09":
 		cfg.VPx = mkvVPx(te.Video)
+	case codecWebVTT:
+		// Only S_TEXT/WEBVTT states a header, and only in CodecPrivate. The
+		// WebM mapping stores none and SRT has none, so both are the bare
+		// signature.
+		if te.CodecID == mkvWebVTT && len(te.CodecPrivate) > 0 {
+			if _, err := webvttConfig(TrackConfig{CodecConfig: te.CodecPrivate}); err != nil {
+				return fmt.Errorf("%w (%s CodecPrivate)", err, te.CodecID)
+			}
+			cfg.CodecConfig = te.CodecPrivate
+		}
 	default:
 		// AC-3, Enhanced AC-3, Vorbis and FLAC state their configuration in
 		// their own form, which travels as it stands: AC-3 usually states

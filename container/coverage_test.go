@@ -28,8 +28,8 @@ func oneSample() []Sample { return []Sample{{Data: make([]byte, 64)}} }
 // without adding it to the README fails here.
 func TestTheCoverageOfConfigFromSamplesIsWhatTheREADMESays(t *testing.T) {
 	derives := []string{"avc1", "avc3", "hvc1", "hev1", "av01", "vp09", "mp4a"}
-	inContainer := []string{"vp08", "opus", "ac-3", "ec-3"}
-	unknown := []string{"mjpg", "mp3", "flac", "theora", "vorbis", "alac", "", "wmv3"}
+	inContainer := []string{"vp08", "opus", "ac-3", "ec-3", "wvtt", "stpp"}
+	unknown := []string{"mjpg", "mp3", "flac", "theora", "vorbis", "alac", "", "wmv3", "tx3g"}
 
 	for _, codec := range derives {
 		_, err := ConfigFromSamples(codec, oneSample())

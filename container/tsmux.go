@@ -250,6 +250,13 @@ func (t *tsMuxTrack) describe(cfg TrackConfig) (astits.StreamType, []*astits.Des
 		}
 		t.kind, t.form, t.adts = Audio, tsMuxADTS, header
 		return astits.StreamTypeAACAudio, nil, nil
+	case codecWebVTT, codecTTML:
+		// Said apart from an unknown codec because the codec is known and
+		// carried elsewhere: a transport stream's subtitles are DVB bitmaps
+		// or teletext pages, and an HLS player takes WebVTT as segments of
+		// its own, beside the stream rather than inside it.
+		return 0, nil, fmt.Errorf("%w: %q: subtitles are not written into an MPEG-TS by this package",
+			ErrUnsupportedCodec, cfg.Codec)
 	default:
 		return 0, nil, fmt.Errorf("%w: %q", ErrUnsupportedCodec, cfg.Codec)
 	}

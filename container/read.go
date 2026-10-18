@@ -385,6 +385,20 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 		if payload, err := boxPayload(stsd.EC3.Dec3); err == nil {
 			cfg.CodecConfig = payload
 		}
+	case stsd.Wvtt != nil:
+		// The header of the WebVTT file: the signature, and any STYLE or
+		// REGION block. A track without a vttC leaves it empty, which the
+		// muxers write as the bare signature.
+		if stsd.Wvtt.VttC != nil {
+			cfg.CodecConfig = []byte(stsd.Wvtt.VttC.Config)
+		}
+	case stsd.Stpp != nil:
+		// The whole sample entry travels, because it is the whole
+		// description: the TTML namespace, the schema location and the MIME
+		// types of what the documents refer to.
+		if payload, err := boxPayload(stsd.Stpp); err == nil {
+			cfg.CodecConfig = payload
+		}
 	}
 	return cfg, nil
 }

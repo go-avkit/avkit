@@ -29,6 +29,12 @@
 // published specification carrying it. The README's "MPEG-TS carriage"
 // section cites the texts.
 //
+// Subtitles travel the same way, in one form: a WebVTT or SRT track of a
+// Matroska file, and a WebVTT track of an MP4, read as the samples of an
+// ISO/IEC 14496-30 wvtt track, which Muxer, ProgressiveMuxer and WebMMuxer all
+// write. A TTML (stpp) track goes from MP4 to MP4 as it stands. TSMuxer writes
+// no subtitles.
+//
 // Remux, Cut and Concat stand on those two and offer the whole-file operations
 // a caller would otherwise reach for ffmpeg to perform — copy a file, keep the
 // stretch between two time offsets, join files that match, leave a track out —

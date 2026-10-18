@@ -75,7 +75,14 @@ type Sample struct {
 type TrackConfig struct {
 	Kind Kind
 	// Codec is the sample entry to write: "avc1", "avc3", "hvc1", "hev1",
-	// "av01", "vp08", "vp09", "mjpg", "mp4a", "Opus", "ac-3", "ec-3".
+	// "av01", "vp08", "vp09", "mjpg", "mp4a", "Opus", "ac-3", "ec-3", and for
+	// timed text "wvtt" (WebVTT, ISO/IEC 14496-30) and "stpp" (TTML).
+	//
+	// A WebVTT track's samples are what ISO/IEC 14496-30 makes them, whatever
+	// container the track came from: each covers a stretch of time and holds
+	// the cues shown during it as vttc boxes, or one vtte box when none is, so
+	// the samples follow one another without a gap. Reader hands a Matroska
+	// WebVTT or SRT track back in that form, and WebMMuxer takes it.
 	Codec string
 	// Timescale is the unit of every duration of this track, per second.
 	Timescale uint32
@@ -89,7 +96,10 @@ type TrackConfig struct {
 	// raw NAL units without a start code.
 	SPS, PPS, VPS [][]byte
 	// CodecConfig is the codec configuration record of a track whose
-	// parameters are not NAL units, such as the av1C payload of AV1.
+	// parameters are not NAL units, such as the av1C payload of AV1. For
+	// WebVTT it is the header of the WebVTT file, the text of the vttC box
+	// (left empty, the bare "WEBVTT" signature is written); for TTML it is the
+	// content of the stpp sample entry, which is carried as it stands.
 	CodecConfig []byte
 	// AudioObjectType selects the AAC profile; 0 means AAC-LC.
 	AudioObjectType byte
@@ -267,7 +277,7 @@ func (m *Muxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	if lang == "" {
 		lang = "und"
 	}
-	trak := m.init.AddEmptyTrack(cfg.Timescale, handlerFor(cfg.Kind), lang)
+	trak := m.init.AddEmptyTrack(cfg.Timescale, trackHandler(cfg), lang)
 	if err := describe(trak, cfg); err != nil {
 		return 0, err
 	}
@@ -276,6 +286,18 @@ func (m *Muxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	m.tracks = append(m.tracks, t)
 	m.byID[t.id] = t
 	return t.id, nil
+}
+
+// trackHandler is the handler a track is written with. Timed text is the one
+// case where the codec decides rather than the kind: ISO/IEC 14496-30 gives a
+// WebVTT track the 'text' handler and a null media header, and a TTML track the
+// 'subt' handler and a subtitle media header, and a player looking for one does
+// not find the other. mp4ff's handler table knows both by their sample entry.
+func trackHandler(cfg TrackConfig) string {
+	if codec := strings.ToLower(strings.TrimSpace(cfg.Codec)); isTimedText(codec) {
+		return codec
+	}
+	return handlerFor(cfg.Kind)
 }
 
 // handlerFor is the handler name an ISO-BMFF track of this kind carries.
@@ -368,6 +390,14 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 			objType = aac.AAClc
 		}
 		trak.SetAACDescriptor(objType, cfg.SampleRate)
+	case codecWebVTT:
+		if err := describeWebVTT(trak, cfg); err != nil {
+			return err
+		}
+	case codecTTML:
+		if err := describeTTML(trak, cfg); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("%w: %q", ErrUnsupportedCodec, cfg.Codec)
 	}

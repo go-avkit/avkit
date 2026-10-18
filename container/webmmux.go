@@ -207,6 +207,12 @@ type webmTrack struct {
 	// the frame before it on the same track is that reference.
 	lastTick uint64
 	hasLast  bool
+	// cues, for a WebVTT track, puts back together the cues its samples
+	// split, and cueForm is the CodecID saying which of the two Matroska
+	// mappings they are written in. A cue track holds nothing in held: each
+	// cue is a block group of its own, written once its end is known.
+	cues    *cueAssembler
+	cueForm string
 }
 
 // heldFrame is one frame waiting to be written, with what it takes to place it.
@@ -339,12 +345,24 @@ type webmBlockGroupElement struct {
 }
 
 type webmBlockGroup struct {
-	Block         ebml.Block `ebml:"Block"`
-	BlockDuration uint64     `ebml:"BlockDuration"`
+	Block ebml.Block `ebml:"Block"`
+	// BlockAdditions is what an S_TEXT/WEBVTT cue states beside its text:
+	// its settings, identifier and comments. Every other block has none.
+	BlockAdditions *webmBlockAdditions `ebml:"BlockAdditions,omitempty"`
+	BlockDuration  uint64              `ebml:"BlockDuration"`
 	// ReferenceBlock, when present, says this frame is not a keyframe: a
 	// block group has no flag for it. It is a time relative to this block,
 	// so it is negative, and it is left out entirely for a keyframe.
 	ReferenceBlock int64 `ebml:"ReferenceBlock,omitempty"`
+}
+
+type webmBlockAdditions struct {
+	BlockMore []webmBlockMore `ebml:"BlockMore"`
+}
+
+type webmBlockMore struct {
+	BlockAddID      uint64 `ebml:"BlockAddID"`
+	BlockAdditional []byte `ebml:"BlockAdditional"`
 }
 
 // NewWebMMuxer returns a WebMMuxer writing to w. It writes to w as samples
@@ -378,6 +396,9 @@ func (m *WebMMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 		return 0, err
 	}
 	t := &webmTrack{id: uint32(number), timescale: cfg.Timescale, inWebM: codec.inWebM}
+	if codec.kind == Subtitle {
+		t.cues, t.cueForm = &cueAssembler{}, codec.id
+	}
 	m.entries = append(m.entries, entry)
 	m.tracks = append(m.tracks, t)
 	m.byID[t.id] = t
@@ -400,6 +421,9 @@ type webmCodecPrivate struct {
 	codecDelay  uint64 // in nanoseconds
 	seekPreRoll uint64 // in nanoseconds
 	audio       *webmAudio
+	// matroskaID replaces the codec's WebM id when what the track states
+	// needs a mapping WebM does not have, and then the file is not WebM.
+	matroskaID string
 }
 
 // webmCodecs maps the ISO-BMFF sample entry name of a codec — "vp09", "avc1",
@@ -420,6 +444,7 @@ var webmCodecs = map[string]webmCodec{
 	"opus": {id: "A_OPUS", kind: Audio, inWebM: true, describe: webmOpusPrivate},
 	"vorb": {id: "A_VORBIS", kind: Audio, inWebM: true, describe: webmVorbisPrivate},
 	"mp4a": {id: "A_AAC", kind: Audio, describe: webmAACPrivate},
+	"wvtt": {id: webmWebVTT, kind: Subtitle, inWebM: true, describe: webmWebVTTPrivate},
 }
 
 // webmCodecFor is the codec a caller's spelling names, whether it spells the
@@ -451,6 +476,9 @@ func describeWebMTrack(cfg TrackConfig, number uint64) (webmTrackEntry, webmCode
 	if err != nil {
 		return webmTrackEntry{}, codec, err
 	}
+	if desc.matroskaID != "" {
+		codec.id, codec.inWebM = desc.matroskaID, false
+	}
 	lang := cfg.Language
 	if lang == "" {
 		lang = "und"
@@ -467,10 +495,9 @@ func describeWebMTrack(cfg TrackConfig, number uint64) (webmTrackEntry, webmCode
 		Language:     lang,
 		Audio:        desc.audio,
 	}
-	// Every codec in the table is a video or an audio one: subtitles are a
-	// boundary this muxer does not cross yet, and are refused above as a codec
-	// it has no id for.
 	switch codec.kind {
+	case Subtitle:
+		entry.TrackType = mkvTrackSubtitle
 	case Video:
 		entry.TrackType = mkvTrackVideo
 		if cfg.Width <= 0 || cfg.Height <= 0 {
@@ -658,6 +685,30 @@ func webmAACPrivate(cfg TrackConfig) (webmCodecPrivate, error) {
 	return webmCodecPrivate{private: buf.Bytes(), audio: audio}, nil
 }
 
+// webmWebVTTPrivate chooses which of the two Matroska mappings of WebVTT a track
+// is written in.
+//
+// ⛔ They are not interchangeable, and neither is enough on its own. The WebM
+// mapping, D_WEBVTT/SUBTITLES, is the only one ffmpeg reads -- it has no entry
+// for S_TEXT/WEBVTT at all, measured on 9.0.2 and in its source -- and the only
+// one a WebM file may hold. But it has nowhere for the file header: no
+// CodecPrivate, so a STYLE or a REGION block would be dropped without a word,
+// and with it the look of every cue. The Matroska mapping, S_TEXT/WEBVTT,
+// carries the header and the comments, and makes the file Matroska.
+//
+// So the WebM mapping is used while it loses nothing, which is when the header
+// is the bare signature, and the Matroska one as soon as the header says more.
+func webmWebVTTPrivate(cfg TrackConfig) (webmCodecPrivate, error) {
+	config, err := webvttConfig(cfg)
+	if err != nil {
+		return webmCodecPrivate{}, err
+	}
+	if strings.TrimRight(config, " \t\r\n") == webvttSignature {
+		return webmCodecPrivate{}, nil
+	}
+	return webmCodecPrivate{private: []byte(config), matroskaID: mkvWebVTT}, nil
+}
+
 // webmAudioFields is the Audio element of a track whose rate and channel count
 // come from the configuration rather than from a header of its own.
 func webmAudioFields(cfg TrackConfig, id string) (*webmAudio, error) {
@@ -707,6 +758,14 @@ func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 	if err != nil {
 		return err
 	}
+	var cues []webvttCue
+	if t.cues != nil {
+		// Read before anything is written: a sample that is not what
+		// ISO/IEC 14496-30 says a WebVTT sample is leaves the file as it was.
+		if cues, err = readWebVTTSample(s.Data); err != nil {
+			return err
+		}
+	}
 	if !m.started {
 		if err := m.begin(); err != nil {
 			return err
@@ -728,12 +787,20 @@ func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 		// smallest length the file can express is stated instead of nothing.
 		duration = 1
 	}
-	// The frame handed over last is written now, and this one takes its place:
-	// whichever turns out to be last must still be able to state its length.
-	if err := m.flushHeld(t, false); err != nil {
-		return err
+	if t.cues != nil {
+		start := uint64(presentation)
+		if err := m.writeCueBlocks(t, t.cues.add(start, start+uint64(s.Duration), cues)); err != nil {
+			return err
+		}
+	} else {
+		// The frame handed over last is written now, and this one takes its
+		// place: whichever turns out to be last must still be able to state
+		// its length.
+		if err := m.flushHeld(t, false); err != nil {
+			return err
+		}
+		t.held = &heldFrame{data: s.Data, tick: tick, duration: duration, sync: s.Sync}
 	}
-	t.held = &heldFrame{data: s.Data, tick: tick, duration: duration, sync: s.Sync}
 	t.nextTime += uint64(s.Duration)
 	if end := uint64(presentation) + uint64(s.Duration); end > t.end {
 		t.end, t.endTick = end, endTick
@@ -778,6 +845,54 @@ func (m *WebMMuxer) flushHeld(t *webmTrack, last bool) error {
 		group.ReferenceBlock = reference
 	}
 	return m.writeBlockGroup(group)
+}
+
+// writeCueBlocks writes finished cues, each as a block group stating how long it
+// is shown -- which both mappings require, a simple block having no room for
+// it -- in the form the track's CodecID names.
+//
+// A cue is written when its end is known, which is when the sample after it
+// arrives, so it lands behind blocks of other tracks that start later. Its
+// timestamp is still its own: a block states it relative to its cluster, and a
+// negative one is what a cue that began before the cluster did is written as.
+func (m *WebMMuxer) writeCueBlocks(t *webmTrack, cues []webvttCue) error {
+	for _, c := range cues {
+		// Both ends were converted when the samples holding them arrived, and
+		// refused there if the segment's resolution could not state them.
+		tick, _ := m.ticksFor(c.start, t.timescale)
+		end, _ := m.ticksFor(c.end, t.timescale)
+		group := webmBlockGroup{BlockDuration: max(end-tick, 1)}
+		data := webmCueBlock(c)
+		if t.cueForm == mkvWebVTT {
+			// The Matroska mapping counts the timestamps inside the text
+			// from the block, and keeps the rest of the cue beside it.
+			text, err := shiftCueTimestamps(c.text, -unitsToDuration(c.start, t.timescale))
+			if err != nil {
+				return err
+			}
+			data = []byte(text)
+			if addition := matroskaCueAddition(c); addition != nil {
+				group.BlockAdditions = &webmBlockAdditions{BlockMore: []webmBlockMore{{
+					BlockAddID: mkvWebVTTAddition, BlockAdditional: addition,
+				}}}
+			}
+		}
+		if m.needNewCluster(tick, t, true) {
+			if err := m.openCluster(tick); err != nil {
+				return err
+			}
+		}
+		group.Block = ebml.Block{
+			TrackNumber: uint64(t.id),
+			Timecode:    int16(int64(tick) - int64(m.clusterStart)),
+			Keyframe:    true,
+			Data:        [][]byte{data},
+		}
+		if err := m.writeBlockGroup(group); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // flushTails writes every held frame, in the order they are meant to be read.
@@ -921,6 +1036,16 @@ func (m *WebMMuxer) Close() error {
 	if len(m.tracks) == 0 {
 		m.closed = true
 		return ErrNoTracks
+	}
+	// The cues still on screen when their track ended end with it.
+	for _, t := range m.tracks {
+		if t.cues == nil {
+			continue
+		}
+		if err := m.writeCueBlocks(t, t.cues.drain()); err != nil {
+			m.closed = true
+			return err
+		}
 	}
 	// The frame each track is still holding is written now, stating its
 	// duration: it is the last of its track, and nothing else in the file

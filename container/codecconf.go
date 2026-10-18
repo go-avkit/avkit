@@ -169,6 +169,10 @@ func ConfigFromSamples(codec string, samples []Sample, opts ...ConfigOption) (St
 		return refuse(name, "an Opus stream carries no identification header; only its container states one")
 	case "ac-3", "ec-3":
 		return refuse(name, "the bit stream information of an AC-3 sync frame is not read by this package")
+	case codecWebVTT:
+		return refuse(name, "the WebVTT file header is stated once, by the sample entry's vttC, and never by a cue")
+	case codecTTML:
+		return refuse(name, "the TTML namespace and schema are stated by the stpp sample entry, not by its documents")
 	default:
 		return StreamConfig{}, fmt.Errorf("%w: %q", ErrUnsupportedCodec, codec)
 	}

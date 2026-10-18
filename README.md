@@ -19,7 +19,7 @@ model, and converts the payloads each container spells differently.
 
 | Package     | What it does |
 |-------------|--------------|
-| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of an MP4 or a transport stream, one file or a sequence of segments; mux a fragmented or a progressive MP4, or an MPEG-TS, from tracks delivered separately; copy, cut, join, concatenate and drop tracks with `Remux`, `Cut`, `Join` and `Concat`; and rewrite an HEVC track's sample entry to `hvc1` with `ConformHVC1`. No re-encoding anywhere. |
+| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of an MP4 or a transport stream, one file or a sequence of segments; mux a fragmented or a progressive MP4, or an MPEG-TS, from tracks delivered separately; carry WebVTT, SRT and TTML subtitle tracks between MP4 and Matroska/WebM; copy, cut, join, concatenate and drop tracks with `Remux`, `Cut`, `Join` and `Concat`; and rewrite an HEVC track's sample entry to `hvc1` with `ConformHVC1`. No re-encoding anywhere. |
 
 ### Why `ConformHVC1` is there
 
@@ -65,7 +65,7 @@ than being guessed at.
 | | codecs | what it means |
 |---|---|---|
 | **derived from the samples** | `avc1`, `avc3`, `hvc1`, `hev1`, `av01`, `vp09`, `mp4a` | the elementary stream states its own configuration, and it is read out of it |
-| **stated by the container** | `vp08`, `opus`, `ac-3`, `ec-3` | `ErrNotInSamples`. The codec is known and its samples **cannot** describe it — VP8 defines no level, an Opus stream carries no identification header, an AC-3 sync frame's bit stream information is not read here. Take the configuration from the container, which has it |
+| **stated by the container** | `vp08`, `opus`, `ac-3`, `ec-3`, `wvtt`, `stpp` | `ErrNotInSamples`. The codec is known and its samples **cannot** describe it — VP8 defines no level, an Opus stream carries no identification header, an AC-3 sync frame's bit stream information is not read here, a WebVTT cue never repeats the file header and a TTML document never states its sample entry. Take the configuration from the container, which has it |
 | **not known** | everything else | `ErrUnsupportedCodec` alone. There is nothing to take |
 
 ⛔ The middle row used to be indistinguishable from the last: both carried
@@ -75,13 +75,15 @@ before it existed still matches.
 
 ### Tracks a container can carry
 
-| | video | audio |
-|---|---|---|
-| MP4 demux | any — the four-character code is read from the sample entry, not from a list | any |
-| MP4 mux | `avc1`, `hvc1`, `av01`, `vp08`, `vp09`, `mjpg` | `mp4a`, `opus`, `ac-3`, `ec-3` |
-| Matroska demux | AVC, HEVC, AV1, VP8, VP9 | AAC, AC-3, E-AC-3, FLAC, Opus, Vorbis |
-| WebM mux | AV1, VP8, VP9 | AAC, Opus, Vorbis |
-| MPEG-TS | `avc1`, `hvc1`, `av01`, in and out | `mp4a`, `ac-3`, `ec-3`, `mp1`, `mp2`, `mp3`, in and out; **not** `opus` (see [MPEG-TS carriage](#mpeg-ts-carriage)) |
+| | video | audio | subtitles |
+|---|---|---|---|
+| MP4 demux | any — the four-character code is read from the sample entry, not from a list | any | any; the configuration of `wvtt` and `stpp` |
+| MP4 mux | `avc1`, `hvc1`, `av01`, `vp08`, `vp09`, `mjpg` | `mp4a`, `opus`, `ac-3`, `ec-3` | `wvtt`, `stpp` |
+| Matroska demux | AVC, HEVC, AV1, VP8, VP9 | AAC, AC-3, E-AC-3, FLAC, Opus, Vorbis | WebVTT (`S_TEXT/WEBVTT`, `D_WEBVTT/*`) and SRT (`S_TEXT/UTF8`), both as `wvtt` |
+| WebM mux | AV1, VP8, VP9 | AAC, Opus, Vorbis | `wvtt`, as `D_WEBVTT/SUBTITLES` or `S_TEXT/WEBVTT` |
+| MPEG-TS | `avc1`, `hvc1`, `av01`, in and out | `mp4a`, `ac-3`, `ec-3`, `mp1`, `mp2`, `mp3`, in and out; **not** `opus` (see [MPEG-TS carriage](#mpeg-ts-carriage)) | none, in or out |
+
+See [Subtitles](#subtitles) for what each conversion keeps.
 
 ### What is deliberately absent
 
@@ -363,6 +365,61 @@ here the two are indistinguishable.
 `Remux`, `Cut`, `Concat` and `Join` **refuse** a truncated input, since the
 output would be an ordinary file with nothing in it saying media is missing from
 the end. `AllowTruncated()` says to write it anyway.
+
+## Subtitles
+
+Text tracks used to be dropped. They are now carried, in one form: whatever a
+track came from, `Reader` hands it back as the samples of an ISO/IEC 14496-30
+WebVTT track (`wvtt`), and every muxer that writes subtitles takes that form.
+
+- **A `wvtt` sample** covers a stretch of time and holds the cues shown during
+  it — `vttc` boxes, each with its `payl` text and its optional `iden`
+  identifier and `sttg` settings — or one `vtte` box when nothing is shown. The
+  samples follow one another with no gap, which is what lets a subtitle track
+  be interleaved, cut and joined like any other.
+- **Matroska / WebM in.** The WebM mapping `D_WEBVTT/*` (identifier, settings
+  and text in the block, the form ffmpeg writes even in `.mkv`), the Matroska
+  mapping `S_TEXT/WEBVTT` (the file header in `CodecPrivate`; settings,
+  identifier and `NOTE` comments in a `BlockAddition` of ID 1) and SRT
+  (`S_TEXT/UTF8`, whose text goes in as it stands: its `<b>`, `<i>`, `<u>` are
+  WebVTT's). Each block is a cue timed by its `BlockDuration` — or the track's
+  `DefaultDuration` — and a cue without either is refused, not guessed.
+  ⛔ Overlapping cues are legal there and not in a `wvtt` track, so the timeline
+  is cut wherever a cue starts or ends, and a cue shown across several samples
+  is repeated in each with a `vsid` saying the copies are one cue.
+- **MP4 out.** `Muxer` and `ProgressiveMuxer` write the `wvtt` sample entry with
+  the header in `vttC`, under the `text` handler and a null media header, as
+  14496-30 requires.
+- **WebM / Matroska out.** `WebMMuxer` puts the pieces of a split cue back
+  together and writes each cue as a block group stating its duration.
+  ⛔ It uses the WebM mapping `D_WEBVTT/SUBTITLES` while that loses nothing —
+  it is the only one ffmpeg reads (9.0.2 has no `S_TEXT/WEBVTT` at all) and
+  the only one a WebM file may hold — which is when the header is the bare
+  `WEBVTT` signature. A header with a `STYLE` or `REGION` block has nowhere to
+  go there, so such a track is written in the Matroska mapping and the file
+  becomes `matroska`. The WebM mapping has no room for `NOTE` comments either,
+  and drops them; nothing renders them.
+- **Timestamps inside a cue's text** (`<00:03:15.000>`) count from the start
+  of the presentation in an MP4 and, the Matroska mapping says, from the block
+  in `S_TEXT/WEBVTT`. They are rewritten between the two, and left as they
+  stand in `D_WEBVTT`, as ffmpeg does.
+- **TTML (`stpp`)** goes from MP4 to MP4 with its sample entry and its
+  documents unchanged. It has no Matroska mapping here and is refused by
+  `WebMMuxer`.
+- **`Cut`** starts a subtitle track exactly where the pictures start: the
+  sample the cut falls in is shortened, not snapped back to, since a silence
+  between two lines is one sample and snapping would show every later cue early
+  by its length. **`Concat`** ends each input's subtitle track where its longest
+  track ends, so the next input's cues follow the pictures and not the last cue.
+  ⛔ Both refuse to move a TTML track, or a WebVTT cue whose text states times of
+  its own, away from zero: the times inside would not move with it.
+  `DropTracks` leaves such a track out.
+- **MPEG-TS** carries no subtitles here, in either direction. `TSMuxer` says so
+  rather than calling the codec unknown.
+
+Not carried: SSA/ASS, bitmap subtitles (VobSub, PGS, DVB), 3GPP `tx3g`, the
+experimental `wvtc`/`stpc`, and the distinction between WebM's captions,
+descriptions and metadata kinds, which all read as subtitles.
 
 ## Guarantees
 
