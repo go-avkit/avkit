@@ -51,9 +51,11 @@ type mkvReadDoc struct {
 }
 
 type mkvReadSegment struct {
-	Info    mkvInfo      `ebml:"Info"`
-	Tracks  mkvTracks    `ebml:"Tracks"`
-	Cluster []mkvCluster `ebml:"Cluster"`
+	Info        mkvInfo          `ebml:"Info"`
+	Tracks      mkvTracks        `ebml:"Tracks"`
+	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
+	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
+	Cluster     []mkvCluster     `ebml:"Cluster"`
 }
 
 // mkvCluster is one cluster: the timestamp its blocks are counted from, then
@@ -156,7 +158,8 @@ func newMatroskaReader(data []byte) (*Reader, error) {
 		blocks[number] = append(blocks[number], mkvBlockOf(ref))
 	}
 	r := &Reader{data: data, mkv: map[uint32]*mkvReadTrack{}, truncated: truncated}
-	file := &File{Format: matroskaFormat(doc.Header.DocType), Timescale: timescale}
+	file := &File{Format: matroskaFormat(doc.Header.DocType), Timescale: timescale,
+		Metadata: mkvMetadata(doc.Segment.Info.Title, doc.Segment.Tags, doc.Segment.Attachments)}
 	segDuration := int64(doc.Segment.Info.Duration)
 	for _, te := range doc.Segment.Tracks.TrackEntry {
 		t := mkvReadTrackOf(te, timescale, scale, segDuration, blocks[te.TrackNumber])
@@ -220,7 +223,8 @@ func unmarshalMatroska(data []byte) (*mkvReadDoc, []bool, error) {
 			groups = append(groups, true)
 		}
 	}
-	if err := ebml.Unmarshal(bytes.NewReader(data), &doc, ebml.WithElementReadHooks(hook)); err != nil {
+	if err := ebml.Unmarshal(bytes.NewReader(data), &doc, ebml.WithElementReadHooks(hook),
+		mkvLeafLimit(len(data))); err != nil {
 		return nil, nil, err
 	}
 	return &doc, groups, nil

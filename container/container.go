@@ -28,6 +28,13 @@
 // stretch between two time offsets, join files that match, leave a track out —
 // none of which touches a sample's bytes.
 //
+// File.Metadata is what a file says about itself as a whole — title, artist,
+// album, date, comment, description, genre, encoder and a cover picture — read
+// from an MP4's moov/udta/meta ilst and from Matroska's Info/Title, Tags and
+// Attachments. Muxer, ProgressiveMuxer and WebMMuxer write it with SetMetadata,
+// and Remux, Cut, Concat and Join carry their first input's unless
+// ReplaceMetadata says otherwise. A transport stream has none.
+//
 // Every MP4 entry point decodes the same way, so a file one of them accepts the
 // others accept too. That includes two shapes mp4ff refuses on its own: media
 // in several adjacent mdat boxes, and bytes after a complete movie box.
@@ -89,6 +96,10 @@ type File struct {
 	Timescale uint32 // movie/segment timescale (units per second)
 	Duration  uint64 // overall duration in Timescale units
 	Tracks    []Track
+	// Metadata is what the file says about itself as a whole: its title,
+	// artist and cover. It is empty for an MPEG transport stream, which has no
+	// place for any of it.
+	Metadata Metadata
 }
 
 // DurationSeconds returns the overall duration in seconds (0 if unknown).

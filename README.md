@@ -19,7 +19,7 @@ model, and converts the payloads each container spells differently.
 
 | Package     | What it does |
 |-------------|--------------|
-| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of an MP4 or a transport stream, one file or a sequence of segments; mux a fragmented or a progressive MP4, or an MPEG-TS, from tracks delivered separately; copy, cut, join, concatenate and drop tracks with `Remux`, `Cut`, `Join` and `Concat`; and rewrite an HEVC track's sample entry to `hvc1` with `ConformHVC1`. No re-encoding anywhere. |
+| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of an MP4 or a transport stream, one file or a sequence of segments; mux a fragmented or a progressive MP4, or an MPEG-TS, from tracks delivered separately; copy, cut, join, concatenate and drop tracks with `Remux`, `Cut`, `Join` and `Concat`; read and write file metadata and cover art; and rewrite an HEVC track's sample entry to `hvc1` with `ConformHVC1`. No re-encoding anywhere. |
 
 ### Why `ConformHVC1` is there
 
@@ -82,6 +82,17 @@ before it existed still matches.
 | Matroska demux | AVC, HEVC, AV1, VP8, VP9 | AAC, AC-3, E-AC-3, FLAC, Opus, Vorbis |
 | WebM mux | AV1, VP8, VP9 | AAC, Opus, Vorbis |
 | MPEG-TS | `avc1`, `hvc1`, `av01` in, `avc1`/`hvc1` out | `mp4a` |
+
+### File metadata
+
+| | text fields | cover | other items |
+|---|---|---|---|
+| MP4 read / write | `moov/udta/meta` (handler `mdir`) `ilst` | `covr`, JPEG, PNG or BMP | kept verbatim to an MP4 output |
+| Matroska read / write | `Info/Title`, file-level `Tags` | attachment `cover.jpg`/`cover.png`/`cover.bmp` | kept to a Matroska output |
+| WebM write | as Matroska | **not written**: WebM has no attachments | kept |
+| MPEG-TS | none | none | none |
+
+See [File metadata](#file-metadata-1) for what each field is called where.
 
 ### What is deliberately absent
 
@@ -289,6 +300,65 @@ here the two are indistinguishable.
 `Remux`, `Cut`, `Concat` and `Join` **refuse** a truncated input, since the
 output would be an ordinary file with nothing in it saying media is missing from
 the end. `AllowTruncated()` says to write it anyway.
+
+## File metadata
+
+`File.Metadata` is what a file says about itself as a whole: eight text fields
+and a cover picture. Every reader fills it in, `SetMetadata` on `Muxer`,
+`ProgressiveMuxer` and `WebMMuxer` writes it, and `Remux`, `Cut`, `Concat` and
+`Join` carry it — from the **first** input when there are several.
+`ReplaceMetadata(md)` writes `md` instead, and `ReplaceMetadata(Metadata{})`
+writes none.
+
+| field | MP4 `ilst` item | Matroska |
+|---|---|---|
+| `Title` | `©nam` | `Info/Title`; a `TITLE` tag takes precedence when reading |
+| `Artist` | `©ART` | `ARTIST` |
+| `Album` | `©alb` | `ALBUM` (ffmpeg's name; not an assigned tag) |
+| `Date` | `©day` | `DATE_RELEASED`; ffmpeg's `DATE` is read when it is absent |
+| `Comment` | `©cmt` | `COMMENT` |
+| `Description` | `desc` | `DESCRIPTION` |
+| `Genre` | `©gen` | `GENRE` |
+| `Encoder` | `©too` | `ENCODER` |
+| `Cover` | `covr` (data type 13, 14 or 27) | an attachment, `cover.jpg`, `cover.png` or `cover.bmp` |
+
+The MP4 side is the iTunes layout Apple's QuickTime File Format describes and
+ffmpeg writes: a full `meta` box with a 33-byte `mdir`/`appl` handler, then
+`ilst`, every value a UTF-8 `data` box. mp4ff decodes the containers; the items
+are read here, because mp4ff keeps most of them as undecoded bytes and drops the
+data type that tells a JPEG cover from a PNG one. A cover labelled JPEG that
+starts with the PNG signature is read as PNG, as ffmpeg does.
+
+Matroska tags are read when they are about the file: no track, edition, chapter
+or attachment UID, and a `TargetTypeValue` of 50 or none. They are written as one
+`Tag` at level 50, with the title in `Info` — where ffmpeg puts it and where
+every reader looks. The cover is the attachment named `cover.jpg` or
+`cover.png`, as the Matroska attachments section names the normal cover, or
+else the first JPEG, PNG or BMP attached.
+
+What is **lost**, said plainly:
+
+- **WebM gets no cover.** The WebM guidelines admit no `Attachments`; ffmpeg's
+  webm muxer drops attachments too. The text is written.
+- An `ilst` item no field names — a track number, a sort name, a freeform
+  item — is copied byte for byte to an MP4 output and left out of a Matroska
+  one. A file-level Matroska tag no field names is copied to a Matroska output
+  and left out of an MP4 one.
+- Only the first `data` box of an item and the first picture of a `covr` are
+  read. Nested `SimpleTag`s, tags about a track or chapter, attachments other
+  than the cover (fonts), QuickTime-style `udta` strings and `mdta`-keyed
+  metadata are not read.
+- Text that is not UTF-8, or holds a NUL, is not read as a field (an MP4 item
+  holding it is still carried verbatim), and `SetMetadata` refuses it.
+- An MPEG transport stream has no place for metadata at all.
+
+ffprobe is the oracle: the ffmpeg-written fixtures in `container/testdata` read
+back field for field, and ffprobe reads avkit's MP4 (fragmented and
+progressive) and Matroska output as the same tags with a byte-identical cover.
+
+⛔ ebml-go allocates an element's value **before** reading it, so a Matroska
+file of under a hundred bytes announcing a 100 MB attachment cost 100 MB. Leaf elements are
+now capped at the size of the document.
 
 ## Guarantees
 

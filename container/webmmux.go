@@ -164,8 +164,9 @@ type WebMMuxer struct {
 	tracks  []*webmTrack
 	byID    map[uint32]*webmTrack
 
-	started bool
-	closed  bool
+	started  bool
+	closed   bool
+	metadata *Metadata // what SetMetadata was given, nil for nothing
 
 	clusterOpen  bool
 	clusterStart uint64
@@ -246,10 +247,12 @@ type webmOpenSegmentDoc struct {
 }
 
 type webmSegment struct {
-	Info    webmInfo      `ebml:"Info"`
-	Tracks  webmTracks    `ebml:"Tracks"`
-	Cluster []webmCluster `ebml:"Cluster"`
-	Cues    *webm.Cues    `ebml:"Cues,omitempty"`
+	Info        webmInfo         `ebml:"Info"`
+	Tracks      webmTracks       `ebml:"Tracks"`
+	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
+	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
+	Cluster     []webmCluster    `ebml:"Cluster"`
+	Cues        *webm.Cues       `ebml:"Cues,omitempty"`
 }
 
 // webmHeadDoc is what precedes the clusters inside a segment. It is marshalled
@@ -257,8 +260,10 @@ type webmSegment struct {
 // segment, so the length of what comes before the first cluster is part of
 // every position.
 type webmHeadDoc struct {
-	Info   webmInfo   `ebml:"Info"`
-	Tracks webmTracks `ebml:"Tracks"`
+	Info        webmInfo         `ebml:"Info"`
+	Tracks      webmTracks       `ebml:"Tracks"`
+	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
+	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
 }
 
 // webmClusterDoc is one cluster, marshalled on its own to be measured.
@@ -272,8 +277,10 @@ type webmCuesDoc struct {
 }
 
 type webmOpenSegment struct {
-	Info   webmInfo   `ebml:"Info"`
-	Tracks webmTracks `ebml:"Tracks"`
+	Info        webmInfo         `ebml:"Info"`
+	Tracks      webmTracks       `ebml:"Tracks"`
+	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
+	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
 }
 
 type webmInfo struct {
@@ -281,6 +288,7 @@ type webmInfo struct {
 	MuxingApp     string  `ebml:"MuxingApp"`
 	WritingApp    string  `ebml:"WritingApp"`
 	Duration      float64 `ebml:"Duration,omitempty"`
+	Title         string  `ebml:"Title,omitempty"`
 }
 
 type webmTracks struct {
@@ -812,18 +820,16 @@ func (m *WebMMuxer) begin() error {
 		if err := ebml.Marshal(&webmHeaderDoc{Header: m.ebmlHeader()}, m.w); err != nil {
 			return fmt.Errorf("container: write webm header: %w", err)
 		}
-		info, tracks := m.info(0), webmTracks{TrackEntry: m.entries}
+		head := m.segmentHead(0)
 		// The segment element costs its identifier plus the length of the
 		// size it states, and how many bytes that takes is the encoder's
 		// choice, not a constant worth guessing: encoding the segment and its
 		// content apart is what says where the content begins.
 		var segment, content bytes.Buffer
-		if err := measureEBML(&webmOpenSegmentDoc{
-			Segment: webmOpenSegment{Info: info, Tracks: tracks},
-		}, &segment); err != nil {
+		if err := measureEBML(&webmOpenSegmentDoc{Segment: head}, &segment); err != nil {
 			return fmt.Errorf("container: write webm header: %w", err)
 		}
-		if err := measureEBML(&webmHeadDoc{Info: info, Tracks: tracks}, &content); err != nil {
+		if err := measureEBML((*webmHeadDoc)(&head), &content); err != nil {
 			return fmt.Errorf("container: write webm header: %w", err)
 		}
 		m.segmentStart = m.w.n + uint64(segment.Len()-content.Len())
@@ -935,30 +941,25 @@ func (m *WebMMuxer) Close() error {
 		if m.started {
 			return m.writeCues()
 		}
-		doc := webmStreamDoc{
-			Header: m.ebmlHeader(),
-			Segment: webmOpenSegment{
-				Info:   m.info(0),
-				Tracks: webmTracks{TrackEntry: m.entries},
-			},
-		}
+		doc := webmStreamDoc{Header: m.ebmlHeader(), Segment: m.segmentHead(0)}
 		if err := ebml.Marshal(&doc, m.w); err != nil {
 			return fmt.Errorf("container: write webm header: %w", err)
 		}
 		return nil
 	}
-	info := m.info(m.duration())
-	tracks := webmTracks{TrackEntry: m.entries}
-	if err := m.placeCues(info, tracks); err != nil {
+	head := m.segmentHead(m.duration())
+	if err := m.placeCues(head); err != nil {
 		return err
 	}
 	doc := webmSizedDoc{
 		Header: m.ebmlHeader(),
 		Segment: webmSegment{
-			Info:    info,
-			Tracks:  tracks,
-			Cluster: m.clusters,
-			Cues:    m.cueIndex(),
+			Info:        head.Info,
+			Tracks:      head.Tracks,
+			Attachments: head.Attachments,
+			Tags:        head.Tags,
+			Cluster:     m.clusters,
+			Cues:        m.cueIndex(),
 		},
 	}
 	if err := ebml.Marshal(&doc, m.w); err != nil {
@@ -995,15 +996,15 @@ func (m *WebMMuxer) cueIndex() *webm.Cues {
 // Close; they are measured instead, by encoding what precedes the clusters and
 // then each cluster in turn. The encoder is deterministic, which is what makes
 // a measured length the length it will have.
-func (m *WebMMuxer) placeCues(info webmInfo, tracks webmTracks) error {
+func (m *WebMMuxer) placeCues(head webmOpenSegment) error {
 	if len(m.cues) == 0 {
 		return nil
 	}
-	var head bytes.Buffer
-	if err := measureEBML(&webmHeadDoc{Info: info, Tracks: tracks}, &head); err != nil {
+	var measured bytes.Buffer
+	if err := measureEBML((*webmHeadDoc)(&head), &measured); err != nil {
 		return fmt.Errorf("container: measure the segment head: %w", err)
 	}
-	at := uint64(head.Len())
+	at := uint64(measured.Len())
 	for i := range m.clusters {
 		if i < len(m.cues) {
 			m.cues[i].CueTrackPositions[0].CueClusterPosition = at
@@ -1050,6 +1051,7 @@ func (m *WebMMuxer) info(duration float64) webmInfo {
 		MuxingApp:     webmMuxingApp,
 		WritingApp:    webmMuxingApp,
 		Duration:      duration,
+		Title:         mkvTitleOf(m.metadata),
 	}
 }
 

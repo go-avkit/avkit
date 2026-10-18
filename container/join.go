@@ -33,6 +33,9 @@ func Join(w io.Writer, srcs []*Reader, opts ...RemuxOption) error {
 		return err
 	}
 	m := NewMuxer(w, settingsFor(opts).mux...)
+	if err := m.SetMetadata(settingsFor(opts).outputMetadata(srcs)); err != nil {
+		return err
+	}
 	if err := joinInto(m, srcs, opts...); err != nil {
 		return err
 	}
@@ -49,6 +52,9 @@ func JoinProgressive(w io.Writer, srcs []*Reader, opts ...RemuxOption) error {
 		return err
 	}
 	m := NewProgressiveMuxer(w)
+	if err := m.SetMetadata(settingsFor(opts).outputMetadata(srcs)); err != nil {
+		return err
+	}
 	if err := joinInto(m, srcs, opts...); err != nil {
 		return err
 	}

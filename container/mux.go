@@ -187,6 +187,7 @@ type Muxer struct {
 	started  bool
 	closed   bool
 	sequence uint32
+	metadata *Metadata // what SetMetadata was given, nil for nothing
 }
 
 // muxTrack is one track's writing state.
@@ -678,7 +679,7 @@ func (m *Muxer) WriteSample(trackID uint32, s Sample) error {
 		return fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
 	}
 	if !m.started {
-		if err := m.init.Encode(m.w); err != nil {
+		if err := m.encodeInit(); err != nil {
 			return fmt.Errorf("container: write init segment: %w", err)
 		}
 		m.started = true
@@ -774,7 +775,7 @@ func (m *Muxer) Close() error {
 		return ErrNoTracks
 	}
 	if !m.started {
-		if err := m.init.Encode(m.w); err != nil {
+		if err := m.encodeInit(); err != nil {
 			m.closed = true
 			return fmt.Errorf("container: write init segment: %w", err)
 		}
