@@ -357,7 +357,7 @@ func TestTSMuxRemuxesAFragmentedMP4(t *testing.T) {
 		t.Fatalf("the stream carries %d units, want %d", len(units), len(samples))
 	}
 	for i, unit := range units {
-		want := int64(i) * mp4Duration * TSTimescale / mp4Timescale
+		want := tsTimestampOffset + int64(i)*mp4Duration*TSTimescale/mp4Timescale
 		if got := unit.PES.Header.OptionalHeader.PTS.Base; got != want {
 			t.Errorf("unit %d is shown at %d, want %d", i, got, want)
 		}
@@ -475,14 +475,15 @@ func TestTSMuxStatesADecodeTimeOnlyWhenItDiffers(t *testing.T) {
 		t.Errorf("presentation is shifted by %d, want 3600", got)
 	}
 
-	// A frame shown before the stream starts cannot be stated at all.
+	// A frame shown further before the program starts than its clock runs
+	// ahead cannot be stated at all.
 	m2 := NewTSMuxer(io.Discard)
 	id2, err := m2.AddTrack(tsVideoConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = m2.WriteSample(id2, Sample{
-		Data: lengthPrefixed(tsIDR), Duration: 3600, CompositionOffset: -1, Sync: true,
+		Data: lengthPrefixed(tsIDR), Duration: 3600, CompositionOffset: -int32(tsMuxDelay) - 1, Sync: true,
 	})
 	if !errors.Is(err, ErrSample) {
 		t.Errorf("a negative presentation time: %v", err)
@@ -779,12 +780,14 @@ func TestTSClockCountsAround(t *testing.T) {
 	// long enough counts around rather than writing something that would be
 	// silently truncated.
 	track := &tsMuxTrack{timescale: TSTimescale}
-	if got := track.rescale(tsClockWrap + 7); got != 7 {
-		t.Errorf("rescale = %d, want 7", got)
+	h := track.timing(tsClockWrap+7, tsClockWrap+9)
+	if h.PTS.Base != 9 || h.DTS.Base != 7 {
+		t.Errorf("PTS %d, DTS %d; want 9 and 7", h.PTS.Base, h.DTS.Base)
 	}
-	// And a track counted in its own clock is converted to the transport one.
+	// And a track counted in its own clock is converted to the transport one,
+	// on which the program starts at tsTimestampOffset.
 	half := &tsMuxTrack{timescale: TSTimescale / 2}
-	if got := half.rescale(1000); got != 2000 {
-		t.Errorf("rescale = %d, want 2000", got)
+	if got := half.clock(1000); got != tsTimestampOffset+2000 {
+		t.Errorf("clock = %d, want %d", got, tsTimestampOffset+2000)
 	}
 }
