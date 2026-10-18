@@ -76,6 +76,89 @@ func TestUniformSampleCountIsBoundedByTheFile(t *testing.T) {
 	}
 }
 
+// withoutBox drops the first box of the given type from the first track of a
+// progressive MP4, wherever it sits under the trak, and clears the field mp4ff
+// would have set for it -- which is what a file lacking that box parses to.
+func withoutBox(t *testing.T, data []byte, typ string) []byte {
+	t.Helper()
+	parsed, err := mp4.DecodeFile(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	trak := parsed.Moov.Traks[0]
+	drop := func(children []mp4.Box) []mp4.Box {
+		out := children[:0]
+		for _, c := range children {
+			if c.Type() != typ {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	switch typ {
+	case "tkhd":
+		trak.Children, trak.Tkhd = drop(trak.Children), nil
+	case "mdia":
+		trak.Children, trak.Mdia = drop(trak.Children), nil
+	case "minf":
+		trak.Mdia.Children, trak.Mdia.Minf = drop(trak.Mdia.Children), nil
+	case "stbl":
+		trak.Mdia.Minf.Children, trak.Mdia.Minf.Stbl = drop(trak.Mdia.Minf.Children), nil
+	case "stsd":
+		stbl := trak.Mdia.Minf.Stbl
+		stbl.Children, stbl.Stsd = drop(stbl.Children), nil
+	default:
+		t.Fatalf("no rule to drop %s", typ)
+	}
+	var buf bytes.Buffer
+	if err := parsed.Encode(&buf); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// ⛔ mp4ff parses a trak whatever children it has, and leaves the field of a
+// missing one nil. The reader dereferenced five of them unconditionally --
+// tkhd when indexing the tracks, mdia/minf/stbl/stsd when describing one or
+// reading its samples -- so a file missing any of them PANICKED in NewReader,
+// NewFileReader, TrackConfig or Samples. Found by fuzzing: one flipped byte in
+// a box type is enough.
+//
+// Such a track is now left out of the reader's index, and asking for it is
+// ErrUnknownTrack: there is nothing in it to describe or read.
+func TestTrackMissingABoxIsRefusedNotAPanic(t *testing.T) {
+	for _, typ := range []string{"tkhd", "mdia", "minf", "stbl", "stsd"} {
+		data := withoutBox(t, progressiveSample(t), typ)
+		for name, open := range map[string]func() (*Reader, error){
+			"memory": func() (*Reader, error) { return NewReader(data) },
+			"file": func() (*Reader, error) {
+				return NewFileReader(bytes.NewReader(data), int64(len(data)))
+			},
+		} {
+			func() {
+				defer func() {
+					if p := recover(); p != nil {
+						t.Errorf("%s without %s: panic: %v", name, typ, p)
+					}
+				}()
+				r, err := open()
+				if err != nil {
+					// Refusing the file outright is an answer too.
+					return
+				}
+				for _, id := range r.TrackIDs() {
+					if _, err := r.TrackConfig(id); !errors.Is(err, ErrUnknownTrack) {
+						t.Errorf("%s without %s: TrackConfig: %v", name, typ, err)
+					}
+					if _, err := r.Samples(id); !errors.Is(err, ErrUnknownTrack) {
+						t.Errorf("%s without %s: Samples: %v", name, typ, err)
+					}
+				}
+			}()
+		}
+	}
+}
+
 // The bound is the file and nothing narrower: a uniform-size track whose
 // samples do fit still reads, every sample of it.
 func TestUniformSampleCountThatFitsStillReads(t *testing.T) {

@@ -148,13 +148,30 @@ func NewFileReader(src FileSource, size int64) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &Reader{at: src, size: size, file: file, mp4: parsed, traks: map[uint32]*mp4.TrakBox{}}
+	return &Reader{at: src, size: size, file: file, mp4: parsed, traks: readableTraks(parsed)}, nil
+}
+
+// readableTraks indexes the tracks of a movie by ID.
+//
+// ⛔ A trak lacking any box this reader dereferences is left out. mp4ff parses
+// a trak whatever children it has and leaves the field of a missing one nil;
+// indexing, describing and reading a track went through tkhd, mdia, minf, stbl
+// and stsd without asking, so a downloaded file missing one of them -- one
+// flipped byte in a box type is enough -- panicked the caller. A track left out
+// is ErrUnknownTrack to TrackConfig and Samples: there is nothing in it to
+// describe or to read.
+func readableTraks(parsed *mp4.File) map[uint32]*mp4.TrakBox {
+	traks := map[uint32]*mp4.TrakBox{}
 	if moov := movieBox(parsed); moov != nil {
 		for _, trak := range moov.Traks {
-			r.traks[trak.Tkhd.TrackID] = trak
+			if trak.Tkhd == nil || trak.Mdia == nil || trak.Mdia.Minf == nil ||
+				trak.Mdia.Minf.Stbl == nil || trak.Mdia.Minf.Stbl.Stsd == nil {
+				continue
+			}
+			traks[trak.Tkhd.TrackID] = trak
 		}
 	}
-	return r, nil
+	return traks
 }
 
 // NewReader reads the structure of a container and prepares its samples: an
@@ -183,13 +200,7 @@ func NewReader(data []byte) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &Reader{data: data, file: file, mp4: parsed, traks: map[uint32]*mp4.TrakBox{}}
-	if moov := movieBox(parsed); moov != nil {
-		for _, trak := range moov.Traks {
-			r.traks[trak.Tkhd.TrackID] = trak
-		}
-	}
-	return r, nil
+	return &Reader{data: data, file: file, mp4: parsed, traks: readableTraks(parsed)}, nil
 }
 
 // mp4StartDelay reads a track's encoder priming out of its edit list.
