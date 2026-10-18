@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/Eyevinn/mp4ff/aac"
 	"github.com/asticode/go-astits"
@@ -56,17 +57,29 @@ type tsTrack struct {
 	// av1 marks a track whose units are OBUs rather than NAL units, and
 	// whose configuration has to be built from the sequence header they
 	// carry: a transport stream states none.
-	av1     bool
+	av1 bool
+	// audio says how an audio stream's payload divides into frames.
+	audio   tsAudioForm
 	samples []Sample
 	// pending holds each unit with the time it is shown at, so durations can
 	// be worked out once the following one is known.
 	pending []tsUnit
+	// carry is the start of a frame the last unit did not complete, and
+	// nextAt the time the next frame begins at: see tsaudio.go.
+	carry  []byte
+	nextAt int64
+	// unitDuration is what one frame lasts, as its header states, for a
+	// stream whose frames say so; zero leaves it to defaultUnitDuration.
+	unitDuration int64
 }
 
 // tsUnit is one access unit before its duration is known.
 type tsUnit struct {
 	data []byte
 	time int64 // decode time in TSTimescale units
+	// offset is how long after its decode time the unit is presented: its
+	// PES header's PTS less its DTS. See pesCompositionOffset.
+	offset int32
 }
 
 // readTS reads a transport stream once, and returns its tracks with their
@@ -121,7 +134,7 @@ func readTS(data []byte) ([]*tsTrack, error) {
 // newTSTrack describes an elementary stream, or reports nothing for one this
 // package cannot convert.
 func newTSTrack(es *astits.PMTElementaryStream) *tsTrack {
-	kind, codec := Other, ""
+	kind, codec, audio := Other, "", tsADTS
 	switch es.StreamType {
 	case astits.StreamTypeH264Video:
 		kind, codec = Video, "avc1"
@@ -129,13 +142,29 @@ func newTSTrack(es *astits.PMTElementaryStream) *tsTrack {
 		kind, codec = Video, "hvc1"
 	case astits.StreamTypeAACAudio:
 		kind, codec = Audio, "mp4a"
+	case astits.StreamTypeAC3Audio:
+		// ATSC A/52 Annex A 4.1 and Annex G 3.1. FFmpeg's mpegts.c takes
+		// both stream types to mean these codecs with or without the
+		// registration descriptor ATSC adds, and so does this.
+		kind, codec, audio = Audio, "ac-3", tsAC3
+	case astits.StreamTypeEAC3Audio:
+		kind, codec, audio = Audio, "ec-3", tsAC3
+	case tsMPEG1Audio, tsMPEG2Audio:
+		// Neither stream type says which layer the frames are: the first
+		// frame renames the track. Until one is read it is named as FFmpeg's
+		// mpegts.c names it, after the layer most streams carry.
+		kind, codec, audio = Audio, "mp3", tsMPA
 	case astits.StreamTypePrivateData:
-		// AV1 has no stream type of its own: it travels as private data, and
-		// only a registration descriptor says that is what it is.
-		if !isAV1Stream(es) {
+		// AV1, and AC-3 as DVB carries it, have no stream type of their own:
+		// they travel as private data, and only a descriptor says what it is.
+		switch codec = privateStreamCodec(es); codec {
+		case "":
 			return nil
+		case "av01":
+			kind = Video
+		default:
+			kind, audio = Audio, tsAC3
 		}
-		kind, codec = Video, "av01"
 	default:
 		return nil
 	}
@@ -145,6 +174,7 @@ func newTSTrack(es *astits.PMTElementaryStream) *tsTrack {
 		config: TrackConfig{Kind: kind, Codec: codec, Timescale: TSTimescale},
 		hevc:   es.StreamType == astits.StreamTypeH265Video,
 		av1:    codec == "av01",
+		audio:  audio,
 	}
 }
 
@@ -154,20 +184,36 @@ func (t *tsTrack) append(pes *astits.PESData) {
 	switch t.track.Kind {
 	case Video:
 		if t.av1 {
-			// An AV1 temporal unit is already what an MP4 sample holds, and
-			// it states its configuration inside itself rather than in
-			// parameter sets to lift out.
-			if len(pes.Data) > 0 {
-				t.pending = append(t.pending, tsUnit{data: pes.Data, time: when})
+			// An AV1 temporal unit states its configuration inside itself
+			// rather than in parameter sets to lift out. The AOM carriage
+			// puts each OBU behind a start code; a unit that does not begin
+			// with one is taken as the low-overhead form an MP4 sample
+			// holds, which is what this package read before it wrote the
+			// carriage, and which no OBU header can be mistaken for: its
+			// first byte would name the reserved OBU type 0.
+			payload := pes.Data
+			if startsWithStartCode(payload) {
+				converted, err := av1FromStartCodes(payload)
+				if err != nil {
+					return // a unit that does not read is passed over
+				}
+				payload = converted
+			}
+			if len(payload) > 0 {
+				t.pending = append(t.pending, tsUnit{data: payload, time: when, offset: pesCompositionOffset(pes)})
 			}
 			return
 		}
 		payload, params := convertAnnexB(pes.Data, t.hevc)
 		t.adoptParameterSets(params)
 		if len(payload) > 0 {
-			t.pending = append(t.pending, tsUnit{data: payload, time: when})
+			t.pending = append(t.pending, tsUnit{data: payload, time: when, offset: pesCompositionOffset(pes)})
 		}
 	case Audio:
+		if t.audio != tsADTS {
+			t.appendFrames(pes)
+			return
+		}
 		frames, cfg := splitADTS(pes.Data)
 		if cfg.SampleRate > 0 && t.config.SampleRate == 0 {
 			t.config.SampleRate, t.config.Channels = cfg.SampleRate, cfg.Channels
@@ -213,12 +259,16 @@ func (t *tsTrack) finish() {
 			dur = t.pending[i].time - t.pending[i-1].time
 		}
 		if dur <= 0 {
+			dur = t.unitDuration
+		}
+		if dur <= 0 {
 			dur = defaultUnitDuration(t.track.Kind, t.config.SampleRate)
 		}
 		t.samples = append(t.samples, Sample{
-			Data:     u.data,
-			Duration: uint32(dur),
-			Sync:     t.syncUnit(u.data),
+			Data:              u.data,
+			Duration:          uint32(dur),
+			CompositionOffset: u.offset,
+			Sync:              t.syncUnit(u.data),
 		})
 		t.track.Duration += uint64(dur)
 	}
@@ -255,6 +305,37 @@ func pesTime(pes *astits.PESData) int64 {
 		return pts.Base
 	}
 	return 0
+}
+
+// ptsWrap is the period of the 33-bit PTS and DTS fields of a PES header.
+const ptsWrap = 1 << 33
+
+// pesCompositionOffset is how long after its decode time a unit is presented:
+// its PTS less its DTS (ISO/IEC 13818-1 §2.4.3.7, PTS_DTS_flags '11'). That is
+// what a track that reorders its frames -- H.264 or HEVC with B-frames --
+// states in every unit, and what an MP4 calls a composition offset; a reader
+// that kept the DTS alone handed over the pictures in decoding order as if they
+// were presented in it.
+//
+// A unit stating a PTS alone ('10') is presented when it is decoded, as
+// ffmpeg's mpegts.c reads it (pes->dts = pes->pts): an offset of zero. Both
+// fields count modulo 2^33, so the difference is taken in that modulus and a
+// PTS that wrapped past its DTS is still the small delay it is. What is left
+// past 2^31 ticks -- 6.6 hours, or a PTS before its DTS, which no decoder
+// presents and a version 0 ctts cannot state -- is read as no offset at all.
+func pesCompositionOffset(pes *astits.PESData) int32 {
+	if pes.Header == nil || pes.Header.OptionalHeader == nil {
+		return 0
+	}
+	h := pes.Header.OptionalHeader
+	if h.PTS == nil || h.DTS == nil {
+		return 0
+	}
+	d := ((h.PTS.Base-h.DTS.Base)%ptsWrap + ptsWrap) % ptsWrap
+	if d > math.MaxInt32 {
+		return 0
+	}
+	return int32(d)
 }
 
 // parameterSets are the NAL units that describe a stream rather than carry a
