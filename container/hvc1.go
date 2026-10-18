@@ -112,8 +112,8 @@ func CheckHVC1(entry TrackConfig, samples []Sample) (HVC1Conformance, error) {
 // looks like -- and refusing the disagreement would leave the caller holding a
 // file nothing can repair.
 //
-// It composes with the other options, so a cut or a concatenation can be made
-// conformant in the same pass. A track that is not HEVC is left exactly as it
+// It composes with the other options, so a cut, a concatenation or a join
+// (Join and JoinProgressive alike) can be made conformant in the same pass. A track that is not HEVC is left exactly as it
 // is, which is what lets this be passed for a whole file without knowing what
 // is in it.
 //

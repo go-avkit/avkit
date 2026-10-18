@@ -78,6 +78,22 @@ func joinInto(m sampleWriter, srcs []*Reader, opts ...RemuxOption) error {
 			if err != nil {
 				continue // a track holding nothing
 			}
+			// What the container could not state -- a Matroska VP9 track's
+			// profile and level, an AC-3 track's configuration -- is read out
+			// of the frames, as Remux, Cut and Concat read it (readSource).
+			if cfg, err = describeFromSamples(cfg, samples); err != nil {
+				return fmt.Errorf("container: declare track %d: %w", id, err)
+			}
+			// ConformHVC1 rewrites the entry and the samples together, so it
+			// has to run before the entry is declared -- and on the described
+			// configuration, as readSource runs it for Remux, Cut and Concat.
+			if set.conformHVC1 {
+				t, err := conformTrack(sourceTrack{id: id, cfg: cfg, samples: samples})
+				if err != nil {
+					return fmt.Errorf("container: declare track %d: %w", id, err)
+				}
+				cfg, samples = t.cfg, t.samples
+			}
 			outID, err := m.AddTrack(cfg)
 			if err != nil {
 				return fmt.Errorf("container: declare track %d: %w", id, err)

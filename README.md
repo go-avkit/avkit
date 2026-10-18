@@ -34,6 +34,9 @@ which is a change of container and not of pictures: the samples are the same
 bytes. `CheckHVC1` answers the question without changing anything, so a caller
 can tell a file that needs it from one that does not.
 
+It is an option of `Remux`, `Cut`, `Concat`, `Join` and `JoinProgressive`
+alike, so a copy, a cut or a join is made conformant in the same pass.
+
 ⛔ It takes the **stream** as authority wherever the samples state a set, keeps
 the entry's sets where they do not, and **refuses** a stream whose sets change
 part way through — because a single entry cannot describe two of them, and
@@ -227,9 +230,9 @@ there is no `CodecPrivate` to carry them. `vpcC` has no value for "unknown" —
 zero is a real profile but not a real level — so remuxing such a track used to
 fail with `vp09 needs a level; 0 is not one`.
 
-`Remux`, `Cut`, `Concat` and `Join` now read the configuration **out of the
-frames** when the container could not state it, through the same
-`ConfigFromSamples` a caller can use directly.
+`Remux`, `Cut`, `Concat`, `Join` and `JoinProgressive` now read the
+configuration **out of the frames** when the container could not state it,
+through the same `ConfigFromSamples` a caller can use directly.
 
 The reader is unchanged and still reports only what the container says. That is
 deliberate: a level could also be derived from the container's width, height and
