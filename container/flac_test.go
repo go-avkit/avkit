@@ -112,6 +112,25 @@ func TestANativeFLACStreamIsCutAtTheHeadersWhoseCRCsHold(t *testing.T) {
 	}
 }
 
+// TestAFLACFrameIsNotCutAtAHeaderThatDoesNotFollowOn: inside the first frame
+// sits a point where the CRC-16 comes to zero -- a whole frame's worth of bytes
+// and its footer -- followed by a header whose CRC-8 holds. Both CRCs agree it
+// could be a boundary; only the frame number, 7 where 1 is next, says it is not.
+func TestAFLACFrameIsNotCutAtAHeaderThatDoesNotFollowOn(t *testing.T) {
+	inner := flacFrameBytes(flacHeaderBytes(false, 12, 4, 0), []byte{1, 2, 3})
+	first := flacFrameBytes(inner, concat(flacHeaderBytes(false, 12, 4, 7), []byte{4, 5}))
+	second := flacFrameBytes(flacHeaderBytes(false, 12, 4, 1), []byte{6})
+	data := concat([]byte(flacMarker), flacBlock(true, flacStreamInfo, streamInfo(8000, 1, 16, 0)), first, second)
+	r, err := NewReader(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	samples, _ := r.Samples(1)
+	if len(samples) != 2 || !bytes.Equal(samples[0].Data, first) {
+		t.Errorf("%d frames, the first %d bytes; want 2, the first %d", len(samples), len(samples[0].Data), len(first))
+	}
+}
+
 func TestAVariableBlockSizeFLACStreamIsNumberedBySample(t *testing.T) {
 	frames := [][]byte{
 		flacFrameBytes(flacHeaderBytes(true, 7, 0, 0, 0x01, 0x00), []byte{1}),       // 257 samples
