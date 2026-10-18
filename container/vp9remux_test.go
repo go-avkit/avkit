@@ -93,6 +93,78 @@ func TestRemuxOfVP9FromMatroskaTakesItsConfigurationFromTheFrames(t *testing.T) 
 	}
 }
 
+// Join and JoinProgressive were the two operations the README named and that
+// did not go through describeFromSamples: a VP9 track out of Matroska failed in
+// both with "vp09 needs a level; 0 is not one" where Remux succeeded. They now
+// write the vpcC the frames state, as Remux does.
+func TestJoinOfVP9FromMatroskaTakesItsConfigurationFromTheFrames(t *testing.T) {
+	src, err := NewReader(vp9WebM(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := src.TrackConfig(src.TrackIDs()[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	derived, err := ConfigFromSamples("vp09", mustSamples(t, src), SampleTimescale(cfg.Timescale))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, join := range map[string]func(io.Writer, []*Reader, ...RemuxOption) error{
+		"Join": Join, "JoinProgressive": JoinProgressive,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, err := NewReader(vp9WebM(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			if err := join(&out, []*Reader{r}); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			back, err := NewReader(out.Bytes())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := back.TrackConfig(back.TrackIDs()[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.VPx == nil || *got.VPx != *derived.VPx {
+				t.Errorf("output vpcC = %+v; the frames say %+v", got.VPx, derived.VPx)
+			}
+		})
+	}
+}
+
+// And a track whose frames cannot describe it is refused by Join too, naming
+// the track, instead of reaching the muxer with a vpcC of zeroes.
+func TestJoinOfVP9WithUndescribableSamplesIsRefused(t *testing.T) {
+	var buf bytes.Buffer
+	m := NewWebMMuxer(&buf)
+	id, err := m.AddTrack(TrackConfig{
+		Kind: Video, Codec: "vp09", Timescale: 90000, Width: 320, Height: 180,
+		VPx: &VPxConfig{Profile: 0, Level: 10, BitDepth: 8},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.WriteSample(id, Sample{Data: []byte{0xFF, 0xFF, 0xFF, 0xFF}, Duration: 3000, Sync: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, err := NewReader(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = Join(io.Discard, []*Reader{r})
+	if !errors.Is(err, ErrTrackConfig) || !strings.Contains(err.Error(), "states no level and its samples do not either") {
+		t.Fatalf("err = %v, want the frames' refusal", err)
+	}
+}
+
 func mustSamples(t *testing.T, r *Reader) []Sample {
 	t.Helper()
 	s, err := r.Samples(r.TrackIDs()[0])
