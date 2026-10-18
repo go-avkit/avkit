@@ -222,7 +222,7 @@ the same way and still gets its stream.
   own `mkvcore` writes it, so the SeekHead can be rewritten without moving
   anything after it.
 - Clusters are not named in the SeekHead. The Cues index them, as in ffmpeg's
-  and mkvmerge's output.
+  output.
 
 Measured on a 7 s VP9 + Opus file:
 
