@@ -389,6 +389,19 @@ func TestAnOggOpusOrFLACStreamThatBreaksItsMappingIsRefused(t *testing.T) {
 	}
 }
 
+// TestAStreamWithNoWholePacketIsReportedNotIndexed: found by FuzzOgg, a
+// beginning-of-stream page with no segment on it panicked on the first packet
+// the codec was to be named by.
+func TestAStreamWithNoWholePacketIsReportedNotIndexed(t *testing.T) {
+	r, err := NewReader(oggPageRaw(oggBOS|oggEOS, 0, 3, 0, nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Samples(1); !errors.Is(err, ErrMalformed) {
+		t.Errorf("Samples: %v, want ErrMalformed", err)
+	}
+}
+
 func TestAnOggFileThatBreaksRFC3533IsRefused(t *testing.T) {
 	head := opusHeadOf(1, 0, 48000)
 	good := oggPageOf(oggBOS, 0, 1, 0, head)

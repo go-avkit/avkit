@@ -4,6 +4,7 @@
 package container
 
 import (
+	"encoding/binary"
 	"errors"
 	"os"
 	"testing"
@@ -65,8 +66,34 @@ func FuzzFLAC(f *testing.F) {
 		concat([]byte(flacMarker), flacBlock(true, flacStreamInfo, streamInfo(8000, 1, 16, 0)), frame))
 }
 
+// FuzzOgg mends the CRC of every page it can find before reading: without it
+// almost every mutation is refused at the checksum, and the mappings behind it
+// are never reached.
 func FuzzOgg(f *testing.F) {
-	fuzzElementary(f, readOgg, seedFile(f, "sine.opus"), seedFile(f, "sine.ogg"), seedFile(f, "sine.oga"))
+	fuzzElementary(f, func(data []byte) ([]*mkvReadTrack, error) {
+		return readOgg(mendOggCRCs(data))
+	}, seedFile(f, "sine.opus"), seedFile(f, "sine.ogg"), seedFile(f, "sine.oga"))
+}
+
+// mendOggCRCs rewrites the CRC of each whole page at the start of data.
+func mendOggCRCs(data []byte) []byte {
+	out := append([]byte(nil), data...)
+	for at := 0; at+oggHeaderSize <= len(out) && string(out[at:at+4]) == "OggS"; {
+		header := oggHeaderSize + int(out[at+26])
+		if at+header > len(out) {
+			break
+		}
+		end := at + header
+		for _, l := range out[at+oggHeaderSize : at+header] {
+			end += int(l)
+		}
+		if end > len(out) {
+			break
+		}
+		binary.LittleEndian.PutUint32(out[at+22:], oggCRC(out[at:end]))
+		at = end
+	}
+	return out
 }
 
 func FuzzWAV(f *testing.F) {

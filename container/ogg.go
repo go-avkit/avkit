@@ -268,6 +268,12 @@ func (s *oggStream) add(page oggPageHeader) error {
 // oggTrack hands a stream to its codec's mapping, which its first packet
 // names, or reports a codec this package does not read.
 func oggTrack(s *oggStream) *mkvReadTrack {
+	if len(s.packets) == 0 {
+		// A beginning-of-stream page with no whole packet on it: the file
+		// ended inside the first one, or the stream never had one.
+		err := errorf(ErrMalformed, "ogg: stream %08x holds no whole packet", s.serial)
+		return &mkvReadTrack{track: Track{Language: "und"}, configErr: err, samplesErr: err}
+	}
 	first := s.packets[0].data
 	switch {
 	case bytes.HasPrefix(first, []byte(opusHeadMagic)):
