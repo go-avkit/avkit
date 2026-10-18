@@ -242,7 +242,7 @@ func (m *ProgressiveMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 		lang = "und"
 	}
 	id := uint32(len(m.tracks)) + 1
-	trak := mp4.CreateEmptyTrak(id, cfg.Timescale, handlerFor(cfg.Kind), lang)
+	trak := mp4.CreateEmptyTrak(id, cfg.Timescale, trackHandler(cfg), lang)
 	// The sample entry a progressive file needs is the one a fragmented file
 	// needs, so it is written by the same code.
 	if err := describe(trak, cfg); err != nil {
