@@ -205,7 +205,7 @@ writes it.
 | mode | SeekHead |
 |---|---|
 | `BufferedSegment()` | written once, with every position known |
-| streamed to an `io.Seeker` (an `os.File`) | written first with room for the Cues entry, then rewritten in place at `Close`. The writer is seeked back once and returned to the end of the file |
+| streamed to an `io.Seeker` (an `os.File`) | written first with room for the Cues entry, then rewritten in place at `Close`. The writer is seeked back and returned to the end of the file. The segment is completed as ffmpeg's `matroskaenc` completes it at its trailer: Info's `Duration` (RFC 9559 §5.1.2.4) is written over an 11-byte Void that held its place, and the Segment's and every Cluster's real size over the 8-byte unknown size they were opened with |
 | streamed to anything else (a socket, an HTTP response, a pipe) | **none**, so the bytes are unchanged |
 
 The last row is deliberate. The Cues are not known when a SeekHead would have to
