@@ -5,6 +5,7 @@ package container
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -416,6 +417,92 @@ func TestAVIAudioRemuxesToMP4AndMatroska(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestBFramesFromATransportStreamArePresentedFromZeroEverywhere: #82 reads a
+// transport stream's PTS back as composition offsets, #60 writes the edit list
+// that presents a reordering track from zero in both MP4 forms (and takes the
+// offset off a Matroska copy's blocks), and #72 writes the TS again with the
+// first picture at the program's start. Together, ffmpeg's own B-frame TS goes
+// out to all four muxers and is presented from zero, its pictures in the
+// order the source presents them.
+func TestBFramesFromATransportStreamArePresentedFromZeroEverywhere(t *testing.T) {
+	// ffprobe -show_entries packet=pts,dts of the fixture, as #82's test.
+	pts := []int64{133200, 144000, 136800, 140400, 151200, 147600, 158400, 154800, 165600, 162000}
+	r, err := NewReader(readFixture(t, "ffmpeg-bframes.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// presentedFrom is each picture's presentation time less the first
+	// picture's, in 90 kHz ticks: what every copy must reproduce.
+	first := slices.Min(pts)
+	want := make([]int64, len(pts))
+	for i, p := range pts {
+		want[i] = p - first
+	}
+	shownAs := func(what string, samples []Sample, scale uint32, start int64) {
+		t.Helper()
+		var decode int64
+		for i, s := range samples {
+			got := (decode + int64(s.CompositionOffset) - start) * 90000 / int64(scale)
+			if got != want[i] {
+				t.Errorf("%s: picture %d presented at %d (90 kHz), the source at %d", what, i, got, want[i])
+			}
+			decode += int64(s.Duration)
+		}
+	}
+	for _, form := range []struct {
+		name  string
+		write func(io.Writer, *Reader) error
+	}{
+		{"fragmented MP4", func(w io.Writer, r *Reader) error { return Remux(w, r) }},
+		{"progressive MP4", func(w io.Writer, r *Reader) error { return JoinProgressive(w, []*Reader{r}) }},
+	} {
+		var out bytes.Buffer
+		if err := form.write(&out, r); err != nil {
+			t.Fatalf("%s: %v", form.name, err)
+		}
+		keepForOracle(t, "ts-bframes."+strings.ReplaceAll(form.name, " ", "-")+".mp4", out.Bytes())
+		if got := firstPresented(t, out.Bytes(), 0); got != 0 {
+			t.Errorf("%s: the first picture is shown at %d ticks, want 0", form.name, got)
+		}
+		back, err := NewReader(out.Bytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, _ := back.TrackConfig(back.TrackIDs()[0])
+		samples, _ := back.Samples(back.TrackIDs()[0])
+		var media int64
+		if e := edits(t, out.Bytes())[0]; e != nil {
+			media = e[0].MediaTime
+		}
+		shownAs(form.name, samples, cfg.Timescale, media)
+	}
+
+	var mkv bytes.Buffer
+	copyInto(t, NewWebMMuxer(&mkv, BufferedSegment()), r)
+	keepForOracle(t, "ts-bframes.mkv", mkv.Bytes())
+	ticks := blockTicks(readWebM(t, mkv.Bytes()), 1)
+	if len(ticks) != len(pts) || ticks[0] != 0 {
+		t.Errorf("Matroska: pictures shown at %v ms, want from 0", ticks)
+	}
+
+	var ts bytes.Buffer
+	copyInto(t, NewTSMuxer(&ts), r)
+	keepForOracle(t, "ts-bframes.ts", ts.Bytes())
+	back, err := NewReader(ts.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	units := tsUnitsOfStream(t, ts.Bytes(), uint16(back.TrackIDs()[0]))
+	if len(units) != len(pts) {
+		t.Fatalf("TS: %d units, want %d", len(units), len(pts))
+	}
+	for i, u := range units {
+		if got := u.PES.Header.OptionalHeader.PTS.Base - tsTimestampOffset; got != want[i] {
+			t.Errorf("TS: picture %d presented at %d after the start, the source at %d", i, got, want[i])
+		}
 	}
 }
 
