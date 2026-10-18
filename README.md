@@ -300,8 +300,12 @@ the end. `AllowTruncated()` says to write it anyway.
 
 ## Scope
 
-Today go-avkit reads container *structure and metadata*. Codec bitstream
-decoding (H.264/HEVC/AV1/VP9, AAC/Opus …) lives in sibling packages as they land.
+This module reads and writes containers: their structure, their tracks'
+configuration and their samples, which is what copying a track from one
+container into another takes. The sibling modules listed under "What is
+deliberately absent" read bitstream syntax. Nothing in the organisation decodes:
+there is no H.264, HEVC, AV1 or VP9 picture decoding and no AAC or Opus audio
+decoding, and none is planned here.
 
 ## License
 
