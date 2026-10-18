@@ -6,6 +6,7 @@ package container
 import (
 	"bytes"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -179,6 +180,46 @@ func TestAnIndexedFileCarriesBFramesAndSubtitles(t *testing.T) {
 		t.Errorf("the WebVTT index lasts %d ms, the cues 4000", total)
 	}
 	sameSamples(t, readAllSamples(t, data), readAllSamples(t, withoutIndex(t, data)))
+}
+
+// TestTheSeekHeadNamesTheTagsAndTheCover: metadata (#67) writes Tags and an
+// Attachments element before the first cluster; the SeekHead (#66) names
+// every Top-Level Element written there. Both modes that carry a SeekHead --
+// buffered, and streamed to a writer that seeks -- name them at the position
+// they really have, and the metadata reads back.
+func TestTheSeekHeadNamesTheTagsAndTheCover(t *testing.T) {
+	want := fullMetadata(t)
+	avc, err := NewReader(readFixture(t, "metadata-ffmpeg.mp4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	buffered := copyToWebM(t, avc, want, BufferedSegment())
+
+	sink := newOffsetSink(100)
+	m := NewWebMMuxer(sink)
+	if err := m.SetMetadata(want); err != nil {
+		t.Fatal(err)
+	}
+	copyTracks(t, avc, m)
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for what, data := range map[string][]byte{"buffered": buffered, "streamed to a seeker": sink.data} {
+		keepForOracle(t, "seekhead-metadata-"+strings.ReplaceAll(what, " ", "-")+".mkv", data)
+		checkSeekHead(t, data, true)
+		seeks := seekHeadOf(t, data)
+		for name, id := range map[string]uint64{"Tags": 0x1254C367, "Attachments": 0x1941A469, "Cues": 0x1C53BB6B} {
+			if _, ok := seeks[id]; !ok {
+				t.Errorf("%s: the SeekHead does not name the %s", what, name)
+			}
+		}
+		f, err := Demux(data)
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		assertMetadata(t, what, f.Metadata, want)
+	}
 }
 
 // checkBack reads a written file back and compares its one track with the

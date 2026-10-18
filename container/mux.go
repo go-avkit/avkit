@@ -232,7 +232,8 @@ type Muxer struct {
 	sequence  uint32
 	// index is what a Muxer asked for a SegmentIndex keeps until Close;
 	// nil otherwise.
-	index *segmentIndex
+	index    *segmentIndex
+	metadata *Metadata // what SetMetadata was given, nil for nothing
 }
 
 // muxTrack is one track's writing state.
@@ -290,7 +291,7 @@ func (m *Muxer) writeHeader() error {
 			setEdits(t.trak, edts)
 		}
 	}
-	if err := m.init.Encode(m.w); err != nil {
+	if err := m.encodeInit(); err != nil {
 		return fmt.Errorf("container: write init segment: %w", err)
 	}
 	m.headerOut = true

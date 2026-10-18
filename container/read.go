@@ -868,6 +868,7 @@ func NewSegmentedReader(parts [][]byte) (*Reader, error) {
 		}
 		if file.Format == "" {
 			file.Format, file.Timescale, file.Brand = r.file.Format, r.file.Timescale, r.file.Brand
+			file.Metadata = r.file.Metadata // the first segment's, as with the rest
 		}
 		for _, track := range r.file.Tracks {
 			id := track.ID

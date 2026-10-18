@@ -40,6 +40,7 @@ type remuxSettings struct {
 	strictSync     bool
 	conformHVC1    bool
 	allowTruncated bool
+	metadata       *Metadata // ReplaceMetadata's, nil to copy the input's
 }
 
 // AllowTruncated lets an input that ended before its structure did be written
@@ -187,7 +188,7 @@ func Cut(w io.Writer, src *Reader, start, end time.Duration, opts ...RemuxOption
 			return err
 		}
 	}
-	return writeCopy(w, set, [][]sourceTrack{tracks})
+	return writeCopy(w, set, set.outputMetadata([]*Reader{src}), [][]sourceTrack{tracks})
 }
 
 // Concat writes srcs one after another into a single fragmented MP4, tracks
@@ -260,7 +261,7 @@ func Concat(w io.Writer, srcs []*Reader, opts ...RemuxOption) error {
 	for _, in := range inputs[:len(inputs)-1] {
 		padTimedText(in)
 	}
-	return writeCopy(w, set, inputs)
+	return writeCopy(w, set, set.outputMetadata(srcs), inputs)
 }
 
 // trackConfig exists so the failure it guards can be tested: every identifier
@@ -369,8 +370,11 @@ func describeFromSamples(cfg TrackConfig, samples []Sample) (TrackConfig, error)
 
 // writeCopy declares the first input's tracks, then writes every input's
 // samples behind one another.
-func writeCopy(w io.Writer, set *remuxSettings, inputs [][]sourceTrack) error {
+func writeCopy(w io.Writer, set *remuxSettings, md Metadata, inputs [][]sourceTrack) error {
 	m := NewMuxer(w, set.mux...)
+	if err := m.SetMetadata(md); err != nil {
+		return err
+	}
 	// Every track is declared before the first sample: the initialisation
 	// segment names them all.
 	outIDs := make([]uint32, len(inputs[0]))
