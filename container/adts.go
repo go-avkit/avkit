@@ -56,8 +56,10 @@ var adtsSyntax = frameSyntax{
 	// Nine bytes, so the CRC of a protected header is there to be read.
 	headerSize: adtsHeaderSize + 2,
 	length: func(data []byte) int {
+		// A frame that is all header holds no raw data block, not even the
+		// ID_END that closes one, so it is not an AAC frame.
 		h, ok := adtsFrameHeader(data)
-		if !ok {
+		if !ok || h.PayloadLength == 0 {
 			return 0
 		}
 		return int(h.HeaderLength) + int(h.PayloadLength)
@@ -78,7 +80,10 @@ func readADTS(data []byte) ([]*mkvReadTrack, error) {
 		return nil, noFrames("adts", err)
 	}
 	firstFrame := data[frames[0][0] : frames[0][0]+frames[0][1]]
-	h, _ := adtsFrameHeader(firstFrame)
+	// The header is read from the stream rather than from the frame: a
+	// frame may be shorter than the nine bytes a protected header takes,
+	// and the walk has checked that the stream holds them.
+	h, _ := adtsFrameHeader(data[frames[0][0]:])
 	rate := adtsFrequency(h.SamplingFrequencyIndex)
 	t := audioTrack("mp4a", uint32(rate), int(h.ChannelConfig), rate)
 	// The record is the one ConfigFromSamples builds from an ADTS frame, so
@@ -95,7 +100,7 @@ func readADTS(data []byte) ([]*mkvReadTrack, error) {
 	}
 	for _, f := range frames {
 		frame := data[f[0] : f[0]+f[1]]
-		header, _ := adtsFrameHeader(frame)
+		header, _ := adtsFrameHeader(data[f[0]:])
 		t.samples = append(t.samples, Sample{
 			Data:     frame[header.HeaderLength:],
 			Duration: aacFrameSamples,

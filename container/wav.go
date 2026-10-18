@@ -162,6 +162,12 @@ func parseWAVFormat(b []byte) (wavFormat, error) {
 // complement -- so it is reported as QuickTime's 'raw ', the entry for
 // offset-binary eight-bit samples, and carries no pcmC.
 func wavCodec(f wavFormat) (string, []byte, error) {
+	if f.tag != waveFormatPCM && f.tag != waveFormatIEEEFloat {
+		// A compressed format's block is its own business, not a frame of
+		// samples, so nothing below applies to it.
+		return wavTagName(f.tag), nil, errorf(ErrUnsupportedCodec,
+			"wav: format tag 0x%04x is not linear PCM, and its frames are not read from a WAVE wrapper", f.tag)
+	}
 	if f.blockAlign%f.channels != 0 {
 		return "", nil, errorf(ErrMalformed, "wav: blocks of %d bytes do not divide among %d channels",
 			f.blockAlign, f.channels)
@@ -178,11 +184,8 @@ func wavCodec(f wavFormat) (string, []byte, error) {
 		return "ipcm", pcmC, nil
 	case f.tag == waveFormatIEEEFloat && (width == 4 || width == 8):
 		return "fpcm", pcmC, nil
-	case f.tag == waveFormatPCM || f.tag == waveFormatIEEEFloat:
-		return "", nil, errorf(ErrUnsupportedCodec, "wav: format tag 0x%04x in %d-byte samples", f.tag, width)
 	}
-	return wavTagName(f.tag), nil, errorf(ErrUnsupportedCodec,
-		"wav: format tag 0x%04x is not linear PCM, and its frames are not read from a WAVE wrapper", f.tag)
+	return "", nil, errorf(ErrUnsupportedCodec, "wav: format tag 0x%04x in %d-byte samples", f.tag, width)
 }
 
 // wavTagName names a WAVE format tag the way RFC 2361 §4 spells it as a MIME

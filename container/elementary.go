@@ -39,6 +39,14 @@ type elementaryFormat struct {
 	read func(data []byte) ([]*mkvReadTrack, error)
 }
 
+// The orders Sniff tries the registered formats in: those that open with a
+// magic number first, then those recognised by their frames, because a sync
+// word is weaker evidence than four letters.
+const (
+	orderMagic      = 10
+	orderSyncFrames = 20
+)
+
 // elementaryFormats are the registered formats, in the order Sniff tries them.
 var elementaryFormats []elementaryFormat
 
@@ -151,9 +159,6 @@ func errorf(sentinel error, format string, args ...any) error {
 // oneTrack is the result of a format that carries a single track, so the
 // formats with one elementary stream report it the same way.
 func oneTrack(t *mkvReadTrack, err error) ([]*mkvReadTrack, error) {
-	if t == nil {
-		return nil, err
-	}
 	return []*mkvReadTrack{t}, err
 }
 

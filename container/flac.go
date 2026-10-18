@@ -35,9 +35,6 @@ func init() {
 	})
 }
 
-// orderMagic places the formats that open with a magic number first.
-const orderMagic = 10
-
 // flacMarker opens a native FLAC stream.
 const flacMarker = "fLaC"
 

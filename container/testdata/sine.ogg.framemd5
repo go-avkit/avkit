@@ -1,0 +1,23 @@
+#format: frame checksums
+#version: 2
+#hash: MD5
+#extradata 0,                            3308, 9d2f81baf39a6c35d5560d2730438540
+#software: Lavf63.1.102
+#tb 0: 1/22050
+#media_type 0: audio
+#codec_id 0: vorbis
+#sample_rate 0: 22050
+#channel_layout_name 0: stereo
+#stream#, dts,        pts, duration,     size, hash
+0,          0,          0,     1024,      237, 67172bd18f87409c61f7494e7f03d29b, S=1,       28, b727045e8e7da3f774677d6726047e9d
+0,       1024,       1024,     1024,       75, fbf4c962486473f882d0ec77db515d5c
+0,       2048,       2048,     1024,       84, ea05c72ced8a297446f26231c5585024
+0,       3072,       3072,     1024,       82, 8c0c93ae00781fdf807cde1efe4c30d0
+0,       4096,       4096,     1024,       85, 08c55992e0cc187d6cae574fb363dac2
+0,       5120,       5120,     1024,       78, 2192bb056641371a51aabd0237d655ab
+0,       6144,       6144,     1024,       77, c16e91e9364615408e647a23ce7ce5a0
+0,       7168,       7168,     1024,       79, aa0fe54837b8f72e5f2175349bf5f9bc
+0,       8192,       8192,     1024,       74, 263e045be6bf2ee9b96958d14db3c429
+0,       9216,       9216,     1024,       88, 4cb500e2e8df6e12e8992b56e8cb2a85
+0,      10240,      10240,     1024,      173, 1e07b6d8373263cdf50509959a71c43e
+0,      11264,      11264, 4294967104,      227, 2a1e485ccc069daa0b21336bff0f21af, S=1,       10, 99a6ee83537d346ac5c634b0b839ccbb

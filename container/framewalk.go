@@ -155,6 +155,15 @@ func (s frameSyntax) walkFrames(data []byte) (frames [][2]int, err error) {
 	return frames, nil
 }
 
+// noFrames is the refusal of a stream in which no whole frame was found: the
+// cut, when the only frame there was cut short, or else a malformation.
+func noFrames(format string, err error) error {
+	if err != nil {
+		return err
+	}
+	return errorf(ErrMalformed, "%s: no frame found", format)
+}
+
 // resync is the first offset from i on where a chain of frames starts, or -1.
 // Zero bytes, which encoders pad with, are passed over without a look.
 func (s frameSyntax) resync(data []byte, i, end int, first []byte) int {
@@ -193,6 +202,9 @@ func (s frameSyntax) sniffFrames(data []byte) bool {
 	for frames := 0; ; frames++ {
 		if frames == 3 || (frames > 0 && i >= len(data)) {
 			return true
+		}
+		if frames > 0 {
+			i += id3v2Length(data[i:]) // a tag between two frames, as walkFrames allows
 		}
 		n := s.frameAt(data, i, len(data), first)
 		if n == 0 {
