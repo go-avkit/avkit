@@ -367,7 +367,7 @@ What each operation does with it:
 |---|---|
 | `Remux`, `Join`, `JoinProgressive`, a caller's own copy | written as it stands. Durations are restated in the output's movie timescale, rounded up. A progressive copy of a fragmented file's last edit of duration zero ("to the end", §8.6.6.1, only allowed in a fragmented file) states its length. The track header lasts what the edits do (§8.3.2.3). |
 | `Muxer` (fragmented) | takes an optional empty edit followed by one edit at the normal rate, and refuses more with `ErrTrackConfig`. ffmpeg turns its edit list support off for a fragmented file ("multiple edit list entries, not supported in fragmented MP4 files"): a two-edit list copied into one presented all 100 frames where the source presents 50. `ProgressiveMuxer` writes it. |
-| `Cut`, `Concat` of several inputs | both move the media the list counts in, so it cannot be copied. A list that only says where the presentation starts (one edit at the normal rate, reaching the end of the media) is dropped, and the muxer states that start itself. Anything else is refused with `ErrEditList`: an empty edit placing the track later than its siblings, several edits, a dwell or another rate. So is an edit ending before the media does (how a gapless AAC file trims its padding, and how an MP3 read with its LAME end padding states it) when the output keeps the track's end. |
+| `Cut`, `Concat` of several inputs | both move the media the list counts in, so it cannot be copied. A list that only says where the presentation starts (one edit at the normal rate, reaching the end of the media) is dropped, and the muxer states that start itself. Anything else is refused with `ErrEditList`: an empty edit placing the track later than its siblings, several edits, a dwell or another rate. So is an edit ending before the media does (how a gapless AAC file trims its padding, and how an MP3 read with its LAME end padding, or a Matroska track read with its `DiscardPadding`, states it) when the output keeps the track's end. |
 | `WebMMuxer` | Matroska has presentation times and no edit lists. An optional empty edit and one edit at the normal rate become a shift of the track's times: the empty edit delays them by its length, and an edit starting before the first frame's composition time shows it that much later. Anything else is refused with `ErrTrackConfig`. A priming after the first frame is the `CodecDelay` of an audio track when the list is the single edit a priming is written as, which the reader states as `StartDelay`; after an empty edit it is shown. An audio edit that stops before the media does is written as the `DiscardPadding` (RFC 9559 §5.1.3.5.7) of every block it cuts into. |
 | `TSMuxer` | ignores it. |
 
@@ -400,8 +400,26 @@ as long as it says. With an edit that stops before the media does (above) the
 padding covers what the edit leaves out too. Decoded by ffmpeg, the last frame
 of the copy of a 2 s stereo file is 768 samples long, as the source's is.
 
-Matroska to MP4 is not covered: the Matroska reader does not read
-`DiscardPadding` back.
+### The end of a Matroska audio track, to MP4
+
+The other way, the Matroska reader reads `DiscardPadding` (RFC 9559 §5.1.3.5.7)
+and states where it ends the presentation as `TrackConfig.EditList`: one edit
+from the priming `StartDelay` states to that end, which the MP4 muxers write as
+an edit ending before the media — what ffmpeg's `movenc` makes of the skipped
+samples `matroskadec` hands it (`elst_end_pts`, the packet lasting
+`max(frame_size, duration)` less the padding) — and `WebMMuxer` writes back as
+`DiscardPadding`. A last block decodes for what the samples say it lasts and at
+least as long as the block before it, which stands for `movenc`'s frame size:
+ffmpeg writes a trimmed last frame both ways, as a short `BlockDuration` beside
+its padding (its own encoders' output) and as no duration at all beside it
+(an MP3 copied from a file with a LAME tag). The first already ends where the
+padding begins, so it states no edit; the second used to be copied whole.
+Measured on ffmpeg 9.0.2's `-c copy` of `testdata/sine.mp3` into Matroska, which
+presents 14 335 of its 14 976 samples: avkit's MP4 copy decoded 14 976 before and
+14 309 now; ffmpeg's own MP4 copy decodes 14 377. The precision is the Matroska
+millisecond. Only the run of padded blocks that reaches the end of the track is
+read; a padding inside the track, or a negative one at the start of a block, is
+left as it was.
 
 ## The two rates of an HE-AAC track
 

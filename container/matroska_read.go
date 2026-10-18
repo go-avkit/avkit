@@ -78,6 +78,10 @@ type mkvBlockGroup struct {
 	ReferenceBlock []int64            `ebml:"ReferenceBlock,omitempty"`
 	Block          ebml.Block         `ebml:"Block"`
 	BlockAdditions *mkvBlockAdditions `ebml:"BlockAdditions,omitempty"`
+	// DiscardPadding is how much of what the block decodes to is not
+	// presented, in nanoseconds: at its end when positive, at its start when
+	// negative (RFC 9559 §5.1.3.5.7). See mkvEndTrim.
+	DiscardPadding int64 `ebml:"DiscardPadding,omitempty"`
 }
 
 // mkvBlockAdditions is data a block carries beside its frame. The only one read
@@ -126,6 +130,8 @@ type mkvBlock struct {
 	sync   bool
 	// additional is the block's addition of ID 1, nil when it has none.
 	additional []byte
+	// discard is the block group's DiscardPadding, in nanoseconds.
+	discard int64
 }
 
 // mkvFrame is one frame of a track, once a laced block has been taken apart.
@@ -224,7 +230,77 @@ func mkvReadTrackOf(te mkvTrackEntry, timescale uint32, scale uint64,
 	for _, s := range t.samples {
 		t.track.Duration += uint64(s.Duration)
 	}
+	if t.configErr == nil && t.samplesErr == nil && t.config.Kind == Audio {
+		t.config.EditList = mkvEndTrim(t.config, blocks, t.samples, int64(scale))
+	}
 	return t
+}
+
+// mkvEndTrim is the edit list that ends an audio track's presentation where
+// the DiscardPadding of its last blocks says it ends, or nil when the samples
+// already end there.
+//
+// Matroska states the padding an encoder leaves after the last sample as the
+// DiscardPadding of the blocks it falls in (RFC 9559 §5.1.3.5.7), which
+// ffmpeg's matroskadec hands the decoder as samples to skip at the end of the
+// packet (AV_PKT_DATA_SKIP_SAMPLES). An MP4 has no such field: ffmpeg's movenc
+// turns it into the end of the edit list (elst_end_pts), the packet lasting
+// max(frame_size, duration) less the padding. That is what this states, for
+// the muxers to write: Muxer and ProgressiveMuxer as an edit ending before the
+// media, WebMMuxer as DiscardPadding again (webmEdit).
+//
+// What a block decodes to is its duration as the samples state it -- to the
+// next block, or BlockDuration, DefaultDuration and the rest for the last one
+// (mkvLastDuration) -- and, for the last block, at least the duration of the
+// one before, which stands for the frame size movenc takes from the codec: a
+// last block may state either its whole length or only what it presents,
+// ffmpeg writing both (a 1024-sample AAC frame as 16 ms beside a padding of
+// 5.33 ms; an MP3 frame with no duration beside a padding of 19.84 ms). The
+// padding is converted to the track's ticks rounded to the nearest, half
+// down, so a padding of half a tick trims nothing.
+//
+// Only the padding at the end of the track is an end: the run of blocks
+// carrying a positive padding that reaches the last one, whose earliest end is
+// where the presentation stops. A padding inside the track, followed by a
+// block that has none, would need the media cut and is left alone, and so is a
+// negative padding, which is at the start of a block and is what CodecDelay
+// already states as StartDelay.
+func mkvEndTrim(cfg TrackConfig, blocks []mkvBlock, samples []Sample, scale int64) *EditList {
+	// Where each sample starts being shown, and which sample is each block's
+	// last: a laced block is several samples, and its padding is at the end of
+	// the last of them.
+	starts := make([]int64, len(samples))
+	var dts int64
+	for i, s := range samples {
+		starts[i] = dts + int64(s.CompositionOffset)
+		dts += int64(s.Duration)
+	}
+	last := make([]int, len(blocks))
+	k := -1
+	for j, b := range blocks {
+		k += len(b.frames)
+		last[j] = k
+	}
+	end := int64(math.MaxInt64)
+	for j := len(blocks) - 1; j >= 0 && blocks[j].discard > 0; j-- {
+		k := last[j]
+		decoded := int64(samples[k].Duration)
+		if k == len(samples)-1 && k > 0 {
+			decoded = max(decoded, int64(samples[k-1].Duration))
+		}
+		padding := blocks[j].discard / scale
+		if 2*(blocks[j].discard%scale) > scale {
+			padding++
+		}
+		end = min(end, starts[k]+decoded-padding)
+	}
+	start := presentationStart(samples[0].CompositionOffset, primingTicks(cfg.StartDelay, cfg.Timescale))
+	if end >= presentedUntil(samples) || end <= start {
+		return nil
+	}
+	return &EditList{MovieTimescale: cfg.Timescale, Edits: []Edit{{
+		SegmentDuration: uint64(end - start), MediaTime: start, Rate: NormalRate,
+	}}}
 }
 
 // unmarshalMatroska reads the whole document with the reference ebml-go
@@ -318,6 +394,7 @@ func mkvBlockOf(ref mkvBlockRef) mkvBlock {
 	if ref.group != nil {
 		b.stated = int64(ref.group.BlockDuration)
 		b.sync = len(ref.group.ReferenceBlock) == 0
+		b.discard = ref.group.DiscardPadding
 		if adds := ref.group.BlockAdditions; adds != nil {
 			for _, more := range adds.BlockMore {
 				if more.BlockAddID == 0 || more.BlockAddID == mkvWebVTTAddition {

@@ -169,9 +169,11 @@ type TrackConfig struct {
 	// added to it: the list already says where the presentation starts.
 	StartDelay time.Duration
 	// EditList is the track's MP4 edit list, as the MP4 reader found it, or
-	// nil. The MPEG audio reader states one too, for an MP3 whose LAME tag
-	// states padding at its end: one edit from the priming to where that
-	// padding begins. Muxer and ProgressiveMuxer write it as it stands, in
+	// nil. Two other readers state one, for an audio track whose end is
+	// padding: the MPEG audio reader, for an MP3 whose LAME tag says so, and
+	// the Matroska reader, for a track whose last blocks carry DiscardPadding
+	// the samples' own durations do not already leave out. It is one edit,
+	// from the priming to where the padding begins. Muxer and ProgressiveMuxer write it as it stands, in
 	// place of the one they would build from the first composition offset and
 	// StartDelay, so a track copied from one MP4 into another keeps its
 	// presentation edit for edit. A caller who wants the muxers' own edit list
