@@ -160,8 +160,9 @@ mp4ff. go-avkit reads them, the same way through `Demux`, `NewReader`,
 Measured over 2375 MP4 files: 17 are refused. 16 of them `ffprobe` refuses too
 (no movie box), and the last one is an AVI file with a `.mp4` name.
 
-Edit lists (`elst`) are not applied: samples come back in decode order, once
-each, as the sample tables list them.
+Edit lists (`elst`) are read and carried (see "Edit lists, MP4 to MP4"), but not
+applied: samples come back in decode order, once each, as the sample tables
+list them.
 
 ## Encoder priming survives a remux
 
@@ -172,8 +173,10 @@ output a frame the input never presented: audio and video parted company by that
 much, and the output was lossless for video only.
 
 `TrackConfig.StartDelay` now carries it. Readers fill it in from whichever form
-the source used, `Muxer.AddTrack` writes an edit list for it, and a caller who
-knows better can overwrite it. Nothing has to be asked for.
+the source used, both MP4 muxers (`Muxer` and `ProgressiveMuxer`) write an edit
+list for it, and a caller who knows better can overwrite it. Nothing has to be
+asked for. `WebMMuxer` does not write it: it states `CodecDelay` for Opus only,
+from the identification header's pre-skip.
 
 It is not `PreSkip`. `PreSkip` is Opus stating its own priming inside its
 identification header, and it travels with the codec configuration wherever the
@@ -189,10 +192,99 @@ milliseconds by default and that timescale is carried over, so a 21.333 ms
 priming is stated as 21 — rounded to the nearest tick, not down. That is a third
 of a millisecond lost where a whole 21.333 ms frame was gained before.
 
-Only one shape of edit list is read: a single entry starting at a positive media
-time at rate 1, which is what priming looks like. Several entries, an empty edit
-or another rate describe a presentation this package does not reproduce, and
-reading a delay out of one would state something the output does not do.
+A priming is read out of one shape of edit list only: a single entry starting at
+a positive media time at rate 1, which is what priming looks like. The media
+time is in composition time, so the first sample's composition offset is taken
+off it before it is read as a priming (see below). Any other list is carried
+whole as `TrackConfig.EditList` instead (see "Edit lists, MP4 to MP4"). When
+that is set, the MP4 muxers write the list and do not add `StartDelay` to it.
+
+## B-frames start at zero
+
+A track that reorders its frames (H.264 or HEVC with B-frames) decodes its
+first frame at zero and presents it at its composition offset: two frames later
+for x264's default of two B-frames. avkit's copies did not say where the
+presentation starts, so the first picture was shown that much late while the
+sound started at zero. Measured with `ffprobe` on an ffmpeg file (`libx264 -bf 2`
+with AAC), the video `start_time` was:
+
+| source → output | before | after |
+|---|---|---|
+| `.mkv` → fragmented MP4 (`Remux`) | 0.040 | 0.000 |
+| `.mkv` → progressive MP4 (`JoinProgressive`) | 0.040 | 0.000 |
+| `.mkv` → Matroska (`WebMMuxer`) | 0.040 | 0.000 |
+| `.mp4` → fragmented MP4 | 0.000 | 0.000 |
+| `.mp4` → progressive MP4 | 0.080 | 0.000 |
+| `.mp4` → Matroska | 0.080 | 0.000 |
+
+The source states 0.000 for every track. The one row that was right before was
+right by accident: the reader took ffmpeg's edit list for a priming, and the
+fragmented muxer wrote it back.
+
+ISO/IEC 14496-12 §8.6.6.1 recommends an edit "to establish a presentation time
+of 0 for the first presented sample, when composition offsets are used", and
+that is what both MP4 muxers now write: one edit whose media time is the first
+sample's composition offset, plus the priming of `StartDelay` after it. It is
+what ffmpeg's `movenc` writes. The progressive muxer states the length of the
+edit, rounded up to the movie timescale, and gives the track header that length
+(§8.3.2.3). The fragmented muxer writes a length of zero, which §8.6.6.1 allows
+in a fragmented file's initial movie.
+
+The fragmented muxer now writes its initialisation segment **with the first
+fragment** instead of with the first sample. Before then it cannot know the
+first composition offset of every track. ffmpeg's `-movflags delay_moov` makes
+the same choice: without it, ffmpeg's own fragmented output starts this video at
+0.080. A track whose first sample arrives only after the first fragment has gone
+out has its priming stated alone.
+
+Matroska states presentation times, so `WebMMuxer` takes the first sample's
+composition offset off every block of the track. A frame presented before the
+first one would fall before zero and is refused. Only a group of pictures begun
+before the stream can hold such a frame, and a decoder starting at the stream's
+first sync sample discards it anyway.
+
+Negative composition offsets (a version 1 `ctts`, §8.6.1.3, with `cslg`,
+§8.6.1.4) are the other way to get a zero start: they move the decode times
+instead of the presentation. They are not used here. They rewrite every offset
+where the edit list adds one box, and ffmpeg's own output that way
+(`-movflags +cmaf`) reads back starting at 0.040 for the same source.
+
+The packets are untouched: ffmpeg's `framemd5` of the video, packets and
+decoded frames alike, is identical to the source's, at identical timestamps, in
+all six copies.
+
+## Edit lists, MP4 to MP4
+
+An edit list (ISO/IEC 14496-12 §8.6.5, §8.6.6) says which stretches of a
+track's media make up its presentation: an empty edit (`EmptyEdit`) delays the
+track, an edit at `NormalRate` plays media from a composition time onwards, a
+rate of zero holds one frame. The MP4 reader hands the whole list over as
+`TrackConfig.EditList`, every entry as the file states it. Durations stay in the
+source's movie timescale (`MovieTimescale`). Media times are rebased onto the
+samples `Samples` returns, for a fragmented file whose first fragment starts
+later on its media timeline (its `tfdt`). The list is not applied to the
+samples.
+
+What each operation does with it:
+
+| | |
+|---|---|
+| `Remux`, `Join`, `JoinProgressive`, a caller's own copy | written as it stands. Durations are restated in the output's movie timescale, rounded up. A progressive copy of a fragmented file's last edit of duration zero ("to the end", §8.6.6.1, only allowed in a fragmented file) states its length. The track header lasts what the edits do (§8.3.2.3). |
+| `Muxer` (fragmented) | takes an optional empty edit followed by one edit at the normal rate, and refuses more with `ErrTrackConfig`. ffmpeg turns its edit list support off for a fragmented file ("multiple edit list entries, not supported in fragmented MP4 files"): a two-edit list copied into one presented all 100 frames where the source presents 50. `ProgressiveMuxer` writes it. |
+| `Cut`, `Concat` of several inputs | both move the media the list counts in, so it cannot be copied. A list that only says where the presentation starts (one edit at the normal rate, reaching the end of the media) is dropped, and the muxer states that start itself. Anything else is refused with `ErrEditList`: an empty edit placing the track later than its siblings, several edits, a dwell or another rate. So is an edit ending before the media does (how a gapless AAC file trims its padding) when the output keeps the track's end. |
+| `WebMMuxer` | Matroska has presentation times and no edit lists. An optional empty edit and one edit at the normal rate become a shift of the track's times: the empty edit delays them by its length, and an edit starting before the first frame's composition time shows it that much later. Anything else is refused with `ErrTrackConfig`. A priming after the first frame is shown, as `WebMMuxer` shows any priming but Opus's. |
+| `TSMuxer` | ignores it. |
+
+Measured with ffmpeg 9.0.2 on 4 s files made the way the fixtures
+`bframes-delayed.mp4` and `bframes-twoedits.mp4` are:
+
+- The sound put 0.5 s late with `-itsoffset`, which ffmpeg writes as an empty
+  edit of 479 ms and then the media. The fragmented, progressive and Matroska
+  copies all start the sound at 0.479, as the source does. Their packet and
+  decoded-video `framemd5` are identical to the source's.
+- The picture's list rewritten into two edits of 1 s, the media's first and
+  third seconds. The progressive copy decodes the same 50 frames at the same
+  times as the source.
 
 ## AC-3 and Enhanced AC-3 out of Matroska
 
