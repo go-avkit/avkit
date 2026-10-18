@@ -166,8 +166,9 @@ type ProgressiveMuxer struct {
 	// seeked back to it.
 	mdatSizeAt uint64
 
-	started bool
-	closed  bool
+	started  bool
+	closed   bool
+	metadata *Metadata // what SetMetadata was given, nil for nothing
 }
 
 // progressiveTrack is one track's writing state: the tables under construction
@@ -517,6 +518,9 @@ func (m *ProgressiveMuxer) movie() (*mp4.MoovBox, error) {
 		moov.AddChild(t.trak)
 	}
 	setDuration(&mvhd.Version, &mvhd.Duration, longest)
+	if udta := mp4Udta(m.metadata); udta != nil {
+		moov.AddChild(udta)
+	}
 	return moov, nil
 }
 

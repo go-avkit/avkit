@@ -89,6 +89,10 @@ type File struct {
 	Timescale uint32 // movie/segment timescale (units per second)
 	Duration  uint64 // overall duration in Timescale units
 	Tracks    []Track
+	// Metadata is what the file says about itself as a whole: its title,
+	// artist and cover. It is empty for an MPEG transport stream, which has no
+	// place for any of it.
+	Metadata Metadata
 }
 
 // DurationSeconds returns the overall duration in seconds (0 if unknown).

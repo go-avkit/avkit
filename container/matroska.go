@@ -33,13 +33,16 @@ type mkvHeader struct {
 }
 
 type mkvSegment struct {
-	Info   mkvInfo   `ebml:"Info"`
-	Tracks mkvTracks `ebml:"Tracks"`
+	Info        mkvInfo          `ebml:"Info"`
+	Tracks      mkvTracks        `ebml:"Tracks"`
+	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
+	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
 }
 
 type mkvInfo struct {
 	TimecodeScale uint64  `ebml:"TimecodeScale,omitempty"`
 	Duration      float64 `ebml:"Duration,omitempty"`
+	Title         string  `ebml:"Title,omitempty"`
 }
 
 type mkvTracks struct {
@@ -104,7 +107,7 @@ type mkvAudio struct {
 // would look like an empty one — surfacing the error is the safer contract.
 func demuxMatroska(data []byte) (*File, error) {
 	var doc mkvDoc
-	if err := ebml.Unmarshal(bytes.NewReader(data), &doc); err != nil {
+	if err := ebml.Unmarshal(bytes.NewReader(data), &doc, mkvLeafLimit(len(data))); err != nil {
 		return nil, err
 	}
 	scale := doc.Segment.Info.TimecodeScale
@@ -117,6 +120,7 @@ func demuxMatroska(data []byte) (*File, error) {
 		// divisor of a second, so this division is exact.
 		Timescale: uint32(1_000_000_000 / scale),
 		Duration:  uint64(doc.Segment.Info.Duration),
+		Metadata:  mkvMetadata(doc.Segment.Info.Title, doc.Segment.Tags, doc.Segment.Attachments),
 	}
 	for _, te := range doc.Segment.Tracks.TrackEntry {
 		f.Tracks = append(f.Tracks, mkvTrack(te, f.Timescale, f.Duration))
