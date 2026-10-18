@@ -101,7 +101,10 @@ func mkvLeafLimit(size int) ebml.UnmarshalOption {
 	if uint64(size) < limit {
 		limit = uint64(size)
 	}
-	return ebml.WithMaxLeafElementSize(limit)
+	// Zero would turn the limit off, hence the floor of one byte. This is the
+	// same function, by the same name, as #57's: whichever of the two lands
+	// second drops its copy.
+	return ebml.WithMaxLeafElementSize(max(limit, 1))
 }
 
 // mkvMetadata reads the file-level metadata of a Matroska segment.
