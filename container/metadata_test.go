@@ -669,11 +669,11 @@ func TestAHostileAttachmentSizeAllocatesNothing(t *testing.T) {
 		runtime.ReadMemStats(&before)
 		err := read(data)
 		runtime.ReadMemStats(&after)
+		if grew := after.TotalAlloc - before.TotalAlloc; grew > 10<<20 {
+			t.Fatalf("%s: reading %d bytes allocated %d", what, len(data), grew)
+		}
 		if !errors.Is(err, ebml.ErrTooLargeElement) {
 			t.Fatalf("%s: %v, want the size refused as too large", what, err)
-		}
-		if grew := after.TotalAlloc - before.TotalAlloc; grew > 10<<20 {
-			t.Fatalf("reading %d bytes allocated %d", len(data), grew)
 		}
 	}
 	// Above ebml-go's own limit, its limit stands; at zero, which would turn
