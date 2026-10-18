@@ -170,6 +170,11 @@ func (el *EditList) startOnly() (lead uint64, edit Edit, ok bool) {
 // timescale.
 type webmShift struct {
 	media, lead int64
+	// end is where the edit stops presenting the media, in composition time
+	// and in the track's timescale, for an audio track whose edit states a
+	// length; zero for any other. Matroska says the same with DiscardPadding:
+	// see webmTrim.
+	end int64
 }
 
 // webmEdit reads a track's edit list for WebMMuxer, or refuses it. A list that
@@ -191,7 +196,36 @@ func webmEdit(cfg TrackConfig) (*webmShift, error) {
 	}
 	// Rounded to the nearest tick, as a priming is.
 	ticks := (lead*uint64(cfg.Timescale) + uint64(el.MovieTimescale)/2) / uint64(el.MovieTimescale)
-	return &webmShift{media: edit.MediaTime, lead: int64(ticks)}, nil
+	shift := &webmShift{media: edit.MediaTime, lead: int64(ticks)}
+	// An edit that ends before the media does trims the encoder's padding off
+	// the end -- what ffmpeg's AAC encoder leaves after the last sample, and
+	// what its MP4s state as the edit's segment_duration. Its length is
+	// converted to the track's timescale rounded to the nearest tick, as
+	// ffmpeg's mov.c converts it (get_edit_list_entry, av_rescale). Only an
+	// audio track's is kept: DiscardPadding is silence (RFC 9559 §5.1.3.5.7),
+	// and a picture cannot be partly shown.
+	if cfg.Kind == Audio && edit.SegmentDuration > 0 {
+		shift.end = edit.MediaTime + int64(scaleDurationNearest(edit.SegmentDuration, el.MovieTimescale, cfg.Timescale))
+	}
+	return shift, nil
+}
+
+// scaleDurationNearest is scaleDuration rounded to the nearest unit rather than
+// down, split the same way so that a long duration does not overflow.
+func scaleDurationNearest(d uint64, from, to uint32) uint64 {
+	whole := d / uint64(from) * uint64(to)
+	rest := (d%uint64(from)*uint64(to) + uint64(from)/2) / uint64(from)
+	return whole + rest
+}
+
+// trim is how much of a frame lies past the end of the presentation, in the
+// track's timescale: none, part of it, or all of it. start is the frame's
+// composition time, before any shift.
+func (w *webmShift) trim(start, duration int64) int64 {
+	if w == nil || w.end <= 0 {
+		return 0
+	}
+	return min(max(start+duration-w.end, 0), duration)
 }
 
 // shift is how far to move the track's presentation times back, given the

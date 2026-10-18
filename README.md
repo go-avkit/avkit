@@ -355,7 +355,7 @@ What each operation does with it:
 | `Remux`, `Join`, `JoinProgressive`, a caller's own copy | written as it stands. Durations are restated in the output's movie timescale, rounded up. A progressive copy of a fragmented file's last edit of duration zero ("to the end", §8.6.6.1, only allowed in a fragmented file) states its length. The track header lasts what the edits do (§8.3.2.3). |
 | `Muxer` (fragmented) | takes an optional empty edit followed by one edit at the normal rate, and refuses more with `ErrTrackConfig`. ffmpeg turns its edit list support off for a fragmented file ("multiple edit list entries, not supported in fragmented MP4 files"): a two-edit list copied into one presented all 100 frames where the source presents 50. `ProgressiveMuxer` writes it. |
 | `Cut`, `Concat` of several inputs | both move the media the list counts in, so it cannot be copied. A list that only says where the presentation starts (one edit at the normal rate, reaching the end of the media) is dropped, and the muxer states that start itself. Anything else is refused with `ErrEditList`: an empty edit placing the track later than its siblings, several edits, a dwell or another rate. So is an edit ending before the media does (how a gapless AAC file trims its padding) when the output keeps the track's end. |
-| `WebMMuxer` | Matroska has presentation times and no edit lists. An optional empty edit and one edit at the normal rate become a shift of the track's times: the empty edit delays them by its length, and an edit starting before the first frame's composition time shows it that much later. Anything else is refused with `ErrTrackConfig`. A priming after the first frame is the `CodecDelay` of an audio track when the list is the single edit a priming is written as, which the reader states as `StartDelay`; after an empty edit it is shown. |
+| `WebMMuxer` | Matroska has presentation times and no edit lists. An optional empty edit and one edit at the normal rate become a shift of the track's times: the empty edit delays them by its length, and an edit starting before the first frame's composition time shows it that much later. Anything else is refused with `ErrTrackConfig`. A priming after the first frame is the `CodecDelay` of an audio track when the list is the single edit a priming is written as, which the reader states as `StartDelay`; after an empty edit it is shown. An audio edit that stops before the media does is written as the `DiscardPadding` (RFC 9559 §5.1.3.5.7) of every block it cuts into. |
 | `TSMuxer` | ignores it. |
 
 Measured with ffmpeg 9.0.2 on 4 s files made the way the fixtures
@@ -368,6 +368,27 @@ Measured with ffmpeg 9.0.2 on 4 s files made the way the fixtures
 - The picture's list rewritten into two edits of 1 s, the media's first and
   third seconds. The progressive copy decodes the same 50 frames at the same
   times as the source.
+
+### The end of an AAC track, MP4 to Matroska
+
+ffmpeg's AAC encoder leaves padding after the last sample, and its MP4 states
+it as a last sample **shorter than the frame it decodes to**: `stts` says 768
+for a 1024-sample frame, and ffmpeg's `mov.c` discards what that packet decodes
+past its duration. Matroska has no such reading of a block's duration, so a
+`WebMMuxer` copy decoded those 256 samples as sound the source never
+presented.
+
+`WebMMuxer` now writes the trim as the last block's `DiscardPadding`, as
+ffmpeg's own copy does: a block group lasting 16 ms with a padding of
+5 333 333 ns, element for element the same. It does so for AAC only, whose
+frames all decode to one length (1024 or 960 samples), so a last frame stated
+shorter than the one before it can only mean a trim; an Opus or FLAC frame is
+as long as it says. With an edit that stops before the media does (above) the
+padding covers what the edit leaves out too. Decoded by ffmpeg, the last frame
+of the copy of a 2 s stereo file is 768 samples long, as the source's is.
+
+Matroska to MP4 is not covered: the Matroska reader does not read
+`DiscardPadding` back.
 
 ## A segment index for DASH on-demand
 
