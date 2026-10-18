@@ -366,6 +366,59 @@ func TestATransportStreamCopyOfFFmpegsBFrameFilesStartsTogether(t *testing.T) {
 	}
 }
 
+// TestAVIAudioRemuxesToMP4AndMatroska: the AVI reader (#64) reads AC-3 and MP3
+// out of an AVI; AC-3's configuration is derived from its frames
+// (describeFromSamples, #61's ac3StreamConfig) and MP3 goes into an MP4 as
+// mp4a (#61). H.264 + AC-3 copies whole into both; Xvid has no MP4 muxer
+// here, so its MP3 is copied alone.
+func TestAVIAudioRemuxesToMP4AndMatroska(t *testing.T) {
+	for _, c := range []struct {
+		file   string
+		codecs []string
+		drop   bool // the video, which no muxer writes
+	}{
+		{"testsrc_h264_ac3.avi", []string{"avc1", "ac-3"}, false},
+		{"testsrc_xvid_mp3.avi", []string{"mp3"}, true},
+	} {
+		t.Run(c.file, func(t *testing.T) {
+			r, err := NewReader(readFixture(t, c.file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var opts []RemuxOption
+			if c.drop {
+				opts = append(opts, DropTracks(r.TrackIDs()[0]))
+			}
+			var mp4Out bytes.Buffer
+			if err := Remux(&mp4Out, r, opts...); err != nil {
+				t.Fatalf("into MP4: %v", err)
+			}
+			keepForOracle(t, c.file+".mp4", mp4Out.Bytes())
+			cfgs, _ := readBack(t, mp4Out.Bytes())
+			if len(cfgs) != len(c.codecs) {
+				t.Fatalf("%d tracks, want %v", len(cfgs), c.codecs)
+			}
+			for i, cfg := range cfgs {
+				if cfg.Codec != c.codecs[i] {
+					t.Errorf("MP4 track %d is %s, want %s", i+1, cfg.Codec, c.codecs[i])
+				}
+			}
+			if c.drop {
+				return
+			}
+			var mkv bytes.Buffer
+			copyInto(t, NewWebMMuxer(&mkv), r)
+			keepForOracle(t, c.file+".mkv", mkv.Bytes())
+			cfgs, _ = readBack(t, mkv.Bytes())
+			for i, cfg := range cfgs {
+				if cfg.Codec != c.codecs[i] {
+					t.Errorf("Matroska track %d is %s, want %s", i+1, cfg.Codec, c.codecs[i])
+				}
+			}
+		})
+	}
+}
+
 // checkBack reads a written file back and compares its one track with the
 // source's.
 func checkBack(t *testing.T, what string, data []byte, cfg TrackConfig, in []Sample) {
