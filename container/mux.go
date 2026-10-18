@@ -89,9 +89,13 @@ type TrackConfig struct {
 	// raw NAL units without a start code.
 	SPS, PPS, VPS [][]byte
 	// CodecConfig is the codec configuration record of a track whose
-	// parameters are not NAL units, such as the av1C payload of AV1.
+	// parameters are not NAL units, such as the av1C payload of AV1. For AAC
+	// it is the AudioSpecificConfig (ISO/IEC 14496-3), which the MP4 muxers
+	// write verbatim and take the channel count from; without one they build a
+	// record from AudioObjectType, Channels and SampleRate.
 	CodecConfig []byte
-	// AudioObjectType selects the AAC profile; 0 means AAC-LC.
+	// AudioObjectType selects the AAC profile when no AudioSpecificConfig is
+	// given; 0 means AAC-LC.
 	AudioObjectType byte
 	// PreSkip is how many samples an Opus decoder discards at the start of
 	// the track, counted at 48 kHz whatever the input rate. A track written
@@ -353,14 +357,9 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 			return err
 		}
 	case "mp4a":
-		if cfg.SampleRate <= 0 {
-			return fmt.Errorf("%w: mp4a needs a sample rate", ErrTrackConfig)
+		if err := describeAAC(trak, cfg); err != nil {
+			return err
 		}
-		objType := cfg.AudioObjectType
-		if objType == 0 {
-			objType = aac.AAClc
-		}
-		trak.SetAACDescriptor(objType, cfg.SampleRate)
 	default:
 		return fmt.Errorf("%w: %q", ErrUnsupportedCodec, cfg.Codec)
 	}
@@ -575,6 +574,91 @@ func describeMJPEG(trak *mp4.TrakBox, cfg TrackConfig) error {
 		return fmt.Errorf("%w: mjpg: %v", ErrTrackConfig, err)
 	}
 	return nil
+}
+
+// describeAAC writes the mp4a sample entry of an AAC track.
+//
+// Two fields say how many channels the track has, and they must agree: the
+// AudioSampleEntry's channelcount (ISO/IEC 14496-12 §12.2.3, "the number of
+// channels such as 1 (mono) or 2 (stereo)") and the channelConfiguration of the
+// AudioSpecificConfig (ISO/IEC 14496-3 §1.6.2.1, Table 1.19) that the esds
+// carries as its DecoderSpecificInfo. A decoder is set up from the second, so a
+// mono track whose record says stereo is decoded as stereo: ffprobe reports
+// channels=2 for it.
+//
+// When the caller has the track's AudioSpecificConfig -- every reader of this
+// package hands it over as CodecConfig -- it is written verbatim, as ffmpeg's
+// movenc.c writes the extradata it was given. Rebuilding it would lose what this
+// package does not model: the SBR and PS signalling of HE-AAC, a program
+// config element, the GASpecificConfig flags. The channel count of the sample
+// entry is then the one the record states, and the caller's only where the
+// record leaves it to the bitstream (configuration 0).
+//
+// Without one, the record is built from the track's fields; a channel count no
+// configuration of Table 1.19 states is refused rather than written as stereo.
+func describeAAC(trak *mp4.TrakBox, cfg TrackConfig) error {
+	if cfg.SampleRate <= 0 {
+		return fmt.Errorf("%w: mp4a needs a sample rate", ErrTrackConfig)
+	}
+	if len(cfg.CodecConfig) == 0 {
+		return buildAACEntry(trak, cfg)
+	}
+	asc, err := aac.DecodeAudioSpecificConfig(bytes.NewReader(cfg.CodecConfig))
+	if err != nil {
+		return fmt.Errorf("%w: mp4a AudioSpecificConfig: %v", ErrTrackConfig, err)
+	}
+	channels := aacChannels(asc.ChannelConfiguration)
+	if channels == 0 {
+		channels = cfg.Channels
+	}
+	if channels <= 0 || channels > 0xFFFF {
+		return fmt.Errorf("%w: mp4a AudioSpecificConfig leaves the channel count to the bitstream, and the track states none",
+			ErrTrackConfig)
+	}
+	esds := mp4.CreateEsdsBox(append([]byte(nil), cfg.CodecConfig...))
+	trak.Mdia.Minf.Stbl.Stsd.AddChild(mp4.CreateAudioSampleEntryBox("mp4a",
+		uint16(channels), 16, uint16(cfg.SampleRate), esds))
+	return nil
+}
+
+// buildAACEntry writes an mp4a sample entry whose AudioSpecificConfig is built
+// from the track's fields.
+func buildAACEntry(trak *mp4.TrakBox, cfg TrackConfig) error {
+	objType := cfg.AudioObjectType
+	if objType == 0 {
+		objType = aac.AAClc
+	}
+	var err error
+	switch {
+	case cfg.Channels == 0 || objType == aac.HEAACv2:
+		// Nothing stated, which has always meant stereo; and HE-AACv2 is a
+		// mono core that parametric stereo makes two of, so its record says 1
+		// whatever the output is.
+		err = trak.SetAACDescriptor(objType, cfg.SampleRate)
+	default:
+		configuration, ok := aacConfiguration(cfg.Channels)
+		if !ok {
+			return fmt.Errorf("%w: no AAC channel configuration states %d channels; pass the AudioSpecificConfig",
+				ErrTrackConfig, cfg.Channels)
+		}
+		err = trak.SetAACDescriptorWithChannelConfig(objType, configuration, cfg.SampleRate)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: mp4a: %v", ErrTrackConfig, err)
+	}
+	return nil
+}
+
+// aacConfiguration is the channelConfiguration of ISO/IEC 14496-3 Table 1.19
+// that states this many channels: the inverse of aacChannels.
+func aacConfiguration(channels int) (byte, bool) {
+	switch channels {
+	case 1, 2, 3, 4, 5, 6:
+		return byte(channels), true
+	case 8:
+		return 7, true
+	}
+	return 0, false
 }
 
 // maxFrameSide is the largest frame side a sample entry can state.
