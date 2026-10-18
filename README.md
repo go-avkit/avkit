@@ -81,7 +81,7 @@ before it existed still matches.
 | MP4 mux | `avc1`, `hvc1`, `av01`, `vp08`, `vp09`, `mjpg` | `mp4a`, `opus`, `ac-3`, `ec-3` |
 | Matroska demux | AVC, HEVC, AV1, VP8, VP9 | AAC, AC-3, E-AC-3, FLAC, Opus, Vorbis |
 | WebM mux | AV1, VP8, VP9 | AAC, Opus, Vorbis |
-| MPEG-TS | `avc1`, `hvc1`, `av01` in, `avc1`/`hvc1` out | `mp4a` |
+| MPEG-TS | `avc1`, `hvc1`, `av01`, in and out | `mp4a`, `ac-3`, `ec-3`, `mp1`, `mp2`, `mp3`, in and out; **not** `opus` (see [MPEG-TS carriage](#mpeg-ts-carriage)) |
 
 ### What is deliberately absent
 
@@ -95,9 +95,11 @@ The bitstream syntax itself lives in sibling modules —
 [`h265`](https://github.com/go-avkit/h265), [`vp8`](https://github.com/go-avkit/vp8),
 [`vp9`](https://github.com/go-avkit/vp9),
 [`boolcoder`](https://github.com/go-avkit/boolcoder) and
-[`bitstream`](https://github.com/go-avkit/bitstream). **There is no AAC, Opus,
-FLAC, AC-3 or AV1 bitstream reader** in the organisation: those codecs are
-handled here only as far as a container needs them.
+[`bitstream`](https://github.com/go-avkit/bitstream). **There is no AAC, MPEG
+audio, Opus, FLAC, AC-3 or AV1 bitstream reader** in the organisation: those
+codecs are handled here only as far as a container needs them — an MPEG audio
+or AC-3 frame header, for instance, is read for the length of the frame and
+nothing more.
 
 ## Install
 
@@ -219,6 +221,92 @@ samples. It is transcribed, not computed.
 Only what the two records need is read. This is not a decoder, and a dependent
 substream — which describes part of another stream rather than a track — is
 passed over in favour of the independent one that states the track.
+
+## MPEG-TS carriage
+
+Every codec a transport stream carries has its own way of saying so, and each is
+read and written as the text that defines it says:
+
+| codec | read | written | defined by |
+|---|---|---|---|
+| AC-3 (`ac-3`) | stream type `0x81`; or private data `0x06` with the DVB `AC-3_descriptor` (`0x6A`) or the registration descriptor `"AC-3"` | `0x81`, registration `"AC-3"`, PES `stream_id` `0xBD` | ATSC A/52:2012 Annex A §3, §4.1, §4.2, §5; ETSI EN 300 468 V1.17.1 Annex D.2–D.3 |
+| Enhanced AC-3 (`ec-3`) | `0x87`; or `0x06` with the `enhanced_AC-3_descriptor` (`0x7A`) or registration `"EAC3"` | `0x87`, registration `"AC-3"`, `stream_id` `0xBD` | A/52 Annex G §2, §3.1–§3.3; EN 300 468 Annex D.4–D.5 |
+| MPEG audio (`mp1`, `mp2`, `mp3`) | `0x03` or `0x04` | `0x03` at 32/44.1/48 kHz, `0x04` at 16/22.05/24 kHz, `stream_id` `0xC0` | ISO/IEC 13818-1 Table 2-22 and 2-34; ISO/IEC 11172-3 and 13818-3 §2.4 for the frame header |
+| AV1 (`av01`) | `0x06` with registration `"AV01"`, in the start-code form or as raw OBUs | `0x06`, registration `"AV01"`, then the AV1 video descriptor (`0x80`), `stream_id` `0xBD`, every OBU behind a start code and escaped | AOM *Carriage of AV1 in MPEG-2 TS*, Working Group Draft of 25 March 2026, §2.1, §2.2, §3.1–§3.4 |
+
+**One convention is written for AC-3: ATSC's System A**, which is also what
+FFmpeg's `mpegtsenc.c` writes unless told `-mpegts_flags system_b`. The DVB form
+is read, and a DVB stream copied through `TSMuxer` comes out in the ATSC form.
+
+⛔ For Enhanced AC-3, FFmpeg writes the registration descriptor `"EAC3"` next to
+stream type `0x87`. A/52 Annex G §2 says otherwise: System A extends **the AC-3
+registration descriptor** to Enhanced AC-3 "in combination with the E-AC-3
+stream_type", and keeps `"EAC3"` for systems that have no stream type of their
+own. This package writes what the standard says. Both FFmpeg and this package
+decide by the stream type first, so both forms read in both.
+
+⛔ astits chooses a PES `stream_id` from the stream type when it is left at zero,
+and gets two of them wrong for this purpose: MPEG-1 audio (`0x03`) gets
+`private_stream_1`, and AC-3 (`0x81`) gets `0xFD`, the extended stream
+identifier, which needs a PES extension astits does not write. The identifier is
+therefore always stated.
+
+⛔ **A PES unit need not hold whole frames.** ISO/IEC 13818-1 (2.4.3.7) has a
+unit's PTS refer to the first access unit that begins in it, which only means
+something because a unit may also hold the end of the one before. FFmpeg always
+aligns them, so a reader assuming it would pass every test made from FFmpeg's
+output. A frame that straddles two units is carried over and timed from the unit
+it began in.
+
+An Enhanced AC-3 frame of a dependent substream (or of an independent substream
+other than the first) joins the frame before it: A/52 Annex G §3.3 makes the
+access unit every substream of one period, and an MP4 `ec-3` sample is that
+access unit. A `dac3` or `dec3` record is built from the first frame, as it is
+for Matroska, so a transport stream's AC-3 goes straight into an MP4.
+
+**The frames, not the program map, name the codec.** Stream types `0x03` and
+`0x04` do not say which layer they carry (FFmpeg names both `mp3` until its
+parser has seen a frame, and so does this until it has read one), and an
+E-AC-3 stream under stream type `0x81` is named `ec-3`. MPEG audio in an MP4 is
+`mp4a` with object type indication `0x6B` or `0x69` (MP4RA), which the MP4
+muxers do not write yet: they refuse `mp1`, `mp2` and `mp3` by saying so.
+
+**AV1 follows a draft**, and the draft says it should be cited only as one. It
+is still the only text that defines the carriage, and FFmpeg neither writes nor
+reads AV1 in a transport stream: `ffprobe` probes such a stream and names it
+VVC, from the start codes. Each OBU is written behind a three-byte start code
+with an `emulation_prevention_three_byte` after any two zero bytes followed by 0
+to 3 (§3.2), every OBU stating its size (§3.1 recommends it "for applications
+that need easy conversion to MP4"). ⛔ The draft does not say what happens where
+an OBU ending in zero bytes meets the next start code; such an OBU is closed with
+`0x03`, as H.264 closes an RBSP, and a reader honouring `obu_size` never sees
+it. The AV1 video descriptor copies the `av1C` record's profile, level, tier and
+colour bytes and states `hdr_wcg_idc` 3, "no indication", since an `av1C` does
+not say. Reading drops temporal delimiters, which an MP4 sample SHOULD NOT hold
+(AV1-ISOBMFF §2.4), and gives an OBU that states no size a size field. A unit
+that does not begin with a start code is read as raw OBUs, which is what this
+package read before it wrote the carriage.
+
+**Opus is refused, deliberately.** The only text that maps it onto a transport
+stream is a draft ETSI specification, *TS 1xx xxx V0.1.3 (2015-10)*, published
+by Xiph and never adopted. FFmpeg implements it (`opus_control_header`, the
+`"Opus"` registration descriptor and a DVB extension descriptor); this package
+writes what a published specification defines, and an Opus stream is not read
+either.
+
+**Every track is presented from its first presented frame.** A transport stream
+has no edit list: the PTS of each unit (ISO/IEC 13818-1 §2.4.3.7) is all there
+is. `TSMuxer` takes a track's first composition offset (B-frames) and its
+`StartDelay` (an AAC priming) off every timestamp, so the first picture and the
+first sound after the priming are shown at the same instant. The units decoded
+before it keep a DTS — and a priming frame a PTS — before it, because the whole
+program is moved by the offset ffmpeg's `mpegtsenc.c` uses with its command
+line's `-muxdelay 0.7`: every PTS and DTS starts at 1.4 s (126000 ticks), and
+the PCR runs 0.7 s ahead of the DTS of the unit carrying it. A start more than
+0.7 s into a track's media is refused. Measured with `ffprobe` on an ffmpeg file
+(`libx264 -bf 2` with AAC) in Matroska, the video starts 0.040 s after the audio
+before and 0.021 s after it now, which is what ffmpeg's own copy states (1.480 s
+against 1.459 s): the audio's priming frame comes first.
 
 ## VP9 out of Matroska
 
