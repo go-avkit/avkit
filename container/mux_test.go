@@ -326,29 +326,58 @@ func (f *failWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// initSegmentSize is how many bytes the initialisation segment of a muxer
+// holding one video track takes once first is written to it. The header goes
+// out with the first fragment, so the size is measured by writing the header
+// alone.
+func initSegmentSize(t *testing.T, first Sample, opts ...MuxOption) int {
+	t.Helper()
+	var sized bytes.Buffer
+	probe := NewMuxer(&sized, opts...)
+	pid, err := probe.AddTrack(videoConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.WriteSample(pid, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.writeHeader(); err != nil {
+		t.Fatal(err)
+	}
+	return sized.Len()
+}
+
 func TestWriteFailures(t *testing.T) {
-	// The initialisation segment cannot be written.
+	// The initialisation segment cannot be written. It goes out with the
+	// first fragment, so the sample is taken and the flush reports it.
 	m := NewMuxer(&failWriter{})
 	id, err := m.AddTrack(videoConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.WriteSample(id, Sample{Data: []byte{1}, Duration: 10, Sync: true}); err == nil {
-		t.Fatal("a failing writer was ignored")
+	reordered := Sample{Data: []byte{1}, Duration: 10, CompositionOffset: 20, Sync: true}
+	if err := m.WriteSample(id, reordered); err != nil {
+		t.Fatalf("nothing is written with the first sample, yet it failed: %v", err)
+	}
+	for range 2 {
+		if err := m.Flush(); err == nil {
+			t.Fatal("a failing writer was ignored")
+		}
+	}
+	// Tried twice, and the header that was refused twice still holds one
+	// edit list: it is written again, not rebuilt on top of itself.
+	edits := 0
+	for _, b := range m.tracks[0].trak.Children {
+		if b.Type() == "edts" {
+			edits++
+		}
+	}
+	if edits != 1 {
+		t.Errorf("after two refused headers the track holds %d edit boxes; want 1", edits)
 	}
 
 	// The init segment goes through, the fragment does not.
-	var sized bytes.Buffer
-	probe := NewMuxer(&sized)
-	pid, err := probe.AddTrack(videoConfig(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := probe.WriteSample(pid, Sample{Data: []byte{1}, Duration: 10, Sync: true}); err != nil {
-		t.Fatal(err)
-	}
-	initSize := sized.Len()
-
+	initSize := initSegmentSize(t, Sample{Data: []byte{1}, Duration: 10, Sync: true})
 	m2 := NewMuxer(&failWriter{allow: initSize})
 	id2, err := m2.AddTrack(videoConfig(t))
 	if err != nil {
@@ -372,11 +401,8 @@ func TestWriteFailures(t *testing.T) {
 }
 
 func TestFlushErrorDuringWriteSample(t *testing.T) {
-	var sized bytes.Buffer
-	probe := NewMuxer(&sized, FragmentDuration(10*time.Millisecond))
-	pid, _ := probe.AddTrack(videoConfig(t))
-	_ = probe.WriteSample(pid, Sample{Data: []byte{1}, Duration: 512, Sync: true})
-	initSize := sized.Len()
+	initSize := initSegmentSize(t, Sample{Data: []byte{1}, Duration: 512, Sync: true},
+		FragmentDuration(10*time.Millisecond))
 
 	m := NewMuxer(&failWriter{allow: initSize}, FragmentDuration(10*time.Millisecond))
 	id, err := m.AddTrack(videoConfig(t))
