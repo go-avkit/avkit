@@ -559,7 +559,7 @@ func TestTrafSamplesRejectsWhatItCannotRead(t *testing.T) {
 	// into fragments produces them as a matter of course. Refusing it lost whole
 	// files. A track with no samples ANYWHERE is still refused, by the caller.
 	noRun := &mp4.TrafBox{Tfhd: &mp4.TfhdBox{TrackID: 1}}
-	samples, err := r.trafSamples(0, noRun, nil)
+	samples, err := r.trafSamples(0, noRun, nil, 0)
 	if err != nil {
 		t.Errorf("without a run: %v", err)
 	}
@@ -575,7 +575,7 @@ func TestTrafSamplesRejectsWhatItCannotRead(t *testing.T) {
 		Samples: []mp4.Sample{{Size: 99, Dur: 10}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.trafSamples(0, past, nil); !errors.Is(err, ErrSampleData) {
+	if _, err := r.trafSamples(0, past, nil, 0); !errors.Is(err, ErrSampleData) {
 		t.Errorf("beyond the end: %v", err)
 	}
 }
@@ -599,7 +599,7 @@ func TestTrafSamplesFollowsWhereTheDataIsStated(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := r.trafSamples(0, traf, nil)
+	got, err := r.trafSamples(0, traf, nil, 0)
 	if err != nil {
 		t.Fatalf("trafSamples: %v", err)
 	}
@@ -638,7 +638,7 @@ func TestProgressiveSamplesReadsATableDirectly(t *testing.T) {
 	}
 	r := &Reader{data: data}
 	trak := sampleTable(t, []uint32{4, 4}, []uint32{0, 8}, 1)
-	samples, err := r.progressiveSamples(trak)
+	samples, err := r.progressiveSamples(trak, 0)
 	if err != nil {
 		t.Fatalf("progressiveSamples: %v", err)
 	}
@@ -662,30 +662,30 @@ func TestProgressiveSamplesRejectsUnusableTables(t *testing.T) {
 
 	bare := mp4.CreateEmptyInit().AddEmptyTrack(1000, "video", "und")
 	bare.Mdia.Minf.Stbl.Stsz = nil
-	if _, err := r.progressiveSamples(bare); !errors.Is(err, ErrNoSamples) {
+	if _, err := r.progressiveSamples(bare, 0); !errors.Is(err, ErrNoSamples) {
 		t.Errorf("without a sample size table: %v", err)
 	}
 
 	empty := sampleTable(t, nil, []uint32{0}, 1)
-	if _, err := r.progressiveSamples(empty); !errors.Is(err, ErrNoSamples) {
+	if _, err := r.progressiveSamples(empty, 0); !errors.Is(err, ErrNoSamples) {
 		t.Errorf("without any sample: %v", err)
 	}
 
 	// A chunk offset past the end of the file must be reported, not read.
 	past := sampleTable(t, []uint32{8}, []uint32{100}, 1)
-	if _, err := r.progressiveSamples(past); !errors.Is(err, ErrSampleData) {
+	if _, err := r.progressiveSamples(past, 0); !errors.Is(err, ErrSampleData) {
 		t.Errorf("beyond the end: %v", err)
 	}
 
 	// A chunk table naming a chunk the offset table does not have.
 	missing := sampleTable(t, []uint32{4, 4}, []uint32{0}, 1)
-	if _, err := r.progressiveSamples(missing); err == nil {
+	if _, err := r.progressiveSamples(missing, 0); err == nil {
 		t.Error("a missing chunk offset was accepted")
 	}
 
 	noOffsets := sampleTable(t, []uint32{4}, []uint32{0}, 1)
 	noOffsets.Mdia.Minf.Stbl.Stco = nil
-	if _, err := r.progressiveSamples(noOffsets); !errors.Is(err, ErrNoSamples) {
+	if _, err := r.progressiveSamples(noOffsets, 0); !errors.Is(err, ErrNoSamples) {
 		t.Errorf("without any offset table: %v", err)
 	}
 }
@@ -699,7 +699,7 @@ func TestProgressiveSamplesHonoursCttsAndStss(t *testing.T) {
 		t.Fatalf("ctts: %v", err)
 	}
 	stbl.Stss = &mp4.StssBox{SampleNumber: []uint32{1}}
-	samples, err := r.progressiveSamples(trak)
+	samples, err := r.progressiveSamples(trak, 0)
 	if err != nil {
 		t.Fatalf("progressiveSamples: %v", err)
 	}
@@ -736,7 +736,7 @@ func TestProgressiveSamplesStopsAtTheTableEnd(t *testing.T) {
 	// stops at what the table describes.
 	r := &Reader{data: make([]byte, 32)}
 	trak := sampleTable(t, []uint32{4}, []uint32{0}, 3)
-	samples, err := r.progressiveSamples(trak)
+	samples, err := r.progressiveSamples(trak, 0)
 	if err != nil {
 		t.Fatalf("progressiveSamples: %v", err)
 	}
@@ -752,7 +752,7 @@ func TestProgressiveSamplesReportsAChunkTableItCannotWalk(t *testing.T) {
 		return nil, errors.New("unwalkable table")
 	}
 	r := &Reader{data: make([]byte, 32)}
-	if _, err := r.progressiveSamples(sampleTable(t, []uint32{4}, []uint32{0}, 1)); err == nil {
+	if _, err := r.progressiveSamples(sampleTable(t, []uint32{4}, []uint32{0}, 1), 0); err == nil {
 		t.Fatal("a chunk table that cannot be walked must be reported")
 	}
 }
@@ -763,7 +763,7 @@ func TestProgressiveSamplesReportsAnUnusableChunkTable(t *testing.T) {
 	// A chunk table with no entry at all cannot say where sample 1 lives —
 	// and asking the box reader anyway panics, so this must be caught here.
 	trak.Mdia.Minf.Stbl.Stsc = &mp4.StscBox{}
-	if _, err := r.progressiveSamples(trak); !errors.Is(err, ErrNoSamples) {
+	if _, err := r.progressiveSamples(trak, 0); !errors.Is(err, ErrNoSamples) {
 		t.Fatalf("err = %v, want ErrNoSamples", err)
 	}
 }
@@ -778,7 +778,7 @@ func TestFragmentedSamplesSkipsMalformedFragments(t *testing.T) {
 			{Moof: &mp4.MoofBox{Trafs: []*mp4.TrafBox{{}}}},
 		}}}},
 	}
-	if _, err := r.fragmentedSamples(1); !errors.Is(err, ErrNoSamples) {
+	if _, err := r.fragmentedSamples(1, 0); !errors.Is(err, ErrNoSamples) {
 		t.Fatalf("err = %v, want ErrNoSamples", err)
 	}
 }
@@ -797,14 +797,14 @@ func TestProgressiveSamplesRejectsAnSttsThatRunsOut(t *testing.T) {
 	trak := sampleTable(t, []uint32{4, 4}, []uint32{0, 8}, 1)
 
 	// The control: with the table as built, both samples read.
-	if _, err := r.progressiveSamples(trak); err != nil {
+	if _, err := r.progressiveSamples(trak, 0); err != nil {
 		t.Fatalf("the fixture is already broken, so the assertion below is free: %v", err)
 	}
 
 	stbl := trak.Mdia.Minf.Stbl
 	stbl.Stts = &mp4.SttsBox{SampleCount: []uint32{1}, SampleTimeDelta: []uint32{100}}
 
-	_, err := r.progressiveSamples(trak)
+	_, err := r.progressiveSamples(trak, 0)
 	if err == nil {
 		t.Fatal("an stts covering fewer samples than the stsz claims was accepted")
 	}

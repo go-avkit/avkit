@@ -6,6 +6,7 @@ package container
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -125,6 +126,46 @@ func countBoxes(t *testing.T, data []byte, name string) int {
 	return n
 }
 
+// assertFtyp reads the written file's ftyp back and holds it to the brands
+// expected, in order: one ftyp, and nothing else in it.
+func assertFtyp(t *testing.T, data []byte, major string, compatible ...string) {
+	t.Helper()
+	if got := countBoxes(t, data, "ftyp"); got != 1 {
+		t.Fatalf("ftyp boxes = %d, want 1", got)
+	}
+	parsed, err := mp4.DecodeFile(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decode what was written: %v", err)
+	}
+	ftyp := parsed.Ftyp
+	if ftyp == nil {
+		t.Fatal("no ftyp")
+	}
+	if ftyp.MajorBrand() != major || ftyp.MinorVersion() != 0x200 {
+		t.Errorf("major brand %q, minor version %#x; want %q and 0x200",
+			ftyp.MajorBrand(), ftyp.MinorVersion(), major)
+	}
+	if got := ftyp.CompatibleBrands(); strings.Join(got, ",") != strings.Join(compatible, ",") {
+		t.Errorf("compatible brands = %v, want %v", got, compatible)
+	}
+}
+
+// TestMuxerWritesTheBrandItStates is the ftyp mp4ff's CreateEmptyInit starts
+// with -- cmfc, compatible cmfc and iso6 -- reaching every fragmented file in
+// place of the one the Muxer built: a CMAF claim nothing here makes, and no
+// iso5 or dash. ffprobe read `major_brand=cmfc compatible_brands=cmfciso6`.
+func TestMuxerWritesTheBrandItStates(t *testing.T) {
+	data := writeOneTrack(t, audioConfig(), 2)
+	assertFtyp(t, data, DefaultBrand, "isom", DefaultBrand, "dash")
+	file, err := Demux(data)
+	if err != nil {
+		t.Fatalf("Demux: %v", err)
+	}
+	if file.Brand != DefaultBrand {
+		t.Errorf("File.Brand = %q, want %q", file.Brand, DefaultBrand)
+	}
+}
+
 func TestMuxWritesOneFragmentPerWindow(t *testing.T) {
 	var buf bytes.Buffer
 	// A window of one sample: every sync sample opens a new fragment.
@@ -156,9 +197,9 @@ func TestMuxWritesOneFragmentPerWindow(t *testing.T) {
 	if got := countBoxes(t, out, "mdat"); got != 4 {
 		t.Errorf("mdat boxes = %d", got)
 	}
-	if !bytes.Contains(out[:32], []byte("iso6")) {
-		t.Errorf("the chosen brand is missing from ftyp: %q", out[:32])
-	}
+	// The brand as the MAJOR brand: it is also a compatible brand of the cmfc
+	// ftyp mp4ff starts from, so finding the bytes anywhere proved nothing.
+	assertFtyp(t, out, "iso6", "isom", "iso6", "dash")
 	if _, err := Demux(out); err != nil {
 		t.Fatalf("a fragmented file must still demux: %v", err)
 	}
@@ -326,29 +367,58 @@ func (f *failWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// initSegmentSize is how many bytes the initialisation segment of a muxer
+// holding one video track takes once first is written to it. The header goes
+// out with the first fragment, so the size is measured by writing the header
+// alone.
+func initSegmentSize(t *testing.T, first Sample, opts ...MuxOption) int {
+	t.Helper()
+	var sized bytes.Buffer
+	probe := NewMuxer(&sized, opts...)
+	pid, err := probe.AddTrack(videoConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.WriteSample(pid, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.writeHeader(); err != nil {
+		t.Fatal(err)
+	}
+	return sized.Len()
+}
+
 func TestWriteFailures(t *testing.T) {
-	// The initialisation segment cannot be written.
+	// The initialisation segment cannot be written. It goes out with the
+	// first fragment, so the sample is taken and the flush reports it.
 	m := NewMuxer(&failWriter{})
 	id, err := m.AddTrack(videoConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.WriteSample(id, Sample{Data: []byte{1}, Duration: 10, Sync: true}); err == nil {
-		t.Fatal("a failing writer was ignored")
+	reordered := Sample{Data: []byte{1}, Duration: 10, CompositionOffset: 20, Sync: true}
+	if err := m.WriteSample(id, reordered); err != nil {
+		t.Fatalf("nothing is written with the first sample, yet it failed: %v", err)
+	}
+	for range 2 {
+		if err := m.Flush(); err == nil {
+			t.Fatal("a failing writer was ignored")
+		}
+	}
+	// Tried twice, and the header that was refused twice still holds one
+	// edit list: it is written again, not rebuilt on top of itself.
+	edits := 0
+	for _, b := range m.tracks[0].trak.Children {
+		if b.Type() == "edts" {
+			edits++
+		}
+	}
+	if edits != 1 {
+		t.Errorf("after two refused headers the track holds %d edit boxes; want 1", edits)
 	}
 
 	// The init segment goes through, the fragment does not.
-	var sized bytes.Buffer
-	probe := NewMuxer(&sized)
-	pid, err := probe.AddTrack(videoConfig(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := probe.WriteSample(pid, Sample{Data: []byte{1}, Duration: 10, Sync: true}); err != nil {
-		t.Fatal(err)
-	}
-	initSize := sized.Len()
-
+	initSize := initSegmentSize(t, Sample{Data: []byte{1}, Duration: 10, Sync: true})
 	m2 := NewMuxer(&failWriter{allow: initSize})
 	id2, err := m2.AddTrack(videoConfig(t))
 	if err != nil {
@@ -372,11 +442,8 @@ func TestWriteFailures(t *testing.T) {
 }
 
 func TestFlushErrorDuringWriteSample(t *testing.T) {
-	var sized bytes.Buffer
-	probe := NewMuxer(&sized, FragmentDuration(10*time.Millisecond))
-	pid, _ := probe.AddTrack(videoConfig(t))
-	_ = probe.WriteSample(pid, Sample{Data: []byte{1}, Duration: 512, Sync: true})
-	initSize := sized.Len()
+	initSize := initSegmentSize(t, Sample{Data: []byte{1}, Duration: 512, Sync: true},
+		FragmentDuration(10*time.Millisecond))
 
 	m := NewMuxer(&failWriter{allow: initSize}, FragmentDuration(10*time.Millisecond))
 	id, err := m.AddTrack(videoConfig(t))
@@ -648,9 +715,9 @@ func TestMuxerRefusesOpusItCannotDescribe(t *testing.T) {
 			TrackConfig{Codec: "Opus", Timescale: 48000, CodecConfig: []byte("not a header at all")}},
 		{"a header that stops short",
 			TrackConfig{Codec: "Opus", Timescale: 48000, CodecConfig: head(1, 2, 0, 0)}},
-		{"a header version this cannot read",
+		{"a header of an incompatible major version",
 			TrackConfig{Codec: "Opus", Timescale: 48000,
-				CodecConfig: head(2, 2, 0, 0, 0x80, 0xBB, 0, 0, 0, 0, 0)}},
+				CodecConfig: head(16, 2, 0, 0, 0x80, 0xBB, 0, 0, 0, 0, 0)}},
 		{"a header stating no channel",
 			TrackConfig{Codec: "Opus", Timescale: 48000, CodecConfig: full(0, 0)}},
 		{"a header mapping too many channels implicitly",
@@ -668,6 +735,58 @@ func TestMuxerRefusesOpusItCannotDescribe(t *testing.T) {
 				t.Errorf("%d bytes were written for a track that was refused", buf.Len())
 			}
 		})
+	}
+}
+
+// TestOpusHeadAcceptsEveryCompatibleVersion holds RFC 7845 §5.1: the version
+// octet is a major nibble and a minor one, a reader SHOULD accept anything up to
+// 15 and SHOULD refuse 16 and above. A later minor version may carry fields
+// past the ones this reads, and they MUST NOT make the header invalid.
+//
+// ffmpeg is the oracle: libavcodec/opus/parse.c refuses only version > 15, and
+// it decodes a Matroska Opus track whose header says 0, 2 or 15.
+func TestOpusHeadAcceptsEveryCompatibleVersion(t *testing.T) {
+	for _, version := range []byte{0, 1, 2, 15} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			head := opusHeadFor(2, 312, 44100)
+			head[8] = version
+			// A field a later minor version appended, past the ones read.
+			head = append(head, 0xA5, 0x5A)
+			dops, err := opusHead(head)
+			if err != nil {
+				t.Fatalf("opusHead: %v", err)
+			}
+			if dops.OutputChannelCount != 2 || dops.PreSkip != 312 || dops.InputSampleRate != 44100 {
+				t.Fatalf("dOps = %+v", dops)
+			}
+			// The header written back states what was read, as version 1.
+			back := opusHeadBytes(dops)
+			if back[8] != 1 || !bytes.Equal(back[9:], head[9:opusHeadSize]) {
+				t.Fatalf("written back = % x", back)
+			}
+			// And the Matroska reader, which goes through the same function,
+			// reads the track instead of refusing it.
+			doc := webmDoc()
+			doc.Segment.Tracks.TrackEntry[1].CodecPrivate = head
+			r, err := NewReader(marshalDoc(t, doc))
+			if err != nil {
+				t.Fatalf("NewReader: %v", err)
+			}
+			cfg, err := r.TrackConfig(2)
+			if err != nil {
+				t.Fatalf("TrackConfig: %v", err)
+			}
+			if cfg.Channels != 2 || cfg.PreSkip != 312 {
+				t.Fatalf("config = %d channels, pre-skip %d", cfg.Channels, cfg.PreSkip)
+			}
+		})
+	}
+	for _, version := range []byte{16, 0x21, 0xFF} {
+		head := opusHeadFor(2, 312, 48000)
+		head[8] = version
+		if _, err := opusHead(head); !errors.Is(err, ErrTrackConfig) {
+			t.Errorf("version %d: err = %v, want ErrTrackConfig", version, err)
+		}
 	}
 }
 
@@ -735,6 +854,49 @@ func TestMuxerWritesVP8(t *testing.T) {
 	}
 }
 
+// TestAVP8TrackOutOfMatroskaIsWrittenWithLevelZero is VP8 out of Matroska,
+// which no operation could write to MP4: "vp08 needs a level; 0 is not one".
+// VP8 has no level, and the VP Codec ISO Media File Format Binding's level
+// table gives 0 as "Undefined", so 0 is what a vp08 record states.
+func TestAVP8TrackOutOfMatroskaIsWrittenWithLevelZero(t *testing.T) {
+	var mkv bytes.Buffer
+	w := NewWebMMuxer(&mkv)
+	id, err := w.AddTrack(TrackConfig{Kind: Video, Codec: "vp08", Timescale: 1000, Width: 320, Height: 240})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		if err := w.WriteSample(id, Sample{Data: []byte{byte(i), 1, 2}, Duration: 40, Sync: i == 0}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for name, op := range map[string]func(io.Writer, *Reader) error{
+		"Remux":           func(out io.Writer, r *Reader) error { return Remux(out, r) },
+		"JoinProgressive": func(out io.Writer, r *Reader) error { return JoinProgressive(out, []*Reader{r}) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, err := NewReader(mkv.Bytes())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			if err := op(&out, r); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			stsd := sampleEntryOf(t, out.Bytes())
+			if stsd.VpXX == nil || stsd.VpXX.Type() != "vp08" || stsd.VpXX.VppC == nil {
+				t.Fatalf("no vp08 sample entry with a vpcC: %v", stsd.Children)
+			}
+			if v := stsd.VpXX.VppC; v.Profile != 0 || v.Level != 0 || v.BitDepth != 8 {
+				t.Errorf("vpcC = %+v; want profile 0, level 0 (Undefined), 8 bits", v)
+			}
+		})
+	}
+}
+
 func TestMuxerRefusesVPxItCannotDescribe(t *testing.T) {
 	sound := VPxConfig{Profile: 0, Level: 10, BitDepth: 8}
 	with := func(f func(*VPxConfig)) *VPxConfig {
@@ -766,6 +928,10 @@ func TestMuxerRefusesVPxItCannotDescribe(t *testing.T) {
 		{"a chroma subsampling that does not exist",
 			TrackConfig{Codec: "vp09", Timescale: 90000, Width: 640, Height: 480,
 				VPx: with(func(v *VPxConfig) { v.ChromaSubsampling = 4 })}},
+		// "VP8 only supports a profile value of 0."
+		{"a VP8 profile other than 0",
+			TrackConfig{Codec: "vp08", Timescale: 90000, Width: 640, Height: 480,
+				VPx: with(func(v *VPxConfig) { v.Profile, v.Level = 1, 0 })}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,0 +1,12 @@
+#format: frame checksums
+#version: 2
+#hash: MD5
+#software: Lavf63.1.102
+#tb 0: 1/8000
+#media_type 0: audio
+#codec_id 0: pcm_s24le
+#sample_rate 0: 8000
+#channel_layout_name 0: 2.1
+#stream#, dts,        pts, duration,     size, hash
+0,          0,          0,      512,     4608, cfb9da32428fbcf9054c1b978ed8fdf6
+0,        512,        512,      288,     2592, 1ae6ff634cabfbe0777d1a60ef0bbc02

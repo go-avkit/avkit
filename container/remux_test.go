@@ -224,9 +224,7 @@ func TestRemuxPassesMuxOptionsOn(t *testing.T) {
 	if err := Remux(&out, src, MuxOptions(Brand("iso6"))); err != nil {
 		t.Fatalf("Remux: %v", err)
 	}
-	if !bytes.Contains(out.Bytes()[:32], []byte("iso6")) {
-		t.Errorf("the chosen brand did not reach the output: %q", out.Bytes()[:32])
-	}
+	assertFtyp(t, out.Bytes(), "iso6", "isom", "iso6", "dash")
 }
 
 func TestEveryOperationNeedsAnInput(t *testing.T) {
@@ -334,6 +332,12 @@ func TestRemuxReportsAWriteFailure(t *testing.T) {
 	src := fixtureReader(t, fixtureTrack{av1Track(12800, 64, 48), marked('v', 2, 512, 1)})
 	if err := Remux(&failWriter{}, src); err == nil {
 		t.Fatal("a failing writer was ignored")
+	}
+	// The header goes out with the first fragment, so with fragments short
+	// enough to be closed while samples are still being copied the failure
+	// is met in the middle of the copy, not at its end.
+	if err := Remux(&failWriter{}, src, MuxOptions(FragmentDuration(time.Millisecond))); err == nil {
+		t.Fatal("a failing writer was ignored mid-copy")
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/Eyevinn/mp4ff/aac"
 	"github.com/asticode/go-astits"
@@ -55,7 +56,15 @@ var addElementaryStream = (*astits.Muxer).AddElementaryStream
 //
 // It is the counterpart of the Reader's transport stream side, and never
 // re-encodes: samples are converted to the form a transport stream states them
-// in — Annex-B for AVC and HEVC, ADTS for AAC — and written as handed over.
+// in — Annex-B for AVC and HEVC, the AOM start-code form for AV1, ADTS for AAC
+// — and written as handed over. AC-3, Enhanced AC-3 and MPEG audio (Layers I
+// to III, named "mp1", "mp2" and "mp3") need no conversion: their frames are
+// the same in both containers. Opus is refused, no published specification
+// carrying it in a transport stream.
+//
+// Every track is presented from its first presented frame: its first
+// composition offset and its StartDelay are taken off its timestamps, and the
+// program starts 1.4 s into the clock (see tsTimestampOffset).
 type TSMuxer struct {
 	ts      *astits.Muxer
 	tracks  []*tsMuxTrack
@@ -71,6 +80,12 @@ type tsMuxTrack struct {
 	pid       uint16
 	kind      Kind
 	timescale uint32
+	// form is what a sample is converted with, codec the name it was
+	// declared under, and streamID the PES stream identifier, which is
+	// stated rather than left to astits: see tsaudio.go.
+	form     tsMuxForm
+	codec    string
+	streamID uint8
 	// params are the sets a decoder needs to start, repeated in front of
 	// every sync sample.
 	params parameterSets
@@ -80,7 +95,51 @@ type tsMuxTrack struct {
 	// nextTime is the decode time of the next sample, in the track's own
 	// timescale.
 	nextTime int64
+	// priming is the track's StartDelay in its own timescale, and start the
+	// media time its presentation begins at: the first sample's composition
+	// offset, then the priming. started says the first sample has fixed it.
+	priming int64
+	start   int64
+	started bool
 }
+
+// The program clock, ISO/IEC 13818-1 §2.4.3.7 and §2.4.2.
+//
+// A transport stream has no edit list: what is presented when is the PTS of
+// every unit and nothing else. A track that reorders its frames (H.264 with
+// B-frames) presents its first frame at its composition offset, and a track
+// with an encoder priming presents media it should not; both must be taken off
+// the timestamps, so every track's first PRESENTED frame lands on the same
+// instant. The units decoded before that instant -- the reordered pictures'
+// first decode, the priming frame -- then need a DTS (and the priming a PTS)
+// before it, which the 33-bit unsigned fields cannot state below zero.
+//
+// ffmpeg's mpegtsenc.c solves it with a program-wide offset: write_packet adds
+// 2 × max_delay to every PTS and DTS, and the PCR is stated max_delay before
+// the DTS of the unit carrying it (mpegts_write_pes), which is also the time
+// the T-STD buffer is given to receive a unit before it is decoded. The ffmpeg
+// command line's -muxdelay default is 0.7 s, and the same values are used here.
+const (
+	// tsMuxDelay is how far the clock reference runs ahead of the decode time
+	// of the unit carrying it: 0.7 s of the 90 kHz clock.
+	tsMuxDelay = int64(63000)
+	// tsTimestampOffset is where the program's presentation begins on the
+	// 90 kHz clock, and so how much media may be decoded or presented ahead
+	// of it: twice tsMuxDelay, 1.4 s, of which a unit may use tsMuxDelay.
+	tsTimestampOffset = 2 * tsMuxDelay
+)
+
+// tsMuxForm is the conversion a track's samples go through on their way in.
+type tsMuxForm uint8
+
+const (
+	tsMuxAnnexB    tsMuxForm = iota // AVC and HEVC: start codes, sets in band
+	tsMuxAV1                        // AV1: the AOM start-code form
+	tsMuxADTS                       // AAC: an ADTS header in front
+	tsMuxAC3                        // AC-3: the sync frames as they are
+	tsMuxEAC3                       // Enhanced AC-3, likewise
+	tsMuxMPEGAudio                  // MPEG audio: the frames as they are
+)
 
 // NewTSMuxer returns a TSMuxer writing to w.
 func NewTSMuxer(w io.Writer) *TSMuxer {
@@ -106,13 +165,15 @@ func (m *TSMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	case cfg.Timescale == 0:
 		return 0, fmt.Errorf("%w: %s track has no timescale", ErrTrackConfig, cfg.Codec)
 	}
-	t := &tsMuxTrack{pid: m.nextPID, timescale: cfg.Timescale}
-	streamType, err := t.describe(cfg)
+	t := &tsMuxTrack{pid: m.nextPID, timescale: cfg.Timescale,
+		priming: tsPrimingTicks(cfg.StartDelay, cfg.Timescale)}
+	streamType, descriptors, err := t.describe(cfg)
 	if err != nil {
 		return 0, err
 	}
 	if err := addElementaryStream(m.ts, astits.PMTElementaryStream{
 		ElementaryPID: t.pid, StreamType: streamType,
+		ElementaryStreamDescriptors: descriptors,
 	}); err != nil {
 		return 0, fmt.Errorf("container: declare stream %d: %w", t.pid, err)
 	}
@@ -139,27 +200,79 @@ func (m *TSMuxer) setPCR() {
 }
 
 // describe reads a codec's configuration into what every sample of the track
-// is converted with, and returns the stream type the program map states.
-func (t *tsMuxTrack) describe(cfg TrackConfig) (astits.StreamType, error) {
+// is converted with, and returns the stream type and the descriptors the
+// program map states.
+func (t *tsMuxTrack) describe(cfg TrackConfig) (astits.StreamType, []*astits.Descriptor, error) {
 	codec := strings.ToLower(strings.TrimSpace(cfg.Codec))
+	t.codec = codec
 	switch codec {
 	case "avc1", "avc3":
 		if len(cfg.SPS) == 0 || len(cfg.PPS) == 0 {
-			return 0, fmt.Errorf("%w: %s needs both SPS and PPS", ErrTrackConfig, codec)
+			return 0, nil, fmt.Errorf("%w: %s needs both SPS and PPS", ErrTrackConfig, codec)
 		}
 		t.kind = Video
 		t.params = parameterSets{sps: cfg.SPS, pps: cfg.PPS}
-		return astits.StreamTypeH264Video, nil
+		return astits.StreamTypeH264Video, nil, nil
 	case "hvc1", "hev1":
 		if len(cfg.SPS) == 0 || len(cfg.PPS) == 0 || len(cfg.VPS) == 0 {
-			return 0, fmt.Errorf("%w: %s needs VPS, SPS and PPS", ErrTrackConfig, codec)
+			return 0, nil, fmt.Errorf("%w: %s needs VPS, SPS and PPS", ErrTrackConfig, codec)
 		}
 		t.kind = Video
 		t.params = parameterSets{sps: cfg.SPS, pps: cfg.PPS, vps: cfg.VPS}
-		return astits.StreamTypeH265Video, nil
+		return astits.StreamTypeH265Video, nil, nil
+	case "av01":
+		// The av1C record is read through the same decoder the MP4 muxer
+		// uses, so a record one refuses the other refuses too; the AV1 video
+		// descriptor is built from its first four bytes.
+		if _, err := decodeAv1C(cfg.CodecConfig); err != nil {
+			return 0, nil, err
+		}
+		t.kind, t.form, t.streamID = Video, tsMuxAV1, tsPrivateStream1 // 3.4
+		// The registration descriptor comes first, then the AV1 video
+		// descriptor (2.1).
+		return astits.StreamTypePrivateData, []*astits.Descriptor{
+			registrationDescriptor(av1RegistrationID),
+			{
+				Tag: av1VideoDescriptorTag, Length: 4,
+				UserDefined: av1VideoDescriptor(cfg.CodecConfig),
+			},
+		}, nil
+	case "ac-3", "ec-3":
+		// ATSC A/52 System A, which is what FFmpeg's mpegtsenc.c writes
+		// unless told "-mpegts_flags system_b": the stream type identifies
+		// the codec (Annex A 4.1, Annex G 3.1), and the AC-3 registration
+		// descriptor goes with BOTH — Annex G 2 extends it to Enhanced AC-3
+		// "in combination with the E-AC-3 stream_type value", keeping "EAC3"
+		// for systems that have no stream type of their own.
+		//
+		// ⛔ FFmpeg writes "EAC3" next to 0x87 instead. Its reader, and this
+		// package's, decide by the stream type first, so both forms read;
+		// the one written here is the one the standard states.
+		t.kind, t.form, t.streamID = Audio, tsMuxAC3, tsPrivateStream1 // A4.2, G3.2
+		streamType := astits.StreamTypeAC3Audio
+		if codec == "ec-3" {
+			t.form, streamType = tsMuxEAC3, astits.StreamTypeEAC3Audio
+		}
+		return streamType, []*astits.Descriptor{registrationDescriptor(ac3RegistrationID)}, nil
+	case "mp1", "mp2", "mp3":
+		streamType, ok := mpaStreamType(cfg.SampleRate)
+		if !ok {
+			return 0, nil, fmt.Errorf("%w: %s at %d Hz: MPEG audio is carried at 32, 44.1 and 48 kHz "+
+				"(stream type 0x03) or 16, 22.05 and 24 kHz (0x04), and the rate is what decides",
+				ErrTrackConfig, codec, cfg.SampleRate)
+		}
+		t.kind, t.form, t.streamID = Audio, tsMuxMPEGAudio, tsAudioStream0
+		return streamType, nil, nil
+	case "opus":
+		// ⛔ Not an omission. The only text that maps Opus onto a transport
+		// stream is a draft ETSI specification, "TS 1xx xxx V0.1.3
+		// (2015-10)", which was never published. FFmpeg writes it anyway;
+		// this package writes what a published specification defines.
+		return 0, nil, fmt.Errorf("%w: opus: no published specification carries Opus in an MPEG-TS "+
+			"(the only one, ETSI TS opus V0.1.3, is a 2015 draft that was never adopted)", ErrUnsupportedCodec)
 	case "mp4a":
 		if cfg.Channels < 1 || cfg.Channels > tsMaxChannelConfig {
-			return 0, fmt.Errorf("%w: mp4a needs between 1 and %d channels, not %d",
+			return 0, nil, fmt.Errorf("%w: mp4a needs between 1 and %d channels, not %d",
 				ErrTrackConfig, tsMaxChannelConfig, cfg.Channels)
 		}
 		objectType := cfg.AudioObjectType
@@ -171,12 +284,28 @@ func (t *tsMuxTrack) describe(cfg TrackConfig) (astits.StreamType, error) {
 		// no room for is a configuration no transport stream can state.
 		header, err := aac.NewADTSHeader(cfg.SampleRate, byte(cfg.Channels), objectType, 0)
 		if err != nil {
-			return 0, fmt.Errorf("%w: mp4a: %v", ErrTrackConfig, err)
+			return 0, nil, fmt.Errorf("%w: mp4a: %v", ErrTrackConfig, err)
 		}
-		t.kind, t.adts = Audio, header
-		return astits.StreamTypeAACAudio, nil
+		t.kind, t.form, t.adts = Audio, tsMuxADTS, header
+		return astits.StreamTypeAACAudio, nil, nil
+	case codecWebVTT, codecTTML:
+		// Said apart from an unknown codec because the codec is known and
+		// carried elsewhere: a transport stream's subtitles are DVB bitmaps
+		// or teletext pages, and an HLS player takes WebVTT as segments of
+		// its own, beside the stream rather than inside it.
+		return 0, nil, fmt.Errorf("%w: %q: subtitles are not written into an MPEG-TS by this package",
+			ErrUnsupportedCodec, cfg.Codec)
 	default:
-		return 0, fmt.Errorf("%w: %q", ErrUnsupportedCodec, cfg.Codec)
+		return 0, nil, fmt.Errorf("%w: %q", ErrUnsupportedCodec, cfg.Codec)
+	}
+}
+
+// registrationDescriptor is the ISO/IEC 13818-1 2.6.8 descriptor that names
+// the format of a stream whose stream type does not.
+func registrationDescriptor(formatIdentifier uint32) *astits.Descriptor {
+	return &astits.Descriptor{
+		Tag: astits.DescriptorTagRegistration, Length: 4,
+		Registration: &astits.DescriptorRegistration{FormatIdentifier: formatIdentifier},
 	}
 }
 
@@ -203,19 +332,28 @@ func (m *TSMuxer) WriteSample(trackID uint32, s Sample) error {
 		return err
 	}
 	// Presentation is shifted against decoding by a stream that reorders its
-	// frames. Before the start of the stream it cannot be stated at all.
-	dts := t.nextTime
-	pts := dts + int64(s.CompositionOffset)
-	if pts < 0 {
-		return fmt.Errorf("%w: a composition offset of %d puts the frame before the start of the stream",
-			ErrSample, s.CompositionOffset)
+	// frames, and every time is counted from the track's first presented frame
+	// (see tsTimestampOffset). Kept aside until the sample is accepted: a
+	// refused first sample must not decide where the next one is shown.
+	start := t.start
+	if !t.started {
+		start = max(int64(s.CompositionOffset), 0) + t.priming
+	}
+	dts := t.clock(t.nextTime - start)
+	pts := t.clock(t.nextTime + int64(s.CompositionOffset) - start)
+	if dts < tsTimestampOffset-tsMuxDelay || pts < tsTimestampOffset-tsMuxDelay {
+		return fmt.Errorf("%w: a composition offset of %d and a start delay of %d ticks put the frame "+
+			"more than %d ms before the start of the program, which its clock cannot state",
+			ErrSample, s.CompositionOffset, t.priming, tsMuxDelay*1000/TSTimescale)
 	}
 	data := &astits.MuxerData{
 		PID: t.pid,
 		PES: &astits.PESData{
 			Header: &astits.PESHeader{
-				// The stream identifier is left to astits, which takes the
-				// one the standard fixes for the type of the stream.
+				// Left at zero, the stream identifier is left to astits,
+				// which takes the one the standard fixes for the type of
+				// the stream; the codecs it gets wrong state their own.
+				StreamID:       t.streamID,
 				OptionalHeader: t.timing(dts, pts),
 			},
 			Data: payload,
@@ -227,7 +365,7 @@ func (m *TSMuxer) WriteSample(trackID uint32, s Sample) error {
 		// repeat the tables, so joining at this point describes itself.
 		data.AdaptationField = &astits.PacketAdaptationField{
 			HasPCR:                true,
-			PCR:                   &astits.ClockReference{Base: t.rescale(dts)},
+			PCR:                   &astits.ClockReference{Base: (dts - tsMuxDelay) % tsClockWrap},
 			RandomAccessIndicator: s.Sync,
 		}
 	}
@@ -238,7 +376,17 @@ func (m *TSMuxer) WriteSample(trackID uint32, s Sample) error {
 		return fmt.Errorf("container: write unit of stream %d: %w", t.pid, err)
 	}
 	t.nextTime += int64(s.Duration)
+	t.start, t.started = start, true
 	return nil
+}
+
+// tsPrimingTicks is a StartDelay in a track's own timescale, rounded to the
+// nearest tick, as the MP4 muxers round the edit list stating it.
+func tsPrimingTicks(delay time.Duration, timescale uint32) int64 {
+	if delay <= 0 {
+		return 0
+	}
+	return (int64(delay)*int64(timescale) + int64(time.Second)/2) / int64(time.Second)
 }
 
 // timing states when a unit is decoded and shown. astits refuses to write a
@@ -247,37 +395,50 @@ func (m *TSMuxer) WriteSample(trackID uint32, s Sample) error {
 func (t *tsMuxTrack) timing(dts, pts int64) *astits.PESOptionalHeader {
 	h := &astits.PESOptionalHeader{
 		MarkerBits: 2,
-		// Every unit this muxer writes starts on a start code or an ADTS
-		// syncword, which is what the flag states.
+		// Every unit this muxer writes starts on a start code or a sync
+		// word, which is what the flag states: AOM's AV1 carriage (3.4)
+		// and ATSC A/52 Annex G (3.3) require it.
 		DataAlignmentIndicator: true,
 		PTSDTSIndicator:        astits.PTSDTSIndicatorOnlyPTS,
-		PTS:                    &astits.ClockReference{Base: t.rescale(pts)},
+		PTS:                    &astits.ClockReference{Base: pts % tsClockWrap},
 	}
 	if dts != pts {
 		h.PTSDTSIndicator = astits.PTSDTSIndicatorBothPresent
-		h.DTS = &astits.ClockReference{Base: t.rescale(dts)}
+		h.DTS = &astits.ClockReference{Base: dts % tsClockWrap}
 	}
 	return h
 }
 
-// rescale converts a time in the track's own timescale into the 90 kHz clock
-// every timestamp in a transport stream is counted in, counting around at the
-// width of the field it is written to.
-func (t *tsMuxTrack) rescale(when int64) int64 {
-	return (when * TSTimescale / int64(t.timescale)) % tsClockWrap
+// clock converts a time in the track's own timescale, counted from the
+// track's first presented frame, into the 90 kHz clock every timestamp in a
+// transport stream is counted in, on which the program starts at
+// tsTimestampOffset. It is not wrapped yet: the fields it is written to count
+// around at 33 bits, and timing does that.
+func (t *tsMuxTrack) clock(when int64) int64 {
+	return when*TSTimescale/int64(t.timescale) + tsTimestampOffset
 }
 
 // packetise converts one sample into the bytes its elementary stream carries.
 func (t *tsMuxTrack) packetise(s Sample) ([]byte, error) {
-	if t.kind == Video {
+	switch t.form {
+	case tsMuxAnnexB:
 		payload, ok := toAnnexB(s.Data, t.params, s.Sync)
 		if !ok {
 			return nil, fmt.Errorf("%w: %d bytes are not length-prefixed NAL units",
 				ErrSample, len(s.Data))
 		}
 		return payload, nil
+	case tsMuxAV1:
+		return av1ToStartCodes(s.Data)
+	case tsMuxAC3, tsMuxEAC3:
+		// A sample is one access unit, which ATSC A/52 Annex G 3.3 forbids
+		// splitting across units: written as one, it stays whole.
+		return s.Data, checkAC3Sample(s.Data, t.form == tsMuxEAC3)
+	case tsMuxMPEGAudio:
+		return s.Data, checkMPASample(s.Data, t.codec)
+	default:
+		return toADTS(s.Data, *t.adts)
 	}
-	return toADTS(s.Data, *t.adts)
 }
 
 // toAnnexB turns the length-prefixed NAL units of a sample back into the
