@@ -50,7 +50,7 @@ adding a codec to the dispatch without adding it here fails the suite.
 
 | | sniff | demux | mux |
 |---|---|---|---|
-| MP4 / ISO-BMFF | ✓ | ✓ one file, a sequence of segments, or fragmented | ✓ fragmented **and** progressive |
+| MP4 / ISO-BMFF | ✓ | ✓ one file, a sequence of segments, or fragmented, with or without `sidx` | ✓ fragmented (optionally indexed by `sidx`) **and** progressive |
 | Matroska / WebM | ✓ | ✓ | ✓ |
 | MPEG-TS | ✓ | ✓ | ✓ |
 | ADTS (raw AAC) | ✓ | ✓ | — |
@@ -353,6 +353,64 @@ Measured with ffmpeg 9.0.2 on 4 s files made the way the fixtures
 - The picture's list rewritten into two edits of 1 s, the media's first and
   third seconds. The progressive copy decodes the same 50 frames at the same
   times as the source.
+
+## A segment index for DASH on-demand
+
+`NewMuxer(w, container.SegmentIndex())` writes one segment index box (`sidx`,
+ISO/IEC 14496-12 §8.16.3) per track after the initialisation segment and before
+the first fragment. Each one references every fragment, a `moof` and its
+`mdat`, with its size, its duration on that track, and whether a player can
+start there. That is the layout of an Indexed Self-Initializing Media Segment
+(ISO/IEC 23009-1 §6.3.5.2): one file a DASH on-demand client reads the index
+of with one range request, then fetches fragment by fragment.
+
+- **One `sidx` per track**, each naming the same byte ranges, as ffmpeg's
+  `-movflags +dash+global_sidx` writes them. A track absent from a fragment
+  states a reference of no duration there. A track that never had a sample
+  gets no box.
+- **Durations run from one fragment's earliest presentation time to the
+  next**, and the last one's to the end of the track, as §8.16.3.3 defines
+  them. They add up to the track's duration on the media timeline.
+- **SAP type 1** where the fragment opens on a sync sample that nothing in it
+  presents before. A sync sample that a later-decoded frame presents before is
+  type 2 or 3, which only the bitstream can tell, so it is stated as 0
+  (unknown). ffmpeg states 0 for every reference.
+- **Version 1**, with 64-bit times and offsets, as ffmpeg writes it. It costs
+  eight bytes a track, and no time or offset can then fail to fit.
+
+The index describes what comes after it, so it can only be written at `Close`.
+What happens until then depends on the writer:
+
+- **A writer that can also read and seek**, such as an `os.File`, is handed each
+  fragment as it is made. At `Close` the fragments are moved forward by the
+  size of the index, one block at a time, and the index is written in the gap.
+  ffmpeg's `global_sidx` does the same. One block is held in memory, and the
+  media is written twice.
+- **Any other writer** has the fragments held in memory until `Close`, up to
+  `IndexMemoryLimit` (256 MB by default). Past that limit the muxer reports
+  `ErrMediaTooLarge`.
+
+Both paths produce the same bytes. Some files cannot be indexed and are refused
+with `ErrMediaTooLarge`: more than 65535 fragments (one box's
+`reference_count`), a fragment over 2 GiB (`referenced_size` is 31 bits), or one
+lasting more than 2³² ticks.
+
+Measured against ffmpeg 9.0.2 on the same 7 s H.264 + AAC input, cut every 2 s:
+
+| | avkit | ffmpeg `+dash+global_sidx` |
+|---|---|---|
+| boxes | `ftyp moov sidx sidx (moof mdat)×4` | the same, then `mfra` |
+| video `sidx` | `ept` 1024, durations 25600/25600/25600/12800 | identical |
+| audio `sidx` | `ept` 0, Σ 337 024 = the track's `stts` | Σ 339 840, 2816 ticks past the media |
+| Σ `referenced_size` | = the bytes from the first `moof` to the end | = up to `mfra` |
+| `ffmpeg -ss 4.5`, first 3 frames | the same `framemd5` as the source | shifted by two frames |
+
+ffmpeg's own output plays two frames off because it drops the source's edit
+list.
+
+The reader needs nothing new: a fragment says where its samples are from its
+own `moof`, so a file reads the same with or without its index. A test checks
+this on this muxer's output and on a file made by ffmpeg.
 
 ## AC-3 and Enhanced AC-3 out of Matroska
 

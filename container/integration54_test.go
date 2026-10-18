@@ -7,16 +7,29 @@ import (
 	"bytes"
 	"os"
 	"testing"
+	"time"
 )
 
 // The tests in this file hold what the lots of #54 do TOGETHER: each lot is
 // tested on its own branch, and these are the paths where one lot's reader
 // feeds another lot's writer.
 
-// sameSamples reports the first sample whose bytes differ, or whose start
+// keepForOracle writes an output where ffprobe can be pointed at it, when
+// AVKIT_ORACLE_DIR names a directory: the reference tool is not on every CI
+// runner, so the comparison is made by hand and reported in the pull request.
+func keepForOracle(t *testing.T, name string, data []byte) {
+	t.Helper()
+	if dir := os.Getenv("AVKIT_ORACLE_DIR"); dir != "" {
+		if err := os.WriteFile(dir+"/"+name, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// firstDifferent reports the first sample whose bytes differ, or whose start
 // differs by more than one tick of the output's timescale (Matroska counts
 // milliseconds, so 1152/44100 s comes back as 26 or 27 of them), or -1.
-func sameSamples(t *testing.T, in, out []Sample, inScale, outScale uint32) int {
+func firstDifferent(t *testing.T, in, out []Sample, inScale, outScale uint32) int {
 	t.Helper()
 	if len(in) != len(out) {
 		t.Errorf("%d samples in, %d out", len(in), len(out))
@@ -110,6 +123,64 @@ func TestASubtitleTrackWithAnEditListConcatenates(t *testing.T) {
 	})
 }
 
+// TestAnIndexedFileCarriesBFramesAndSubtitles: the B-frame edit list of #60,
+// the general edit lists of #62, the WebVTT track of #56 and the segment index
+// of #63, all in one fragmented file. The index has one sidx per track, the
+// text track's included; every box tiles the same fragments; the samples read
+// back as they do without the index; and the pictures are still presented
+// from zero.
+func TestAnIndexedFileCarriesBFramesAndSubtitles(t *testing.T) {
+	video, _ := openFixture(t, "bframes.mp4")
+	text := subtitleFixture(t, "subtitles-webvtt.mkv")
+	var buf bytes.Buffer
+	if err := Join(&buf, []*Reader{video, text}, MuxOptions(SegmentIndex(), FragmentDuration(time.Second))); err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	data := buf.Bytes()
+	keepForOracle(t, "indexed-bframes-subtitles.mp4", data)
+	cfgs, samples := readBack(t, data)
+	if len(cfgs) != 3 || cfgs[2].Codec != "wvtt" {
+		t.Fatalf("tracks = %+v, want the source's two and a wvtt", cfgs)
+	}
+	assertShown(t, "indexed", shown(t, samples[2]), threeCues)
+	if got := firstPresented(t, data, 0); got != 0 {
+		t.Errorf("the first picture is shown at %d ticks; want 0", got)
+	}
+	if samples[0][0].CompositionOffset <= 0 {
+		t.Fatal("the first picture is not reordered; the test would test nothing")
+	}
+
+	boxes := topBoxes(t, data)
+	starts, sizes := fragmentRanges(t, boxes)
+	index, ends := sidxBoxes(boxes)
+	if len(index) != 3 {
+		t.Fatalf("%d sidx boxes, want one per track", len(index))
+	}
+	for k, sidx := range index {
+		if sidx.ReferenceID != uint32(k+1) || len(sidx.SidxRefs) != len(starts) {
+			t.Fatalf("sidx %d indexes track %d with %d references for %d fragments",
+				k, sidx.ReferenceID, len(sidx.SidxRefs), len(starts))
+		}
+		at := ends[k] + sidx.FirstOffset
+		for i, ref := range sidx.SidxRefs {
+			if at != starts[i] || uint64(ref.ReferencedSize) != sizes[i] {
+				t.Errorf("sidx %d reference %d: %d bytes at %d, the fragment is %d at %d",
+					k, i, ref.ReferencedSize, at, sizes[i], starts[i])
+			}
+			at += uint64(ref.ReferencedSize)
+		}
+	}
+	// The text track's index adds up to the 4 s its cues cover.
+	var total uint64
+	for _, ref := range index[2].SidxRefs {
+		total += uint64(ref.SubSegmentDuration)
+	}
+	if total != 4000 {
+		t.Errorf("the WebVTT index lasts %d ms, the cues 4000", total)
+	}
+	sameSamples(t, readAllSamples(t, data), readAllSamples(t, withoutIndex(t, data)))
+}
+
 // checkBack reads a written file back and compares its one track with the
 // source's.
 func checkBack(t *testing.T, what string, data []byte, cfg TrackConfig, in []Sample) {
@@ -137,7 +208,7 @@ func checkBack(t *testing.T, what string, data []byte, cfg TrackConfig, in []Sam
 	if err != nil {
 		t.Fatal(err)
 	}
-	if i := sameSamples(t, in, out, cfg.Timescale, got.Timescale); i >= 0 {
+	if i := firstDifferent(t, in, out, cfg.Timescale, got.Timescale); i >= 0 {
 		t.Errorf("%s: sample %d differs: %d bytes lasting %d/%d, the source's %d bytes lasting %d/%d",
 			what, i, len(out[i].Data), out[i].Duration, got.Timescale,
 			len(in[i].Data), in[i].Duration, cfg.Timescale)
