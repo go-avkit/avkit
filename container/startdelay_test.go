@@ -172,29 +172,37 @@ func TestOnlyAPrimingEditListIsRead(t *testing.T) {
 	}
 	one := mp4.ElstEntry{MediaTime: 1024, MediaRateInteger: 1}
 	for _, c := range []struct {
-		name string
-		trak *mp4.TrakBox
-		want time.Duration
+		name  string
+		trak  *mp4.TrakBox
+		first int32
+		want  time.Duration
 	}{
-		{"priming", trakWith(one), 1024 * time.Second / 48000},
-		{"no edit list at all", &mp4.TrakBox{}, 0},
+		{"priming", trakWith(one), 0, 1024 * time.Second / 48000},
+		{"no edit list at all", &mp4.TrakBox{}, 0, 0},
 		{"an empty edit, which is a gap and not a priming",
-			trakWith(mp4.ElstEntry{MediaTime: -1, MediaRateInteger: 1}), 0},
+			trakWith(mp4.ElstEntry{MediaTime: -1, MediaRateInteger: 1}), 0, 0},
 		{"two entries describe a presentation this does not reproduce",
-			trakWith(one, one), 0},
+			trakWith(one, one), 0, 0},
 		{"a rate other than 1 is not a plain skip",
-			trakWith(mp4.ElstEntry{MediaTime: 1024, MediaRateInteger: 2}), 0},
+			trakWith(mp4.ElstEntry{MediaTime: 1024, MediaRateInteger: 2}), 0, 0},
+		// What ffmpeg writes for a B-frame track: the media time is the first
+		// sample's composition offset, and none of it is priming.
+		{"a media time that is the first sample's composition offset",
+			trakWith(one), 1024, 0},
+		{"priming after a composition offset", trakWith(one), 24, 1000 * time.Second / 48000},
+		{"a negative first offset presents at zero, so all of it is priming",
+			trakWith(one), -24, 1024 * time.Second / 48000},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if got := mp4StartDelay(c.trak, 48000); got != c.want {
+			if got := mp4StartDelay(c.trak, 48000, c.first); got != c.want {
 				t.Errorf("mp4StartDelay = %v; want %v", got, c.want)
 			}
 		})
 	}
-	if got := mp4StartDelay(trakWith(one), 0); got != 0 {
+	if got := mp4StartDelay(trakWith(one), 0, 0); got != 0 {
 		t.Errorf("without a timescale the delay cannot be stated, got %v", got)
 	}
-	if got := mp4StartDelay(nil, 48000); got != 0 {
+	if got := mp4StartDelay(nil, 48000, 0); got != 0 {
 		t.Errorf("a nil trak gave %v", got)
 	}
 }

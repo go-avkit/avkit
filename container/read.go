@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"time"
 
 	"github.com/Eyevinn/mp4ff/aac"
@@ -192,7 +193,16 @@ func NewReader(data []byte) (*Reader, error) {
 // entries, an empty edit, a rate other than 1 -- describes a presentation this
 // package does not reproduce, and reading a delay out of it would state
 // something the output does not do.
-func mp4StartDelay(trak *mp4.TrakBox, timescale uint32) time.Duration {
+//
+// ⛔ The media time is NOT all priming. It is in composition time (ISO/IEC
+// 14496-12 §8.6.6.3), and a track that reorders its frames presents its first
+// sample at that sample's composition offset: ffmpeg writes a media time of two
+// frames for x264's default of two B-frames, and none of it is priming. So the
+// first sample's composition time is taken off, which is what the muxers add
+// back (see presentationStart); read whole, it came back as a StartDelay the
+// muxers then stacked on top of the composition offset, and a video track read
+// out of an ffmpeg MP4 claimed an 80 ms priming it does not have.
+func mp4StartDelay(trak *mp4.TrakBox, timescale uint32, firstOffset int32) time.Duration {
 	if trak == nil || trak.Edts == nil || trak.Edts.Elst == nil || timescale == 0 {
 		return 0
 	}
@@ -204,7 +214,58 @@ func mp4StartDelay(trak *mp4.TrakBox, timescale uint32) time.Duration {
 	if e.MediaTime <= 0 || e.MediaRateInteger != 1 || e.MediaRateFraction != 0 {
 		return 0
 	}
-	return time.Duration(e.MediaTime) * time.Second / time.Duration(timescale)
+	priming := e.MediaTime - presentationStart(firstOffset, 0)
+	if priming <= 0 {
+		return 0
+	}
+	return time.Duration(priming) * time.Second / time.Duration(timescale)
+}
+
+// firstCompositionOffset is the composition offset of a track's first sample,
+// read from the tables without reading the sample: the ctts of a progressive
+// file, or the first sample run of a fragmented one. A track that states none
+// presents its first sample when it decodes, which is an offset of zero.
+func (r *Reader) firstCompositionOffset(trak *mp4.TrakBox) int32 {
+	if !r.mp4.IsFragmented() {
+		if ctts := trak.Mdia.Minf.Stbl.Ctts; ctts != nil {
+			return ctts.GetCompositionTimeOffset(1)
+		}
+		return 0
+	}
+	// A composition offset has no default in the track fragment header or the
+	// track extends box (§8.8.8.1): a run states one per sample or none.
+	for _, traf := range r.trackFragments(trak.Tkhd.TrackID) {
+		for _, trun := range traf.Truns {
+			if len(trun.Samples) > 0 {
+				return trun.Samples[0].CompositionTimeOffset
+			}
+		}
+	}
+	return 0
+}
+
+// trackFragments yields, in file order, every track fragment of one track
+// together with where the movie fragment holding it starts, which is what its
+// data offsets count from. A fragment may carry several tracks, one track
+// fragment each, and only the track asked about is wanted.
+func (r *Reader) trackFragments(trackID uint32) iter.Seq2[uint64, *mp4.TrafBox] {
+	return func(yield func(uint64, *mp4.TrafBox) bool) {
+		for _, seg := range r.mp4.Segments {
+			for _, frag := range seg.Fragments {
+				if frag.Moof == nil {
+					continue
+				}
+				for _, traf := range frag.Moof.Trafs {
+					if traf.Tfhd == nil || traf.Tfhd.TrackID != trackID {
+						continue
+					}
+					if !yield(frag.Moof.StartPos, traf) {
+						return
+					}
+				}
+			}
+		}
+	}
 }
 
 // describeFormat names a format for an error message.
@@ -328,7 +389,7 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 		Channels:   track.Channels,
 		SampleRate: track.SampleRate,
 		Language:   track.Language,
-		StartDelay: mp4StartDelay(trak, track.Timescale),
+		StartDelay: mp4StartDelay(trak, track.Timescale, r.firstCompositionOffset(trak)),
 	}
 	stsd := trak.Mdia.Minf.Stbl.Stsd
 	switch {
@@ -522,24 +583,12 @@ func (r *Reader) fragmentedSamples(trackID uint32) ([]Sample, error) {
 	// not state; a file that declares none still reads.
 	trex := r.trackExtends(trackID)
 	var out []Sample
-	for _, seg := range r.mp4.Segments {
-		for _, frag := range seg.Fragments {
-			if frag.Moof == nil {
-				continue
-			}
-			// A fragment may carry several tracks, one track fragment each,
-			// and only the track asked about is wanted.
-			for _, traf := range frag.Moof.Trafs {
-				if traf.Tfhd == nil || traf.Tfhd.TrackID != trackID {
-					continue
-				}
-				samples, err := r.trafSamples(frag.Moof.StartPos, traf, trex)
-				if err != nil {
-					return nil, err
-				}
-				out = append(out, samples...)
-			}
+	for moofStart, traf := range r.trackFragments(trackID) {
+		samples, err := r.trafSamples(moofStart, traf, trex)
+		if err != nil {
+			return nil, err
 		}
+		out = append(out, samples...)
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("%w: track %d", ErrNoSamples, trackID)
