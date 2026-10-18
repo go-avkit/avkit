@@ -64,8 +64,8 @@ than being guessed at.
 
 | | codecs | what it means |
 |---|---|---|
-| **derived from the samples** | `avc1`, `avc3`, `hvc1`, `hev1`, `av01`, `vp09`, `mp4a` | the elementary stream states its own configuration, and it is read out of it |
-| **stated by the container** | `vp08`, `opus`, `ac-3`, `ec-3` | `ErrNotInSamples`. The codec is known and its samples **cannot** describe it — VP8 defines no level, an Opus stream carries no identification header, an AC-3 sync frame's bit stream information is not read here. Take the configuration from the container, which has it |
+| **derived from the samples** | `avc1`, `avc3`, `hvc1`, `hev1`, `av01`, `vp09`, `mp4a`, `ac-3`, `ec-3`, `mp1`, `mp2`, `mp3` | the elementary stream states its own configuration, and it is read out of it: for AC-3 the `dac3`/`dec3` record from the first sync frame, for MPEG audio the rate and channel count from the frame headers, which must all be of the stated layer and one rate |
+| **stated by the container** | `vp08`, `opus`, `flac` | `ErrNotInSamples`. The codec is known and its samples **cannot** describe it — VP8 defines no level, an Opus stream carries no identification header, a FLAC frame may leave its rate and bit depth to STREAMINFO (RFC 9639 §9.1.2, §9.1.4), which only the stream header holds. Take the configuration from the container, which has it |
 | **not known** | everything else | `ErrUnsupportedCodec` alone. There is nothing to take |
 
 ⛔ The middle row used to be indistinguishable from the last: both carried
@@ -78,9 +78,9 @@ before it existed still matches.
 | | video | audio |
 |---|---|---|
 | MP4 demux | any — the four-character code is read from the sample entry, not from a list | any |
-| MP4 mux | `avc1`, `hvc1`, `av01`, `vp08`, `vp09`, `mjpg` | `mp4a`, `opus`, `ac-3`, `ec-3` |
-| Matroska demux | AVC, HEVC, AV1, VP8, VP9 | AAC, AC-3, E-AC-3, FLAC, Opus, Vorbis |
-| WebM mux | AV1, VP8, VP9 | AAC, Opus, Vorbis |
+| MP4 mux | `avc1`, `hvc1`, `av01`, `vp08`, `vp09`, `mjpg` | `mp4a`, `opus`, `ac-3`, `ec-3`, `fLaC`, and `mp1`/`mp2`/`mp3` as `mp4a`; **not** `vorb` (see [Audio codecs](#flac-mpeg-audio-and-ac-3-in-mp4-and-matroska)) |
+| Matroska demux | AVC, HEVC, AV1, VP8, VP9 | AAC, AC-3, E-AC-3, FLAC, MPEG audio (Layers I–III), Opus, Vorbis |
+| Matroska / WebM mux | AV1, VP8, VP9 in WebM; AVC, HEVC as DocType `matroska` | Opus, Vorbis in WebM; AAC, FLAC, MPEG audio, AC-3, E-AC-3 as DocType `matroska` |
 | MPEG-TS | `avc1`, `hvc1`, `av01`, in and out | `mp4a`, `ac-3`, `ec-3`, `mp1`, `mp2`, `mp3`, in and out; **not** `opus` (see [MPEG-TS carriage](#mpeg-ts-carriage)) |
 
 ### What is deliberately absent
@@ -267,9 +267,9 @@ for Matroska, so a transport stream's AC-3 goes straight into an MP4.
 **The frames, not the program map, name the codec.** Stream types `0x03` and
 `0x04` do not say which layer they carry (FFmpeg names both `mp3` until its
 parser has seen a frame, and so does this until it has read one), and an
-E-AC-3 stream under stream type `0x81` is named `ec-3`. MPEG audio in an MP4 is
-`mp4a` with object type indication `0x6B` or `0x69` (MP4RA), which the MP4
-muxers do not write yet: they refuse `mp1`, `mp2` and `mp3` by saying so.
+E-AC-3 stream under stream type `0x81` is named `ec-3`. MPEG audio goes on into
+an MP4 as `mp4a` with object type indication `0x6B` or `0x69` (see
+[Audio codecs](#flac-mpeg-audio-and-ac-3-in-mp4-and-matroska)).
 
 **AV1 follows a draft**, and the draft says it should be cited only as one. It
 is still the only text that defines the carriage, and FFmpeg neither writes nor
@@ -293,6 +293,34 @@ by Xiph and never adopted. FFmpeg implements it (`opus_control_header`, the
 `"Opus"` registration descriptor and a DVB extension descriptor); this package
 writes what a published specification defines, and an Opus stream is not read
 either.
+
+## FLAC, MPEG audio and AC-3 in MP4 and Matroska
+
+| codec (`TrackConfig.Codec`) | MP4 (`Muxer`, `ProgressiveMuxer`) | Matroska (`WebMMuxer`, DocType `matroska`) | specification |
+|---|---|---|---|
+| FLAC (`fLaC`) | `fLaC` sample entry with a `dfLa` holding **every** metadata block, STREAMINFO first; `samplesize` the bit depth, `samplerate` halved while above 65535 Hz (65535 when halving leaves a fraction) | `A_FLAC`, `CodecPrivate` = `"fLaC"` + the metadata blocks | Xiph *Encapsulation of FLAC in ISO BMFF* §3.3.1–§3.3.2; RFC 9639 §8.1, §8.2, §10.2 |
+| MPEG audio (`mp1`, `mp2`, `mp3`) | `mp4a`, `esds` object type `0x6B` at 32/44.1/48 kHz, `0x69` at 16/22.05/24 kHz, **no** decoder specific info; "MPEG 2.5" rates refused | `A_MPEG/L1`, `/L2`, `/L3`, no `CodecPrivate` | MP4RA `oti` registry; FFmpeg `movenc.c` `mov_write_esds_tag`, `isom.c`; Matroska codec specifications |
+| AC-3 (`ac-3`), E-AC-3 (`ec-3`) | `ac-3`/`ec-3` with `dac3`/`dec3` (unchanged) | `A_AC3`, `A_EAC3`, no `CodecPrivate`, channels and rate in the Audio element | Matroska codec specifications ("Initialization: none") |
+| Vorbis (`vorb`) | **refused**: MP4RA registers no sample entry for it | `A_VORBIS` in WebM (unchanged) | MP4RA `sample-entries.csv` |
+
+`TrackConfig.CodecConfig` of a FLAC track is the Matroska form, `"fLaC"` and the
+blocks, whichever container it was read from: `Reader` turns a `dfLa` back into
+it, and takes the rate and channel count from STREAMINFO, which the Xiph mapping
+says is the one to read. A FLAC configuration that stops before the block marked
+last, puts anything before STREAMINFO, or is followed by frame bytes is refused.
+
+An MP4's `esds` names the MPEG audio standard, not the layer, so `Reader` names
+such a track `mp1`, `mp2` or `mp3` **from its first frame** (as FFmpeg's parser
+does), and a track whose first sample is not a frame is refused rather than read
+as AAC — which is what it was read as before. ⛔ FFmpeg's own reader names every
+`mp4a` of object type `0x6B` or `0x69` `mp3` (`isom.c`), Layer II included, and
+decodes it correctly all the same.
+
+Checked against FFmpeg 9.0.2: FLAC (44.1 to 192 kHz, up to six channels, 24
+bits), MP3 (44.1 and 22.05 kHz), MP2, AC-3 and E-AC-3 written by FFmpeg into
+Matroska, MP4 and MPEG-TS, remuxed through each of the three muxers, probe as the
+same codec, rate and channel count, hold the same packets (`framemd5`), and
+decode without an error message.
 
 ## VP9 out of Matroska
 
