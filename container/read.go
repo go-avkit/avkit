@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"time"
 
 	"github.com/Eyevinn/mp4ff/aac"
@@ -233,25 +234,38 @@ func (r *Reader) firstCompositionOffset(trak *mp4.TrakBox) int32 {
 	}
 	// A composition offset has no default in the track fragment header or the
 	// track extends box (§8.8.8.1): a run states one per sample or none.
-	id := trak.Tkhd.TrackID
-	for _, seg := range r.mp4.Segments {
-		for _, frag := range seg.Fragments {
-			if frag.Moof == nil {
-				continue
+	for _, traf := range r.trackFragments(trak.Tkhd.TrackID) {
+		for _, trun := range traf.Truns {
+			if len(trun.Samples) > 0 {
+				return trun.Samples[0].CompositionTimeOffset
 			}
-			for _, traf := range frag.Moof.Trafs {
-				if traf.Tfhd == nil || traf.Tfhd.TrackID != id {
+		}
+	}
+	return 0
+}
+
+// trackFragments yields, in file order, every track fragment of one track
+// together with where the movie fragment holding it starts, which is what its
+// data offsets count from. A fragment may carry several tracks, one track
+// fragment each, and only the track asked about is wanted.
+func (r *Reader) trackFragments(trackID uint32) iter.Seq2[uint64, *mp4.TrafBox] {
+	return func(yield func(uint64, *mp4.TrafBox) bool) {
+		for _, seg := range r.mp4.Segments {
+			for _, frag := range seg.Fragments {
+				if frag.Moof == nil {
 					continue
 				}
-				for _, trun := range traf.Truns {
-					if len(trun.Samples) > 0 {
-						return trun.Samples[0].CompositionTimeOffset
+				for _, traf := range frag.Moof.Trafs {
+					if traf.Tfhd == nil || traf.Tfhd.TrackID != trackID {
+						continue
+					}
+					if !yield(frag.Moof.StartPos, traf) {
+						return
 					}
 				}
 			}
 		}
 	}
-	return 0
 }
 
 // describeFormat names a format for an error message.
@@ -569,24 +583,12 @@ func (r *Reader) fragmentedSamples(trackID uint32) ([]Sample, error) {
 	// not state; a file that declares none still reads.
 	trex := r.trackExtends(trackID)
 	var out []Sample
-	for _, seg := range r.mp4.Segments {
-		for _, frag := range seg.Fragments {
-			if frag.Moof == nil {
-				continue
-			}
-			// A fragment may carry several tracks, one track fragment each,
-			// and only the track asked about is wanted.
-			for _, traf := range frag.Moof.Trafs {
-				if traf.Tfhd == nil || traf.Tfhd.TrackID != trackID {
-					continue
-				}
-				samples, err := r.trafSamples(frag.Moof.StartPos, traf, trex)
-				if err != nil {
-					return nil, err
-				}
-				out = append(out, samples...)
-			}
+	for moofStart, traf := range r.trackFragments(trackID) {
+		samples, err := r.trafSamples(moofStart, traf, trex)
+		if err != nil {
+			return nil, err
 		}
+		out = append(out, samples...)
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("%w: track %d", ErrNoSamples, trackID)

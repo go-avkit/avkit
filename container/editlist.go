@@ -103,12 +103,12 @@ func newEdts(entries ...mp4.ElstEntry) *mp4.EdtsBox {
 // the box order of §6.2.3 place it: after the track header, before the media
 // box. A reader finds it anywhere, but a file written in the order the standard
 // lists is one less thing for a strict one to object to.
+//
+// Both muxers build their track boxes with mp4ff, which always gives them a
+// media box, so there is always one to be placed before.
 func setEdits(trak *mp4.TrakBox, edts *mp4.EdtsBox) {
 	trak.Edts = edts
 	at := slices.IndexFunc(trak.Children, func(b mp4.Box) bool { return b.Type() == "mdia" })
-	if at < 0 {
-		at = len(trak.Children)
-	}
 	trak.Children = slices.Insert(trak.Children, at, mp4.Box(edts))
 }
 

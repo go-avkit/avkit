@@ -6,7 +6,6 @@ package container
 import (
 	"bytes"
 	"io"
-	"os"
 	"slices"
 	"testing"
 	"time"
@@ -78,13 +77,10 @@ func copyInto(t *testing.T, m sampleCloser, src *Reader) {
 	}
 }
 
-// readFixture opens one of the B-frame files.
-func readFixture(t *testing.T, name string) (*Reader, []byte) {
+// openFixture opens one of the B-frame files.
+func openFixture(t *testing.T, name string) (*Reader, []byte) {
 	t.Helper()
-	data, err := os.ReadFile("testdata/" + name)
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := readFixture(t, name)
 	r, err := NewReader(data)
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +138,7 @@ func TestABFrameTrackIsPresentedFromZero(t *testing.T) {
 			{"progressive", func(w io.Writer, r *Reader) error { return JoinProgressive(w, []*Reader{r}) }},
 		} {
 			t.Run(source+" to "+form.name, func(t *testing.T) {
-				r, _ := readFixture(t, source)
+				r, _ := openFixture(t, source)
 				var out bytes.Buffer
 				if err := form.write(&out, r); err != nil {
 					t.Fatal(err)
@@ -182,7 +178,7 @@ func TestABFrameTrackIsPresentedFromZero(t *testing.T) {
 // ffmpeg's MP4 states exactly what ffmpeg stated, entry for entry, for the
 // pictures' reordering and for the sound's priming alike.
 func TestAProgressiveCopyRestatesFfmpegsEditLists(t *testing.T) {
-	r, source := readFixture(t, "bframes.mp4")
+	r, source := openFixture(t, "bframes.mp4")
 	var out bytes.Buffer
 	if err := JoinProgressive(&out, []*Reader{r}); err != nil {
 		t.Fatal(err)
@@ -212,13 +208,13 @@ func TestAProgressiveCopyRestatesFfmpegsEditLists(t *testing.T) {
 func TestAMatroskaCopyShowsTheFramesWhenTheSourceDid(t *testing.T) {
 	for _, source := range []string{"bframes.mkv", "bframes.mp4"} {
 		t.Run(source, func(t *testing.T) {
-			r, _ := readFixture(t, source)
+			r, _ := openFixture(t, source)
 			var out bytes.Buffer
 			copyInto(t, NewWebMMuxer(&out), r)
 			got := blockTicks(readWebM(t, out.Bytes()), 1)
 			// The Matroska source's own blocks are the reference, whichever
 			// file was copied: both hold the same pictures at the same times.
-			_, mkv := readFixture(t, "bframes.mkv")
+			_, mkv := openFixture(t, "bframes.mkv")
 			want := blockTicks(readWebM(t, mkv), 1)
 			if !slices.Equal(got, want) {
 				t.Errorf("pictures shown at %v; the source shows them at %v", got, want)
@@ -259,7 +255,7 @@ func TestAWebMFrameShownBeforeTheFirstIsRefused(t *testing.T) {
 // and a track that has both skips both.
 func TestACompositionOffsetAndAPrimingAddUp(t *testing.T) {
 	cfg := videoConfig(t)
-	cfg.StartDelay = 10 * time.Millisecond // 900 ticks at 90 kHz
+	cfg.StartDelay = 10 * time.Millisecond // 128 ticks at 12.8 kHz
 	first := Sample{Data: []byte{1}, Duration: 3000, CompositionOffset: 6000, Sync: true}
 	for _, form := range []struct {
 		name string
@@ -267,11 +263,11 @@ func TestACompositionOffsetAndAPrimingAddUp(t *testing.T) {
 		want mp4.ElstEntry
 	}{
 		{"fragmented", func(w io.Writer) sampleCloser { return NewMuxer(w) },
-			mp4.ElstEntry{SegmentDuration: 0, MediaTime: 6900, MediaRateInteger: 1}},
-		// Presented from 6900 to 9000, the end of the only frame: 2100 ticks,
-		// which is 23.3 ms and rounds UP to 24 so the frame is not cut short.
+			mp4.ElstEntry{SegmentDuration: 0, MediaTime: 6128, MediaRateInteger: 1}},
+		// Presented from 6128 to 9000, the end of the only frame: 2872 ticks,
+		// which is 224.4 ms and rounds UP to 225 so the frame is not cut short.
 		{"progressive", func(w io.Writer) sampleCloser { return NewProgressiveMuxer(w) },
-			mp4.ElstEntry{SegmentDuration: 24, MediaTime: 6900, MediaRateInteger: 1}},
+			mp4.ElstEntry{SegmentDuration: 225, MediaTime: 6128, MediaRateInteger: 1}},
 	} {
 		t.Run(form.name, func(t *testing.T) {
 			var out bytes.Buffer
@@ -387,7 +383,7 @@ func TestAPrimingCoveringTheWholeTrackWritesNoEdit(t *testing.T) {
 // The edit box is placed where ISO/IEC 14496-12 lists it, between the track
 // header and the media box.
 func TestTheEditBoxSitsBeforeTheMediaBox(t *testing.T) {
-	r, _ := readFixture(t, "bframes.mkv")
+	r, _ := openFixture(t, "bframes.mkv")
 	var out bytes.Buffer
 	if err := JoinProgressive(&out, []*Reader{r}); err != nil {
 		t.Fatal(err)
