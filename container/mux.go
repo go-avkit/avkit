@@ -537,7 +537,7 @@ func vpxConfig(codec string, cfg TrackConfig) (*mp4.VppCBox, error) {
 		return nil, fmt.Errorf("%w: %s needs a level; 0 is not one", ErrTrackConfig, codec)
 	case codec == "vp08" && v.Profile != 0:
 		// "VP8 only supports a profile value of 0." (VP Codec ISO Media File
-		// Format Binding v1.0, §2.2 profile).
+		// Format Binding v1.0, semantics of the VPCodecConfigurationRecord).
 		return nil, fmt.Errorf("%w: vp08 profile %d; VP8 only supports profile 0", ErrTrackConfig, v.Profile)
 	case v.BitDepth != 8 && v.BitDepth != 10 && v.BitDepth != 12:
 		return nil, fmt.Errorf("%w: %s bit depth %d is not 8, 10 or 12", ErrTrackConfig, codec, v.BitDepth)
