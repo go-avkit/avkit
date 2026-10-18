@@ -132,8 +132,9 @@ type TrackConfig struct {
 	// MP4 as an edit list -- and a remux that dropped it would hand the
 	// output a frame the input never presented, so the two tracks would part
 	// company by that much. Readers fill it in from whichever form the source
-	// used, and Muxer and ProgressiveMuxer write an edit list for it; a caller
-	// that knows better can overwrite it. WebMMuxer does not write it yet.
+	// used, Muxer and ProgressiveMuxer write an edit list for it, and
+	// WebMMuxer the CodecDelay of an audio track whose codec states none of
+	// its own; a caller that knows better can overwrite it.
 	//
 	// It is counted from the track's first PRESENTED frame, not from its first
 	// decoded one: a track that reorders its frames starts its presentation

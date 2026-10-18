@@ -201,8 +201,10 @@ func webmEdit(cfg TrackConfig) (*webmShift, error) {
 // An edit starting before that first frame shows the track that much later:
 // a list starting at zero on a track that reorders its frames shows its first
 // frame late, and so does the copy. An edit starting after it does not show
-// the track any earlier: the media between is a priming, which this muxer does
-// not state for any codec but Opus, and it is presented as it was before. An
+// the track any earlier: the media between is a priming. When the list is the
+// one edit a priming is written as, the reader has stated it as StartDelay,
+// and WebMMuxer writes that as the track's CodecDelay (#71); after an empty
+// edit it is no StartDelay, and the priming is presented as it was before. An
 // empty edit at the head delays the whole track by its length.
 func (w *webmShift) shift(first int64) int64 {
 	if w == nil {

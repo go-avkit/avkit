@@ -533,6 +533,19 @@ func describeWebMTrack(cfg TrackConfig, number uint64) (webmTrackEntry, webmCode
 	if desc.matroskaID != "" {
 		codec.id, codec.inWebM = desc.matroskaID, false
 	}
+	if codec.kind == Audio && desc.codecDelay == 0 && cfg.StartDelay > 0 {
+		// The priming the source container stated -- an MP4 edit list, a
+		// Matroska CodecDelay -- is Matroska's CodecDelay, whatever the codec:
+		// RFC 9559 §5.1.4.1.25 defines it as the codec samples the decoder
+		// discards, in nanoseconds, to be subtracted from every frame
+		// timestamp. The blocks keep their timestamps, so the priming frame
+		// sits at 0 and is presented from -StartDelay, i.e. not at all. That is
+		// what ffmpeg's matroskaenc.c does with any audio track's
+		// initial_padding: it writes CodecDelay and shifts the packets by the
+		// same amount. Opus states its own pre-skip, which wins: the WebM Opus
+		// mapping says CodecDelay is that pre-skip.
+		desc.codecDelay = uint64(cfg.StartDelay / time.Nanosecond)
+	}
 	lang := cfg.Language
 	if lang == "" {
 		lang = "und"

@@ -6,6 +6,7 @@ package container
 import (
 	"bytes"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +79,13 @@ func TestElementaryAudioRemuxesToMP4AndMatroska(t *testing.T) {
 			}
 			keepForOracle(t, "elementary-"+file+".mp4", mp4Out.Bytes())
 			checkBack(t, "MP4", mp4Out.Bytes(), cfg, in)
+
+			var progressive bytes.Buffer
+			if err := JoinProgressive(&progressive, []*Reader{r}); err != nil {
+				t.Fatalf("into a progressive MP4: %v", err)
+			}
+			keepForOracle(t, "elementary-"+file+".progressive.mp4", progressive.Bytes())
+			checkBack(t, "MP4 progressive", progressive.Bytes(), cfg, in)
 
 			var mkv bytes.Buffer
 			m := NewWebMMuxer(&mkv)
@@ -224,6 +232,49 @@ func TestTheSeekHeadNamesTheTagsAndTheCover(t *testing.T) {
 	}
 }
 
+// TestAMatroskaCopyStatesThePrimingOnceBesideTheBFrameShift: #60 takes the
+// first composition offset off a reordering track's blocks and turns an MP4
+// edit list into a shift (#62); #71 writes an audio track's StartDelay as
+// CodecDelay. From ffmpeg's bframes.mp4 -- whose AAC priming is a one-edit
+// list, read as StartDelay -- the copy must present the pictures from zero and
+// state the priming once: as CodecDelay, with the audio blocks left where they
+// were, not shifted as well.
+func TestAMatroskaCopyStatesThePrimingOnceBesideTheBFrameShift(t *testing.T) {
+	r, _ := openFixture(t, "bframes.mp4")
+	audioCfg, err := r.TrackConfig(r.TrackIDs()[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if audioCfg.StartDelay <= 0 || audioCfg.EditList == nil {
+		t.Fatalf("the fixture's audio states StartDelay %v, edit list %v; the test would test nothing",
+			audioCfg.StartDelay, audioCfg.EditList)
+	}
+	var out bytes.Buffer
+	copyInto(t, NewWebMMuxer(&out, BufferedSegment()), r)
+	keepForOracle(t, "bframes-codecdelay.mkv", out.Bytes())
+	back, err := NewReader(out.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := back.TrackConfig(back.TrackIDs()[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	// CodecDelay counts nanoseconds and the source's edit list ticks of
+	// 1/48000 s: the same priming, to the nanosecond it is rounded to.
+	if d := got.StartDelay - audioCfg.StartDelay; d < -time.Microsecond || d > time.Microsecond {
+		t.Errorf("the copy states a priming of %v, the source %v", got.StartDelay, audioCfg.StartDelay)
+	}
+	f := readWebM(t, out.Bytes())
+	ticks := blockTicks(f, 2)
+	if len(ticks) == 0 || ticks[0] != 0 {
+		t.Errorf("the first audio block is at %v ticks; want 0, the priming frame where it was", ticks[:min(1, len(ticks))])
+	}
+	if video := blockTicks(f, 1); len(video) == 0 || slices.Min(video) != 0 {
+		t.Errorf("the first picture is shown at %v; want 0", video)
+	}
+}
+
 // checkBack reads a written file back and compares its one track with the
 // source's.
 func checkBack(t *testing.T, what string, data []byte, cfg TrackConfig, in []Sample) {
@@ -247,7 +298,7 @@ func checkBack(t *testing.T, what string, data []byte, cfg TrackConfig, in []Sam
 	// FLAC's STREAMINFO, and AAC's AudioSpecificConfig in an MP4 (#68 writes
 	// it verbatim), travel as they are. (WebMMuxer rebuilds the AAC one from
 	// fields, a residual L10 noted on #54, so it is not compared there.)
-	if (cfg.Codec == "fLaC" || cfg.Codec == "mp4a" && what == "MP4") && !bytes.Equal(got.CodecConfig, cfg.CodecConfig) {
+	if (cfg.Codec == "fLaC" || cfg.Codec == "mp4a" && strings.HasPrefix(what, "MP4")) && !bytes.Equal(got.CodecConfig, cfg.CodecConfig) {
 		t.Errorf("%s: %s configuration % x, the source % x", what, cfg.Codec, got.CodecConfig, cfg.CodecConfig)
 	}
 	out, err := back.Samples(ids[0])

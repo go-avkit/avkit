@@ -253,9 +253,10 @@ much, and the output was lossless for video only.
 
 `TrackConfig.StartDelay` now carries it. Readers fill it in from whichever form
 the source used, both MP4 muxers (`Muxer` and `ProgressiveMuxer`) write an edit
-list for it, and a caller who knows better can overwrite it. Nothing has to be
-asked for. `WebMMuxer` does not write it: it states `CodecDelay` for Opus only,
-from the identification header's pre-skip.
+list for it, `WebMMuxer` writes it as the `CodecDelay` of an audio track
+(RFC 9559 §5.1.4.1.25, in nanoseconds, so exactly; an Opus track's own pre-skip
+takes precedence, as the WebM Opus mapping requires), and a caller who knows
+better can overwrite it. Nothing has to be asked for.
 
 It is not `PreSkip`. `PreSkip` is Opus stating its own priming inside its
 identification header, and it travels with the codec configuration wherever the
@@ -263,8 +264,8 @@ track goes. `StartDelay` is what the **container** says, for any codec, and it
 has to be rewritten into the form the output container uses.
 
 Both directions are covered, since a fix for only one of them would be half a
-fix: a Matroska `CodecDelay` becomes an `elst` on the way out, and an MP4's
-`elst` is read back on the way in.
+fix: a Matroska `CodecDelay` becomes an `elst` on the way out, an MP4's `elst`
+is read back on the way in, and becomes a `CodecDelay` again in Matroska.
 
 **The precision is the output track's timescale.** Matroska counts in
 milliseconds by default and that timescale is carried over, so a 21.333 ms
@@ -351,7 +352,7 @@ What each operation does with it:
 | `Remux`, `Join`, `JoinProgressive`, a caller's own copy | written as it stands. Durations are restated in the output's movie timescale, rounded up. A progressive copy of a fragmented file's last edit of duration zero ("to the end", §8.6.6.1, only allowed in a fragmented file) states its length. The track header lasts what the edits do (§8.3.2.3). |
 | `Muxer` (fragmented) | takes an optional empty edit followed by one edit at the normal rate, and refuses more with `ErrTrackConfig`. ffmpeg turns its edit list support off for a fragmented file ("multiple edit list entries, not supported in fragmented MP4 files"): a two-edit list copied into one presented all 100 frames where the source presents 50. `ProgressiveMuxer` writes it. |
 | `Cut`, `Concat` of several inputs | both move the media the list counts in, so it cannot be copied. A list that only says where the presentation starts (one edit at the normal rate, reaching the end of the media) is dropped, and the muxer states that start itself. Anything else is refused with `ErrEditList`: an empty edit placing the track later than its siblings, several edits, a dwell or another rate. So is an edit ending before the media does (how a gapless AAC file trims its padding) when the output keeps the track's end. |
-| `WebMMuxer` | Matroska has presentation times and no edit lists. An optional empty edit and one edit at the normal rate become a shift of the track's times: the empty edit delays them by its length, and an edit starting before the first frame's composition time shows it that much later. Anything else is refused with `ErrTrackConfig`. A priming after the first frame is shown, as `WebMMuxer` shows any priming but Opus's. |
+| `WebMMuxer` | Matroska has presentation times and no edit lists. An optional empty edit and one edit at the normal rate become a shift of the track's times: the empty edit delays them by its length, and an edit starting before the first frame's composition time shows it that much later. Anything else is refused with `ErrTrackConfig`. A priming after the first frame is the `CodecDelay` of an audio track when the list is the single edit a priming is written as, which the reader states as `StartDelay`; after an empty edit it is shown. |
 | `TSMuxer` | ignores it. |
 
 Measured with ffmpeg 9.0.2 on 4 s files made the way the fixtures
