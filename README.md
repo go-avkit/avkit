@@ -172,8 +172,11 @@ output a frame the input never presented: audio and video parted company by that
 much, and the output was lossless for video only.
 
 `TrackConfig.StartDelay` now carries it. Readers fill it in from whichever form
-the source used, `Muxer.AddTrack` writes an edit list for it, and a caller who
-knows better can overwrite it. Nothing has to be asked for.
+the source used, `Muxer.AddTrack` writes an edit list for it, `WebMMuxer.AddTrack`
+writes it as the `CodecDelay` of an audio track (RFC 9559 §5.1.4.1.25, in
+nanoseconds, so exactly; an Opus track's own pre-skip takes precedence, as the
+WebM Opus mapping requires), and a caller who knows better can overwrite it.
+Nothing has to be asked for.
 
 It is not `PreSkip`. `PreSkip` is Opus stating its own priming inside its
 identification header, and it travels with the codec configuration wherever the
@@ -181,8 +184,8 @@ track goes. `StartDelay` is what the **container** says, for any codec, and it
 has to be rewritten into the form the output container uses.
 
 Both directions are covered, since a fix for only one of them would be half a
-fix: a Matroska `CodecDelay` becomes an `elst` on the way out, and an MP4's
-`elst` is read back on the way in.
+fix: a Matroska `CodecDelay` becomes an `elst` on the way out, an MP4's `elst`
+is read back on the way in, and becomes a `CodecDelay` again in Matroska.
 
 **The precision is the output track's timescale.** Matroska counts in
 milliseconds by default and that timescale is carried over, so a 21.333 ms
