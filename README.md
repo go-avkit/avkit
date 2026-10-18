@@ -30,9 +30,16 @@ library of 1807 HEVC files, QuickLook produced a thumbnail for every `hvc1` file
 and for none of the `hev1` ones, while ffmpeg decoded both without complaint.
 
 `ConformHVC1` moves the sets into the entry and rewrites the four-character code,
-which is a change of container and not of pictures: the samples are the same
-bytes. `CheckHVC1` answers the question without changing anything, so a caller
-can tell a file that needs it from one that does not.
+which is a change of container and not of pictures — but it does change the
+samples' bytes when they carry sets. Every VPS, SPS and PPS NAL unit is taken out
+of every sample, because `hvc1` forbids them there; every other unit (slices,
+SEI, delimiters) keeps its bytes and its order, and each sample is written back
+as those units behind four-byte lengths. A sample that carried no set and was
+already in that form comes out byte for byte the same — every sample of 60 of
+the 67 `hev1` files measured for `CheckHVC1`, whose documentation records them;
+a sample holding nothing but sets is refused rather than written empty. `CheckHVC1` answers the question without
+changing anything, so a caller can tell a file that needs it from one that does
+not.
 
 It is an option of `Remux`, `Cut`, `Concat`, `Join` and `JoinProgressive`
 alike, so a copy, a cut or a join is made conformant in the same pass.

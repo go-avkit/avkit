@@ -197,6 +197,39 @@ func TestConformKeepsTheEntrySetsWhenTheSamplesCarryNone(t *testing.T) {
 	}
 }
 
+// TestConformChangesTheSamplesExactlyAsDocumented holds what the README and
+// ConformHVC1's documentation say about the samples, which L11 found the README
+// contradicting ("the samples are the same bytes"): every VPS, SPS and PPS unit
+// is removed, every other unit keeps its bytes and its order, the sample comes
+// back behind four-byte lengths, and an Annex B sample therefore comes back
+// length-prefixed.
+func TestConformChangesTheSamplesExactlyAsDocumented(t *testing.T) {
+	vps, sps, pps := hevcSets(t)
+	sei := []byte{39 << 1, 0x01, 0x05, 0x01, 0xAA, 0x80} // a prefix SEI unit
+	aud := []byte{35 << 1, 0x01, 0x50}                   // an access unit delimiter
+	in := sourceTrack{id: 1, cfg: hevcEntry(t, "hev1"), samples: videoSamples(
+		lengthPrefixed(aud, vps, sei, sps, pps, hevcIDR),
+		lengthPrefixed(aud, hevcIDR),
+	)}
+	out, err := conformTrack(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := lengthPrefixed(aud, sei, hevcIDR); !bytes.Equal(out.samples[0].Data, want) {
+		t.Errorf("sample 0 = %x, want the delimiter, the SEI and the picture, in order: %x", out.samples[0].Data, want)
+	}
+	if !bytes.Equal(out.samples[1].Data, in.samples[1].Data) {
+		t.Errorf("sample 1 held no set and changed: %x", out.samples[1].Data)
+	}
+	annex := sourceTrack{id: 1, cfg: hevcEntry(t, "hev1"), samples: videoSamples(annexB(vps, sps, pps, hevcIDR))}
+	if out, err = conformTrack(annex); err != nil {
+		t.Fatal(err)
+	}
+	if want := lengthPrefixed(hevcIDR); !bytes.Equal(out.samples[0].Data, want) {
+		t.Errorf("an Annex B sample came back %x, want %x", out.samples[0].Data, want)
+	}
+}
+
 // TestAStreamWhoseSetsChangeIsRefused: hvc1 holds one of each and nowhere else,
 // so a change part way through has no place to be written. Refusing says so
 // while the caller still holds the original.
