@@ -168,7 +168,14 @@ func ConfigFromSamples(codec string, samples []Sample, opts ...ConfigOption) (St
 	case "opus":
 		return refuse(name, "an Opus stream carries no identification header; only its container states one")
 	case "ac-3", "ec-3":
-		return refuse(name, "the bit stream information of an AC-3 sync frame is not read by this package")
+		cfg, err = ac3StreamConfig(name, samples)
+	case "mp1", "mp2", "mp3":
+		cfg, err = mpaStreamConfig(name, samples)
+	case "flac":
+		// RFC 9639 9.1.2 and 9.1.4: a frame header may leave its sample
+		// rate and bit depth to STREAMINFO, and the block and frame size
+		// bounds, the sample count and the MD5 are in STREAMINFO alone.
+		return refuse(name, "a FLAC frame may leave its rate and bit depth to STREAMINFO, which only the stream header holds")
 	default:
 		return StreamConfig{}, fmt.Errorf("%w: %q", ErrUnsupportedCodec, codec)
 	}
@@ -688,7 +695,11 @@ func isAV1Stream(es *astits.PMTElementaryStream) bool {
 func (t *tsTrack) syncUnit(data []byte) bool {
 	switch {
 	case t.track.Kind == Audio:
-		return true // every AAC frame decodes on its own
+		// Every AAC, AC-3 and MPEG audio frame decodes on its own. (A Layer
+		// III frame may borrow bits from the one before through its bit
+		// reservoir, which a decoder joining there absorbs, as FFmpeg's
+		// marking of every MPEG audio packet as a key frame does too.)
+		return true
 	case t.av1:
 		return av1RandomAccess(data)
 	default:
@@ -733,6 +744,14 @@ func av1RandomAccess(data []byte) bool {
 // unknown is still worth handing over, and Muxer.AddTrack is the one that
 // decides whether what it was given is enough to write.
 func (t *tsTrack) deriveConfiguration() {
+	if t.audio == tsAC3 {
+		// The dac3 or dec3 record an MP4 sample entry needs is built from a
+		// sync frame, as it is for a Matroska track that states none.
+		if got, err := ac3TrackConfig(t.config.Codec, t.samples); err == nil {
+			t.config.CodecConfig = got.CodecConfig
+		}
+		return
+	}
 	if t.track.Kind != Video {
 		return
 	}

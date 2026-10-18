@@ -55,7 +55,11 @@ var addElementaryStream = (*astits.Muxer).AddElementaryStream
 //
 // It is the counterpart of the Reader's transport stream side, and never
 // re-encodes: samples are converted to the form a transport stream states them
-// in — Annex-B for AVC and HEVC, ADTS for AAC — and written as handed over.
+// in — Annex-B for AVC and HEVC, the AOM start-code form for AV1, ADTS for AAC
+// — and written as handed over. AC-3, Enhanced AC-3 and MPEG audio (Layers I
+// to III, named "mp1", "mp2" and "mp3") need no conversion: their frames are
+// the same in both containers. Opus is refused, no published specification
+// carrying it in a transport stream.
 type TSMuxer struct {
 	ts      *astits.Muxer
 	tracks  []*tsMuxTrack
@@ -71,6 +75,12 @@ type tsMuxTrack struct {
 	pid       uint16
 	kind      Kind
 	timescale uint32
+	// form is what a sample is converted with, codec the name it was
+	// declared under, and streamID the PES stream identifier, which is
+	// stated rather than left to astits: see tsaudio.go.
+	form     tsMuxForm
+	codec    string
+	streamID uint8
 	// params are the sets a decoder needs to start, repeated in front of
 	// every sync sample.
 	params parameterSets
@@ -81,6 +91,18 @@ type tsMuxTrack struct {
 	// timescale.
 	nextTime int64
 }
+
+// tsMuxForm is the conversion a track's samples go through on their way in.
+type tsMuxForm uint8
+
+const (
+	tsMuxAnnexB    tsMuxForm = iota // AVC and HEVC: start codes, sets in band
+	tsMuxAV1                        // AV1: the AOM start-code form
+	tsMuxADTS                       // AAC: an ADTS header in front
+	tsMuxAC3                        // AC-3: the sync frames as they are
+	tsMuxEAC3                       // Enhanced AC-3, likewise
+	tsMuxMPEGAudio                  // MPEG audio: the frames as they are
+)
 
 // NewTSMuxer returns a TSMuxer writing to w.
 func NewTSMuxer(w io.Writer) *TSMuxer {
@@ -107,12 +129,13 @@ func (m *TSMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 		return 0, fmt.Errorf("%w: %s track has no timescale", ErrTrackConfig, cfg.Codec)
 	}
 	t := &tsMuxTrack{pid: m.nextPID, timescale: cfg.Timescale}
-	streamType, err := t.describe(cfg)
+	streamType, descriptors, err := t.describe(cfg)
 	if err != nil {
 		return 0, err
 	}
 	if err := addElementaryStream(m.ts, astits.PMTElementaryStream{
 		ElementaryPID: t.pid, StreamType: streamType,
+		ElementaryStreamDescriptors: descriptors,
 	}); err != nil {
 		return 0, fmt.Errorf("container: declare stream %d: %w", t.pid, err)
 	}
@@ -139,27 +162,79 @@ func (m *TSMuxer) setPCR() {
 }
 
 // describe reads a codec's configuration into what every sample of the track
-// is converted with, and returns the stream type the program map states.
-func (t *tsMuxTrack) describe(cfg TrackConfig) (astits.StreamType, error) {
+// is converted with, and returns the stream type and the descriptors the
+// program map states.
+func (t *tsMuxTrack) describe(cfg TrackConfig) (astits.StreamType, []*astits.Descriptor, error) {
 	codec := strings.ToLower(strings.TrimSpace(cfg.Codec))
+	t.codec = codec
 	switch codec {
 	case "avc1", "avc3":
 		if len(cfg.SPS) == 0 || len(cfg.PPS) == 0 {
-			return 0, fmt.Errorf("%w: %s needs both SPS and PPS", ErrTrackConfig, codec)
+			return 0, nil, fmt.Errorf("%w: %s needs both SPS and PPS", ErrTrackConfig, codec)
 		}
 		t.kind = Video
 		t.params = parameterSets{sps: cfg.SPS, pps: cfg.PPS}
-		return astits.StreamTypeH264Video, nil
+		return astits.StreamTypeH264Video, nil, nil
 	case "hvc1", "hev1":
 		if len(cfg.SPS) == 0 || len(cfg.PPS) == 0 || len(cfg.VPS) == 0 {
-			return 0, fmt.Errorf("%w: %s needs VPS, SPS and PPS", ErrTrackConfig, codec)
+			return 0, nil, fmt.Errorf("%w: %s needs VPS, SPS and PPS", ErrTrackConfig, codec)
 		}
 		t.kind = Video
 		t.params = parameterSets{sps: cfg.SPS, pps: cfg.PPS, vps: cfg.VPS}
-		return astits.StreamTypeH265Video, nil
+		return astits.StreamTypeH265Video, nil, nil
+	case "av01":
+		// The av1C record is read through the same decoder the MP4 muxer
+		// uses, so a record one refuses the other refuses too; the AV1 video
+		// descriptor is built from its first four bytes.
+		if _, err := decodeAv1C(cfg.CodecConfig); err != nil {
+			return 0, nil, err
+		}
+		t.kind, t.form, t.streamID = Video, tsMuxAV1, tsPrivateStream1 // 3.4
+		// The registration descriptor comes first, then the AV1 video
+		// descriptor (2.1).
+		return astits.StreamTypePrivateData, []*astits.Descriptor{
+			registrationDescriptor(av1RegistrationID),
+			{
+				Tag: av1VideoDescriptorTag, Length: 4,
+				UserDefined: av1VideoDescriptor(cfg.CodecConfig),
+			},
+		}, nil
+	case "ac-3", "ec-3":
+		// ATSC A/52 System A, which is what FFmpeg's mpegtsenc.c writes
+		// unless told "-mpegts_flags system_b": the stream type identifies
+		// the codec (Annex A 4.1, Annex G 3.1), and the AC-3 registration
+		// descriptor goes with BOTH — Annex G 2 extends it to Enhanced AC-3
+		// "in combination with the E-AC-3 stream_type value", keeping "EAC3"
+		// for systems that have no stream type of their own.
+		//
+		// ⛔ FFmpeg writes "EAC3" next to 0x87 instead. Its reader, and this
+		// package's, decide by the stream type first, so both forms read;
+		// the one written here is the one the standard states.
+		t.kind, t.form, t.streamID = Audio, tsMuxAC3, tsPrivateStream1 // A4.2, G3.2
+		streamType := astits.StreamTypeAC3Audio
+		if codec == "ec-3" {
+			t.form, streamType = tsMuxEAC3, astits.StreamTypeEAC3Audio
+		}
+		return streamType, []*astits.Descriptor{registrationDescriptor(ac3RegistrationID)}, nil
+	case "mp1", "mp2", "mp3":
+		streamType, ok := mpaStreamType(cfg.SampleRate)
+		if !ok {
+			return 0, nil, fmt.Errorf("%w: %s at %d Hz: MPEG audio is carried at 32, 44.1 and 48 kHz "+
+				"(stream type 0x03) or 16, 22.05 and 24 kHz (0x04), and the rate is what decides",
+				ErrTrackConfig, codec, cfg.SampleRate)
+		}
+		t.kind, t.form, t.streamID = Audio, tsMuxMPEGAudio, tsAudioStream0
+		return streamType, nil, nil
+	case "opus":
+		// ⛔ Not an omission. The only text that maps Opus onto a transport
+		// stream is a draft ETSI specification, "TS 1xx xxx V0.1.3
+		// (2015-10)", which was never published. FFmpeg writes it anyway;
+		// this package writes what a published specification defines.
+		return 0, nil, fmt.Errorf("%w: opus: no published specification carries Opus in an MPEG-TS "+
+			"(the only one, ETSI TS opus V0.1.3, is a 2015 draft that was never adopted)", ErrUnsupportedCodec)
 	case "mp4a":
 		if cfg.Channels < 1 || cfg.Channels > tsMaxChannelConfig {
-			return 0, fmt.Errorf("%w: mp4a needs between 1 and %d channels, not %d",
+			return 0, nil, fmt.Errorf("%w: mp4a needs between 1 and %d channels, not %d",
 				ErrTrackConfig, tsMaxChannelConfig, cfg.Channels)
 		}
 		objectType := cfg.AudioObjectType
@@ -171,12 +246,21 @@ func (t *tsMuxTrack) describe(cfg TrackConfig) (astits.StreamType, error) {
 		// no room for is a configuration no transport stream can state.
 		header, err := aac.NewADTSHeader(cfg.SampleRate, byte(cfg.Channels), objectType, 0)
 		if err != nil {
-			return 0, fmt.Errorf("%w: mp4a: %v", ErrTrackConfig, err)
+			return 0, nil, fmt.Errorf("%w: mp4a: %v", ErrTrackConfig, err)
 		}
-		t.kind, t.adts = Audio, header
-		return astits.StreamTypeAACAudio, nil
+		t.kind, t.form, t.adts = Audio, tsMuxADTS, header
+		return astits.StreamTypeAACAudio, nil, nil
 	default:
-		return 0, fmt.Errorf("%w: %q", ErrUnsupportedCodec, cfg.Codec)
+		return 0, nil, fmt.Errorf("%w: %q", ErrUnsupportedCodec, cfg.Codec)
+	}
+}
+
+// registrationDescriptor is the ISO/IEC 13818-1 2.6.8 descriptor that names
+// the format of a stream whose stream type does not.
+func registrationDescriptor(formatIdentifier uint32) *astits.Descriptor {
+	return &astits.Descriptor{
+		Tag: astits.DescriptorTagRegistration, Length: 4,
+		Registration: &astits.DescriptorRegistration{FormatIdentifier: formatIdentifier},
 	}
 }
 
@@ -214,8 +298,10 @@ func (m *TSMuxer) WriteSample(trackID uint32, s Sample) error {
 		PID: t.pid,
 		PES: &astits.PESData{
 			Header: &astits.PESHeader{
-				// The stream identifier is left to astits, which takes the
-				// one the standard fixes for the type of the stream.
+				// Left at zero, the stream identifier is left to astits,
+				// which takes the one the standard fixes for the type of
+				// the stream; the codecs it gets wrong state their own.
+				StreamID:       t.streamID,
 				OptionalHeader: t.timing(dts, pts),
 			},
 			Data: payload,
@@ -247,8 +333,9 @@ func (m *TSMuxer) WriteSample(trackID uint32, s Sample) error {
 func (t *tsMuxTrack) timing(dts, pts int64) *astits.PESOptionalHeader {
 	h := &astits.PESOptionalHeader{
 		MarkerBits: 2,
-		// Every unit this muxer writes starts on a start code or an ADTS
-		// syncword, which is what the flag states.
+		// Every unit this muxer writes starts on a start code or a sync
+		// word, which is what the flag states: AOM's AV1 carriage (3.4)
+		// and ATSC A/52 Annex G (3.3) require it.
 		DataAlignmentIndicator: true,
 		PTSDTSIndicator:        astits.PTSDTSIndicatorOnlyPTS,
 		PTS:                    &astits.ClockReference{Base: t.rescale(pts)},
@@ -269,15 +356,25 @@ func (t *tsMuxTrack) rescale(when int64) int64 {
 
 // packetise converts one sample into the bytes its elementary stream carries.
 func (t *tsMuxTrack) packetise(s Sample) ([]byte, error) {
-	if t.kind == Video {
+	switch t.form {
+	case tsMuxAnnexB:
 		payload, ok := toAnnexB(s.Data, t.params, s.Sync)
 		if !ok {
 			return nil, fmt.Errorf("%w: %d bytes are not length-prefixed NAL units",
 				ErrSample, len(s.Data))
 		}
 		return payload, nil
+	case tsMuxAV1:
+		return av1ToStartCodes(s.Data)
+	case tsMuxAC3, tsMuxEAC3:
+		// A sample is one access unit, which ATSC A/52 Annex G 3.3 forbids
+		// splitting across units: written as one, it stays whole.
+		return s.Data, checkAC3Sample(s.Data, t.form == tsMuxEAC3)
+	case tsMuxMPEGAudio:
+		return s.Data, checkMPASample(s.Data, t.codec)
+	default:
+		return toADTS(s.Data, *t.adts)
 	}
-	return toADTS(s.Data, *t.adts)
 }
 
 // toAnnexB turns the length-prefixed NAL units of a sample back into the

@@ -23,6 +23,18 @@
 // take, so a track can be copied from one file into another without the caller
 // reading a single box.
 //
+// A transport stream carries AVC, HEVC and AV1 video and AAC, AC-3, Enhanced
+// AC-3 and MPEG audio (Layers I to III, named "mp1", "mp2" and "mp3") in both
+// directions, each as its own standard defines it; Opus is refused, no
+// published specification carrying it. The README's "MPEG-TS carriage"
+// section cites the texts.
+//
+// Both MP4 muxers write FLAC as a fLaC sample entry with its dfLa, and MPEG
+// audio as mp4a with object type indication 0x6B or 0x69; the Matroska muxer
+// writes FLAC, MPEG audio, AC-3 and Enhanced AC-3 under their Matroska codec
+// IDs, in a file whose DocType is "matroska". Vorbis is refused in an MP4,
+// which has no registered sample entry for it.
+//
 // Remux, Cut and Concat stand on those two and offer the whole-file operations
 // a caller would otherwise reach for ffmpeg to perform — copy a file, keep the
 // stretch between two time offsets, join files that match, leave a track out —
