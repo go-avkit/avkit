@@ -118,8 +118,10 @@ func TestTheTagsAtTheEndAreLeftOutOfTheStream(t *testing.T) {
 func TestASyncFrameStreamIsReadPastWhatSurroundsItsFrames(t *testing.T) {
 	frame := aacFrame()
 	// A sync pattern in the rubbish that is not followed by a frame, and one
-	// that is a frame of ANOTHER stream -- 48 kHz -- which is not taken.
-	rubbish := concat([]byte{1, 2, 0xFF, 0xF1, 3}, adtsFrameOf(1, 3, 2, make([]byte, 40), false), []byte{4, 5})
+	// that is two frames of ANOTHER stream -- 48 kHz -- which are not taken.
+	// They chain, so only the stream lock keeps them out.
+	other := adtsFrameOf(1, 3, 2, make([]byte, 40), false)
+	rubbish := concat([]byte{1, 2, 0xFF, 0xF1, 3}, other, other, []byte{4, 5})
 	data := concat(id3v2Tag(20, false), []byte{0, 0, 0}, frame, frame, id3v2Tag(5, true), frame,
 		rubbish, frame, frame, apeTag(10, true, 42), append([]byte("TAG"), make([]byte, 125)...))
 	if Sniff(data) != FormatADTS {
