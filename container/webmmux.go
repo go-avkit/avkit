@@ -57,11 +57,6 @@ const vorbisSetupPackets = 3
 // vorbisIdentificationPacket is the type byte of the first of those packets.
 const vorbisIdentificationPacket = 0x01
 
-// aacMaxChannelConfiguration is the largest channel configuration of ISO/IEC
-// 14496-3 table 1.19; 8 to 15 are reserved, and the field is four bits wide, so
-// a larger value would be written as something else entirely.
-const aacMaxChannelConfiguration = 7
-
 // WebMOption configures a WebMMuxer.
 type WebMOption func(*webmSettings)
 
@@ -630,15 +625,35 @@ var unlaceVorbisHeaders = func(r io.Reader, size int64) (ebml.Unlacer, error) {
 
 // webmAACPrivate states the AudioSpecificConfig, which is what Matroska carries
 // as the private data of an AAC track and what the esds of an MP4 holds.
+//
+// A track that brings its own record -- every reader of this package hands it
+// over as CodecConfig -- has it written verbatim, as ffmpeg's matroskaenc
+// writes the extradata of an AAC track (mkv_write_native_codecprivate), and as
+// the MP4 muxers write it into the esds. Rebuilding it from the track's fields
+// loses what those fields do not hold: ffmpeg's own encoder writes the five
+// bytes 11 88 56 e5 00, whose last three are the explicit SBR signalling, and
+// the rebuilt record was two. The record is decoded first, only to be checked,
+// and the Audio element's channel count is the one its channelConfiguration
+// states (ISO/IEC 14496-3 Table 1.19), the track's only where it leaves that
+// to the bitstream.
+//
+// Without a record, one is built from the fields, and the channel count goes
+// through Table 1.19 rather than into the four-bit field as it stands: 7 is
+// not a configuration of seven channels but of eight, so seven channels, and
+// anything else the table does not state, are refused.
 func webmAACPrivate(cfg TrackConfig) (webmCodecPrivate, error) {
+	if len(cfg.CodecConfig) > 0 {
+		return webmAACRecord(cfg)
+	}
 	audio, err := webmAudioFields(cfg, "A_AAC")
 	if err != nil {
 		return webmCodecPrivate{}, err
 	}
-	if cfg.Channels > aacMaxChannelConfiguration {
+	configuration, ok := aacConfiguration(cfg.Channels)
+	if !ok {
 		return webmCodecPrivate{}, fmt.Errorf(
-			"%w: A_AAC cannot state %d channels; %d is the largest configuration",
-			ErrTrackConfig, cfg.Channels, aacMaxChannelConfiguration)
+			"%w: no A_AAC channel configuration states %d channels; pass the AudioSpecificConfig",
+			ErrTrackConfig, cfg.Channels)
 	}
 	objectType := cfg.AudioObjectType
 	if objectType == 0 {
@@ -646,7 +661,7 @@ func webmAACPrivate(cfg TrackConfig) (webmCodecPrivate, error) {
 	}
 	asc := aac.AudioSpecificConfig{
 		ObjectType:           objectType,
-		ChannelConfiguration: byte(cfg.Channels),
+		ChannelConfiguration: configuration,
 		SamplingFrequency:    cfg.SampleRate,
 		ExtensionFrequency:   cfg.SampleRate,
 	}
@@ -655,6 +670,22 @@ func webmAACPrivate(cfg TrackConfig) (webmCodecPrivate, error) {
 		return webmCodecPrivate{}, fmt.Errorf("%w: A_AAC configuration: %v", ErrTrackConfig, err)
 	}
 	return webmCodecPrivate{private: buf.Bytes(), audio: audio}, nil
+}
+
+// webmAACRecord states a track's own AudioSpecificConfig, byte for byte.
+func webmAACRecord(cfg TrackConfig) (webmCodecPrivate, error) {
+	asc, err := aac.DecodeAudioSpecificConfig(bytes.NewReader(cfg.CodecConfig))
+	if err != nil {
+		return webmCodecPrivate{}, fmt.Errorf("%w: A_AAC AudioSpecificConfig: %v", ErrTrackConfig, err)
+	}
+	if n := aacChannels(asc.ChannelConfiguration); n > 0 {
+		cfg.Channels = n
+	}
+	audio, err := webmAudioFields(cfg, "A_AAC")
+	if err != nil {
+		return webmCodecPrivate{}, err
+	}
+	return webmCodecPrivate{private: bytes.Clone(cfg.CodecConfig), audio: audio}, nil
 }
 
 // webmAudioFields is the Audio element of a track whose rate and channel count
