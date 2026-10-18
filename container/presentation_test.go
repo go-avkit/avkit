@@ -290,6 +290,41 @@ func TestACompositionOffsetAndAPrimingAddUp(t *testing.T) {
 	}
 }
 
+// The fragmented header waits for the first fragment, not the first sample: a
+// file whose sound is handed over first -- declared first, or interleaved
+// first at the same time -- still states the pictures' reordering.
+func TestTheFragmentedHeaderWaitsForEveryTracksFirstSample(t *testing.T) {
+	var out bytes.Buffer
+	m := NewMuxer(&out)
+	audio, err := m.AddTrack(audioConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	video, err := m.AddTrack(videoConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.WriteSample(audio, Sample{Data: []byte{1}, Duration: 1024, Sync: true}); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("%d bytes went out with the first sample", out.Len())
+	}
+	if err := m.WriteSample(video, Sample{Data: []byte{2}, Duration: 512, CompositionOffset: 1024, Sync: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e := edits(t, out.Bytes())
+	if e[0] != nil {
+		t.Errorf("audio edit list %+v; want none", e[0])
+	}
+	if len(e[1]) != 1 || e[1][0].MediaTime != 1024 {
+		t.Errorf("video edit list %+v; want one starting at 1024", e[1])
+	}
+}
+
 // A fragmented header goes out with the first fragment, and can only state the
 // tracks whose first sample has arrived by then; a track starting later is
 // given its priming alone, which is what it had before the header waited.

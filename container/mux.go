@@ -64,7 +64,11 @@ type Sample struct {
 	// Duration is how long the frame lasts, in the track's timescale.
 	Duration uint32
 	// CompositionOffset shifts presentation against decoding, for streams
-	// that reorder frames.
+	// that reorder frames. A track is presented from its FIRST sample's
+	// composition time: every muxer shows that frame at zero, the MP4 ones
+	// with an edit list and WebMMuxer by taking the offset off every block's
+	// time, so a reordering delay does not make the pictures late against
+	// their sound.
 	CompositionOffset int32
 	// Sync marks a frame a player can start decoding at.
 	Sync bool
@@ -111,8 +115,14 @@ type TrackConfig struct {
 	// MP4 as an edit list -- and a remux that dropped it would hand the
 	// output a frame the input never presented, so the two tracks would part
 	// company by that much. Readers fill it in from whichever form the source
-	// used, and Muxer.AddTrack writes an edit list for it; a caller that knows
-	// better can overwrite it.
+	// used, and Muxer and ProgressiveMuxer write an edit list for it; a caller
+	// that knows better can overwrite it. WebMMuxer does not write it yet.
+	//
+	// It is counted from the track's first PRESENTED frame, not from its first
+	// decoded one: a track that reorders its frames starts its presentation
+	// at its first sample's CompositionOffset, which the muxers state on their
+	// own, and the priming comes after that. An MP4 edit list starting at that
+	// offset therefore reads back as no StartDelay at all.
 	//
 	// It is not PreSkip. PreSkip is Opus stating its own priming inside its
 	// identification header, in samples at 48 kHz, and it travels with the
