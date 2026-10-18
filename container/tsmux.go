@@ -61,6 +61,10 @@ var addElementaryStream = (*astits.Muxer).AddElementaryStream
 // to III, named "mp1", "mp2" and "mp3") need no conversion: their frames are
 // the same in both containers. Opus is refused, no published specification
 // carrying it in a transport stream.
+//
+// Every track is presented from its first presented frame: its first
+// composition offset and its StartDelay are taken off its timestamps, and the
+// program starts 1.4 s into the clock (see tsTimestampOffset).
 type TSMuxer struct {
 	ts      *astits.Muxer
 	tracks  []*tsMuxTrack

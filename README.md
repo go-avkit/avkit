@@ -294,6 +294,20 @@ by Xiph and never adopted. FFmpeg implements it (`opus_control_header`, the
 writes what a published specification defines, and an Opus stream is not read
 either.
 
+**Every track is presented from its first presented frame.** A transport stream
+has no edit list: the PTS of each unit (ISO/IEC 13818-1 §2.4.3.7) is all there
+is. `TSMuxer` takes a track's first composition offset (B-frames) and its
+`StartDelay` (an AAC priming) off every timestamp, so the first picture and the
+first sound after the priming are shown at the same instant. The units decoded
+before it keep a DTS — and a priming frame a PTS — before it, because the whole
+program is moved by the offset ffmpeg's `mpegtsenc.c` uses with its command
+line's `-muxdelay 0.7`: every PTS and DTS starts at 1.4 s (126000 ticks), and
+the PCR runs 0.7 s ahead of the DTS of the unit carrying it. A start more than
+0.7 s into a track's media is refused. Measured with `ffprobe` on an ffmpeg file
+(`libx264 -bf 2` with AAC) in Matroska, the video starts 0.040 s after the audio
+before and 0.021 s after it now, which is what ffmpeg's own copy states (1.480 s
+against 1.459 s): the audio's priming frame comes first.
+
 ## VP9 out of Matroska
 
 Matroska states no VP9 profile and no level: both live in the frame header, and
