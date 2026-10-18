@@ -693,8 +693,10 @@ func TestTheMetadataTableIsWhatTheCodeWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The newline in front tells it from the "### File metadata" table above.
-	section, ok := sectionOf(string(readme), "\n## File metadata\n")
+	// The newline in front tells it from the "### File metadata" table above,
+	// and a Windows checkout ends its lines in CRLF.
+	text := strings.ReplaceAll(string(readme), "\r\n", "\n")
+	section, ok := sectionOf(text, "\n## File metadata\n")
 	if !ok {
 		t.Fatal("the README has no File metadata section")
 	}
