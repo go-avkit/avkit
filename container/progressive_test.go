@@ -704,7 +704,7 @@ func TestProgressiveOptions(t *testing.T) {
 	// it: holding more could not be written out as one box.
 	wide := NewProgressiveMuxer(io.Discard, MediaMemoryLimit(1<<40))
 	if wide.settings.memoryLimit != maxMdatPayload {
-		t.Errorf("memory limit = %d, want %d", wide.settings.memoryLimit, maxMdatPayload)
+		t.Errorf("memory limit = %d, want %d", wide.settings.memoryLimit, uint64(maxMdatPayload))
 	}
 	small := NewProgressiveMuxer(io.Discard, MediaMemoryLimit(4096))
 	if small.settings.memoryLimit != 4096 {
