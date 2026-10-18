@@ -192,6 +192,12 @@ type progressiveTrack struct {
 	// shifted records that some sample presents away from its decode time,
 	// which is the only reason to write a ctts at all.
 	shifted bool
+	// presentedUntil is when the last frame to be shown stops being shown, in
+	// composition time: what an edit list starting the presentation late has
+	// to reach.
+	presentedUntil int64
+	// priming is the track's StartDelay in its own timescale.
+	priming int64
 	// syncs are the numbers of the samples a player may start at.
 	syncs []uint32
 
@@ -248,7 +254,8 @@ func (m *ProgressiveMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	if err := describe(trak, cfg); err != nil {
 		return 0, err
 	}
-	t := &progressiveTrack{id: id, trak: trak, timescale: cfg.Timescale}
+	t := &progressiveTrack{id: id, trak: trak, timescale: cfg.Timescale,
+		priming: primingTicks(cfg.StartDelay, cfg.Timescale)}
 	m.tracks = append(m.tracks, t)
 	m.byID[id] = t
 	return id, nil
@@ -288,6 +295,8 @@ func (m *ProgressiveMuxer) WriteSample(trackID uint32, s Sample) error {
 	m.pendingBytes += uint64(len(s.Data))
 	t.pendingDur += uint64(s.Duration)
 	t.count++
+	t.presentedUntil = max(t.presentedUntil,
+		int64(t.total)+int64(s.CompositionOffset)+int64(s.Duration))
 	t.total += uint64(s.Duration)
 	t.sizes = append(t.sizes, uint32(len(s.Data)))
 	t.addDuration(s.Duration)
@@ -509,6 +518,12 @@ func (m *ProgressiveMuxer) movie() (*mp4.MoovBox, error) {
 			return nil, err
 		}
 		scaled := scaleDuration(t.total, t.timescale, progressiveMovieTimescale)
+		if edts, presented := t.edits(); edts != nil {
+			setEdits(t.trak, edts)
+			// A track's duration is that of its edits when it has some,
+			// ISO/IEC 14496-12 §8.3.2.3: what is presented, not what is held.
+			scaled = presented
+		}
 		if scaled > longest {
 			longest = scaled
 		}
@@ -609,6 +624,27 @@ func (t *progressiveTrack) addComposition(offset int32) {
 	}
 	t.cttsOffsets = append(t.cttsOffsets, offset)
 	t.cttsCounts = append(t.cttsCounts, 1)
+}
+
+// edits is the edit box starting the track's presentation where presentationStart
+// says, and the length of that presentation in the movie timescale; nil when
+// the presentation starts at zero and needs none.
+//
+// Unlike a fragmented file's, the edit states its length: the whole track is
+// known by now, and §8.6.6.1 reserves a duration of zero for the initial movie
+// of a fragmented one. The length runs from the start to the end of the last
+// frame presented, so the frames a reordering stream presents after its last
+// decode are all inside it. A track whose priming covers everything it holds
+// presents nothing, and has no edit that could say so: it is left without one.
+func (t *progressiveTrack) edits() (*mp4.EdtsBox, uint64) {
+	// Every track holds a sample by now -- Close refuses one that does not --
+	// so the first run of offsets is the first sample's.
+	start := presentationStart(t.cttsOffsets[0], t.priming)
+	if start <= 0 || start >= t.presentedUntil {
+		return nil, 0
+	}
+	presented := scaleDurationUp(uint64(t.presentedUntil-start), t.timescale, progressiveMovieTimescale)
+	return presentationEdits(start, presented), presented
 }
 
 // compositionTable is the composition offset table, or nil for a track whose

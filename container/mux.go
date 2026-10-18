@@ -181,12 +181,15 @@ type Muxer struct {
 	w        io.Writer
 	settings muxSettings
 
-	init     *mp4.InitSegment
-	tracks   []*muxTrack
-	byID     map[uint32]*muxTrack
-	started  bool
-	closed   bool
-	sequence uint32
+	init    *mp4.InitSegment
+	tracks  []*muxTrack
+	byID    map[uint32]*muxTrack
+	started bool
+	// headerOut is set once the initialisation segment is written, which is
+	// with the first fragment rather than the first sample: see writeHeader.
+	headerOut bool
+	closed    bool
+	sequence  uint32
 }
 
 // muxTrack is one track's writing state.
@@ -196,45 +199,59 @@ type muxTrack struct {
 	nextTime  uint64
 	pending   []mp4.FullSample
 	buffered  uint64 // duration of pending samples, in timescale units
+
+	// trak is the track's box in the initialisation segment, which receives
+	// its edit list when the header is written.
+	trak *mp4.TrakBox
+	// priming is the track's StartDelay in its own timescale.
+	priming int64
+	// firstOffset is the composition offset of the track's first sample, and
+	// written says there was one.
+	firstOffset int32
+	written     bool
 }
 
-// writeStartDelay states a track's encoder priming as an edit list.
+// writeHeader writes the initialisation segment, once, stating in each track's
+// edit list where its presentation begins: at its first sample's composition
+// time, then past its priming (see presentationStart).
 //
-// An edit list says which media each stretch of the presentation comes from.
-// One entry whose media_time is the priming means "present from there on", so
-// the primed frames are decoded -- a decoder needs them -- and not shown. That
-// is the MP4 spelling of what Matroska writes as CodecDelay.
+// It is written with the FIRST FRAGMENT rather than the first sample, because
+// the composition offset it states is a sample's: a track that reorders its
+// frames is only known to once its first sample has arrived, and a header
+// written before then cannot say it. Holding it back costs nothing a reader can
+// see -- the first fragment is written in the same call -- and it is what
+// ffmpeg's movenc does under -movflags delay_moov for the same reason. A track
+// whose first sample arrives only after the first fragment has gone out cannot
+// be stated, and its edit list says its priming alone.
 //
-// segment_duration is left at zero, which this file format reads as "to the end
-// of the media". The alternative is the track's duration in the MOVIE
-// timescale, and a muxer writing fragments does not know it when the header
-// goes out: writing a wrong one would cut the track short, where zero cannot.
-func writeStartDelay(trak *mp4.TrakBox, cfg TrackConfig) {
-	if cfg.StartDelay <= 0 {
-		return
+// segment_duration is left at zero, which §8.6.6.1 allows in the initial movie
+// of a fragmented file and which reads as "to the end of the media". The
+// alternative is the track's duration in the MOVIE timescale, which a muxer
+// writing fragments does not know when the header goes out: writing a wrong
+// one would cut the track short, where zero cannot.
+func (m *Muxer) writeHeader() error {
+	if m.headerOut {
+		return nil
 	}
-	// The priming is counted in the track's own timescale, the same one its
-	// sample durations use, and rounded to the NEAREST tick. A timescale too
-	// coarse to hold it exactly is common -- Matroska counts in milliseconds by
-	// default, so a 21.333 ms AAC priming becomes 21 -- and rounding down would
-	// leave a sliver of the priming audible where rounding to nearest does not.
-	media := (int64(cfg.StartDelay)*int64(cfg.Timescale) + int64(time.Second)/2) / int64(time.Second)
-	if media <= 0 {
-		// A delay shorter than half a tick cannot be stated, and a whole tick
-		// would move the track by more than the delay it describes.
-		return
+	for _, t := range m.tracks {
+		// A header that failed to go out is written again on the next call,
+		// and must not gain a second edit box on the way.
+		if t.trak.Edts != nil {
+			continue
+		}
+		var first int32
+		if t.written {
+			first = t.firstOffset
+		}
+		if edts := presentationEdits(presentationStart(first, t.priming), 0); edts != nil {
+			setEdits(t.trak, edts)
+		}
 	}
-	elst := &mp4.ElstBox{Version: 1}
-	elst.Entries = append(elst.Entries, mp4.ElstEntry{
-		SegmentDuration: 0, MediaTime: media, MediaRateInteger: 1,
-	})
-	edts := &mp4.EdtsBox{}
-	// AddChild appends to Children, which is what the encoder writes; Elst is
-	// filled only when a file is DECODED. Setting both keeps the tree in memory
-	// saying the same thing as the bytes it will become.
-	edts.AddChild(elst)
-	edts.Elst = append(edts.Elst, elst)
-	trak.AddChild(edts)
+	if err := m.init.Encode(m.w); err != nil {
+		return fmt.Errorf("container: write init segment: %w", err)
+	}
+	m.headerOut = true
+	return nil
 }
 
 // NewMuxer returns a Muxer writing to w.
@@ -271,8 +288,8 @@ func (m *Muxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	if err := describe(trak, cfg); err != nil {
 		return 0, err
 	}
-	writeStartDelay(trak, cfg)
-	t := &muxTrack{id: trak.Tkhd.TrackID, timescale: cfg.Timescale}
+	t := &muxTrack{id: trak.Tkhd.TrackID, timescale: cfg.Timescale, trak: trak,
+		priming: primingTicks(cfg.StartDelay, cfg.Timescale)}
 	m.tracks = append(m.tracks, t)
 	m.byID[t.id] = t
 	return t.id, nil
@@ -659,9 +676,10 @@ func decodeConfigBox(name string, payload []byte,
 	return box, nil
 }
 
-// WriteSample appends one frame to a track. The initialisation segment is
-// written before the first one, and a fragment is flushed once the first track
-// holds a fragment's worth of media and reaches a sync sample.
+// WriteSample appends one frame to a track. A fragment is flushed once the
+// first track holds a fragment's worth of media and reaches a sync sample, and
+// the initialisation segment is written just before the first fragment, when
+// every track's first sample says where its presentation begins.
 func (m *Muxer) WriteSample(trackID uint32, s Sample) error {
 	switch {
 	case m.closed:
@@ -677,11 +695,12 @@ func (m *Muxer) WriteSample(trackID uint32, s Sample) error {
 	if !ok {
 		return fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
 	}
-	if !m.started {
-		if err := m.init.Encode(m.w); err != nil {
-			return fmt.Errorf("container: write init segment: %w", err)
-		}
-		m.started = true
+	m.started = true
+	if !t.written {
+		// Recorded before a flush the sample may trigger, so a header written
+		// by that flush states it even though the sample lands in the next
+		// fragment.
+		t.firstOffset, t.written = s.CompositionOffset, true
 	}
 	if m.shouldFlush(t, s) {
 		if err := m.Flush(); err != nil {
@@ -725,6 +744,9 @@ func (m *Muxer) Flush() error {
 	}
 	if !m.buffering() {
 		return nil
+	}
+	if err := m.writeHeader(); err != nil {
+		return err
 	}
 	// Only the tracks that have something to write. A track fragment declared
 	// for a track with no samples in it carries nothing, and readers in the wild
@@ -773,12 +795,9 @@ func (m *Muxer) Close() error {
 		m.closed = true
 		return ErrNoTracks
 	}
-	if !m.started {
-		if err := m.init.Encode(m.w); err != nil {
-			m.closed = true
-			return fmt.Errorf("container: write init segment: %w", err)
-		}
-		m.started = true
+	if err := m.writeHeader(); err != nil {
+		m.closed = true
+		return err
 	}
 	err := m.Flush()
 	m.closed = true
