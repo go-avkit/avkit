@@ -107,7 +107,12 @@ func completeMatroskaPrefix(data []byte) (prefix []byte, cut bool) {
 			segStart, segSizeAt, segSizeWidth, segUnknown, segSize = i+header, i+idWidth, szWidth, unknown, size
 			break
 		}
-		if unknown || i+header+int(size) > len(data) {
+		// ⛔ Every size here is compared as the up-to-56-bit value it is
+		// BEFORE it is added to an offset (fitsAfter). Where int is 32 bits
+		// wide a size of 2^32 - n converts to -n: a size of minus the header's
+		// width moved this walk by nothing, forever, and a Segment size of
+		// that kind made the limit below negative.
+		if unknown || !fitsAfter(data, i+header, size) {
 			break // the header itself is cut: nothing here is readable
 		}
 		i += header + int(size)
@@ -124,7 +129,7 @@ func completeMatroskaPrefix(data []byte) (prefix []byte, cut bool) {
 	// would both keep bytes that are not its children and make the rewritten
 	// size overflow the width the file used.
 	limit := len(data)
-	if !segUnknown && segStart+int(segSize) < limit {
+	if !segUnknown && segSize < uint64(limit-segStart) {
 		limit = segStart + int(segSize)
 	}
 	end := walkSegmentChildren(data[:limit], segStart)
@@ -164,6 +169,17 @@ func segmentChild(id uint64) bool {
 	return false
 }
 
+// fitsAfter says whether an element body of size bytes, starting at offset at,
+// lies within data. at is never past the end: ebmlVint has just read the
+// header that ends there.
+//
+// ⛔ The size is compared as the unsigned value it is and only then converted:
+// an EBML size reaches 56 bits, and as an int on a 32-bit target it can come
+// out negative -- an offset that goes backwards, or nowhere.
+func fitsAfter(data []byte, at int, size uint64) bool {
+	return size <= uint64(len(data)-at)
+}
+
 // walkSegmentChildren returns the offset just past the last Segment child that
 // is whole.
 //
@@ -185,10 +201,10 @@ func walkSegmentChildren(data []byte, start int) int {
 			return end
 		}
 		if !unknown {
-			next := j + idWidth + szWidth + int(size)
-			if next > len(data) || next < j {
+			if !fitsAfter(data, j+idWidth+szWidth, size) {
 				return end
 			}
+			next := j + idWidth + szWidth + int(size)
 			end, j = next, next
 			continue
 		}
@@ -207,10 +223,10 @@ func walkSegmentChildren(data []byte, start int) int {
 			if !ok || gunknown {
 				return end
 			}
-			next := k + gidWidth + gszWidth + int(gsize)
-			if next > len(data) || next < k {
+			if !fitsAfter(data, k+gidWidth+gszWidth, gsize) {
 				return end
 			}
+			next := k + gidWidth + gszWidth + int(gsize)
 			end, k = next, next
 		}
 		j = k
