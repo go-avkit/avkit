@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"time"
 
 	"github.com/Eyevinn/mp4ff/aac"
@@ -367,7 +368,28 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 			cfg.CodecConfig = payload
 		}
 	}
+	cfg.SARWidth, cfg.SARHeight = paspRatio(stsd)
 	return cfg, nil
+}
+
+// paspRatio is the sample aspect ratio a visual sample entry states in its pasp
+// box (ISO/IEC 14496-12 §12.1.4), or 0:0 -- not known -- when it has none or
+// states one with a zero side, which describes no pixel. A spacing too large
+// for an int on the platform is not known either, rather than wrapped negative.
+func paspRatio(stsd *mp4.StsdBox) (int, int) {
+	entry, err := stsd.GetSampleDescription(0)
+	if err != nil {
+		return 0, 0
+	}
+	visual, ok := entry.(*mp4.VisualSampleEntryBox)
+	if !ok || visual.Pasp == nil {
+		return 0, 0
+	}
+	h, v := uint64(visual.Pasp.HSpacing), uint64(visual.Pasp.VSpacing)
+	if h == 0 || v == 0 || h > math.MaxInt || v > math.MaxInt {
+		return 0, 0
+	}
+	return int(h), int(v)
 }
 
 // vpxFromBox is what a vpcC record says, as a caller states it.

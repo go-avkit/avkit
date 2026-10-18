@@ -69,9 +69,21 @@ type mkvTrackEntry struct {
 }
 
 type mkvVideo struct {
-	PixelWidth  uint64     `ebml:"PixelWidth"`
-	PixelHeight uint64     `ebml:"PixelHeight"`
-	Colour      *mkvColour `ebml:"Colour"`
+	PixelWidth  uint64 `ebml:"PixelWidth"`
+	PixelHeight uint64 `ebml:"PixelHeight"`
+	// The crop and display elements state the shape of a pixel (RFC 9559
+	// §5.1.4.1.28): the frame shown is PixelWidth and PixelHeight less the
+	// crops, and it is displayed at DisplayWidth by DisplayHeight, in the unit
+	// DisplayUnit names. A crop defaults to zero, DisplayUnit to 0 (pixels),
+	// and a display size cannot be zero, so a zero there is its absence.
+	PixelCropBottom uint64     `ebml:"PixelCropBottom,omitempty"`
+	PixelCropTop    uint64     `ebml:"PixelCropTop,omitempty"`
+	PixelCropLeft   uint64     `ebml:"PixelCropLeft,omitempty"`
+	PixelCropRight  uint64     `ebml:"PixelCropRight,omitempty"`
+	DisplayWidth    uint64     `ebml:"DisplayWidth,omitempty"`
+	DisplayHeight   uint64     `ebml:"DisplayHeight,omitempty"`
+	DisplayUnit     uint64     `ebml:"DisplayUnit,omitempty"`
+	Colour          *mkvColour `ebml:"Colour"`
 }
 
 // mkvColour is what a video track states about its colour, which for VP8 and
