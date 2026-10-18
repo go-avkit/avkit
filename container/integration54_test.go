@@ -275,6 +275,52 @@ func TestAMatroskaCopyStatesThePrimingOnceBesideTheBFrameShift(t *testing.T) {
 	}
 }
 
+// TestATransportStreamCopyOfFFmpegsBFrameFilesStartsTogether: #72 takes each
+// track's first composition offset and its StartDelay off every timestamp. An
+// MP4 source needs #60 for that: before it, the reader took ffmpeg's B-frame
+// edit list for an 80 ms video priming, which #72 would have taken off as
+// well. From both of ffmpeg's B-frame files the first picture and the first
+// sound after the AAC priming are shown at the program's start.
+func TestATransportStreamCopyOfFFmpegsBFrameFilesStartsTogether(t *testing.T) {
+	for _, source := range []string{"bframes.mp4", "bframes.mkv"} {
+		t.Run(source, func(t *testing.T) {
+			r, _ := openFixture(t, source)
+			vcfg, _ := r.TrackConfig(r.TrackIDs()[0])
+			acfg, _ := r.TrackConfig(r.TrackIDs()[1])
+			if vcfg.StartDelay != 0 || acfg.StartDelay <= 0 {
+				t.Fatalf("video StartDelay %v, audio %v; want none and the AAC priming", vcfg.StartDelay, acfg.StartDelay)
+			}
+			var out bytes.Buffer
+			copyInto(t, NewTSMuxer(&out), r)
+			keepForOracle(t, source+".ts", out.Bytes())
+			back, err := NewReader(out.Bytes())
+			if err != nil {
+				t.Fatal(err)
+			}
+			pids := back.TrackIDs() // a transport stream's tracks are its PIDs
+			video := tsUnitsOfStream(t, out.Bytes(), uint16(pids[0]))
+			audio := tsUnitsOfStream(t, out.Bytes(), uint16(pids[1]))
+			if len(video) == 0 || len(audio) == 0 {
+				t.Fatalf("%d video and %d audio units", len(video), len(audio))
+			}
+			earliest := video[0].PES.Header.OptionalHeader.PTS.Base
+			for _, u := range video {
+				earliest = min(earliest, u.PES.Header.OptionalHeader.PTS.Base)
+			}
+			if earliest != tsTimestampOffset {
+				t.Errorf("the first picture is shown at %d, want the program's start %d", earliest, tsTimestampOffset)
+			}
+			// The priming frame first, then the media proper at the start. The
+			// priming is counted in the track's own ticks (a Matroska track's
+			// are milliseconds, so 21.333 ms is 21 of them), as #72 counts it.
+			priming := tsPrimingTicks(acfg.StartDelay, acfg.Timescale) * 90000 / int64(acfg.Timescale)
+			if got := audio[0].PES.Header.OptionalHeader.PTS.Base; got < tsTimestampOffset-priming-1 || got > tsTimestampOffset-priming+1 {
+				t.Errorf("the priming frame is shown at %d, want %d", got, tsTimestampOffset-priming)
+			}
+		})
+	}
+}
+
 // checkBack reads a written file back and compares its one track with the
 // source's.
 func checkBack(t *testing.T, what string, data []byte, cfg TrackConfig, in []Sample) {

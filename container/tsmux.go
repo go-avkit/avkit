@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/Eyevinn/mp4ff/aac"
 	"github.com/asticode/go-astits"
@@ -60,6 +61,10 @@ var addElementaryStream = (*astits.Muxer).AddElementaryStream
 // to III, named "mp1", "mp2" and "mp3") need no conversion: their frames are
 // the same in both containers. Opus is refused, no published specification
 // carrying it in a transport stream.
+//
+// Every track is presented from its first presented frame: its first
+// composition offset and its StartDelay are taken off its timestamps, and the
+// program starts 1.4 s into the clock (see tsTimestampOffset).
 type TSMuxer struct {
 	ts      *astits.Muxer
 	tracks  []*tsMuxTrack
@@ -90,7 +95,39 @@ type tsMuxTrack struct {
 	// nextTime is the decode time of the next sample, in the track's own
 	// timescale.
 	nextTime int64
+	// priming is the track's StartDelay in its own timescale, and start the
+	// media time its presentation begins at: the first sample's composition
+	// offset, then the priming. started says the first sample has fixed it.
+	priming int64
+	start   int64
+	started bool
 }
+
+// The program clock, ISO/IEC 13818-1 §2.4.3.7 and §2.4.2.
+//
+// A transport stream has no edit list: what is presented when is the PTS of
+// every unit and nothing else. A track that reorders its frames (H.264 with
+// B-frames) presents its first frame at its composition offset, and a track
+// with an encoder priming presents media it should not; both must be taken off
+// the timestamps, so every track's first PRESENTED frame lands on the same
+// instant. The units decoded before that instant -- the reordered pictures'
+// first decode, the priming frame -- then need a DTS (and the priming a PTS)
+// before it, which the 33-bit unsigned fields cannot state below zero.
+//
+// ffmpeg's mpegtsenc.c solves it with a program-wide offset: write_packet adds
+// 2 × max_delay to every PTS and DTS, and the PCR is stated max_delay before
+// the DTS of the unit carrying it (mpegts_write_pes), which is also the time
+// the T-STD buffer is given to receive a unit before it is decoded. The ffmpeg
+// command line's -muxdelay default is 0.7 s, and the same values are used here.
+const (
+	// tsMuxDelay is how far the clock reference runs ahead of the decode time
+	// of the unit carrying it: 0.7 s of the 90 kHz clock.
+	tsMuxDelay = int64(63000)
+	// tsTimestampOffset is where the program's presentation begins on the
+	// 90 kHz clock, and so how much media may be decoded or presented ahead
+	// of it: twice tsMuxDelay, 1.4 s, of which a unit may use tsMuxDelay.
+	tsTimestampOffset = 2 * tsMuxDelay
+)
 
 // tsMuxForm is the conversion a track's samples go through on their way in.
 type tsMuxForm uint8
@@ -128,7 +165,8 @@ func (m *TSMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	case cfg.Timescale == 0:
 		return 0, fmt.Errorf("%w: %s track has no timescale", ErrTrackConfig, cfg.Codec)
 	}
-	t := &tsMuxTrack{pid: m.nextPID, timescale: cfg.Timescale}
+	t := &tsMuxTrack{pid: m.nextPID, timescale: cfg.Timescale,
+		priming: tsPrimingTicks(cfg.StartDelay, cfg.Timescale)}
 	streamType, descriptors, err := t.describe(cfg)
 	if err != nil {
 		return 0, err
@@ -294,12 +332,19 @@ func (m *TSMuxer) WriteSample(trackID uint32, s Sample) error {
 		return err
 	}
 	// Presentation is shifted against decoding by a stream that reorders its
-	// frames. Before the start of the stream it cannot be stated at all.
-	dts := t.nextTime
-	pts := dts + int64(s.CompositionOffset)
-	if pts < 0 {
-		return fmt.Errorf("%w: a composition offset of %d puts the frame before the start of the stream",
-			ErrSample, s.CompositionOffset)
+	// frames, and every time is counted from the track's first presented frame
+	// (see tsTimestampOffset). Kept aside until the sample is accepted: a
+	// refused first sample must not decide where the next one is shown.
+	start := t.start
+	if !t.started {
+		start = max(int64(s.CompositionOffset), 0) + t.priming
+	}
+	dts := t.clock(t.nextTime - start)
+	pts := t.clock(t.nextTime + int64(s.CompositionOffset) - start)
+	if dts < tsTimestampOffset-tsMuxDelay || pts < tsTimestampOffset-tsMuxDelay {
+		return fmt.Errorf("%w: a composition offset of %d and a start delay of %d ticks put the frame "+
+			"more than %d ms before the start of the program, which its clock cannot state",
+			ErrSample, s.CompositionOffset, t.priming, tsMuxDelay*1000/TSTimescale)
 	}
 	data := &astits.MuxerData{
 		PID: t.pid,
@@ -320,7 +365,7 @@ func (m *TSMuxer) WriteSample(trackID uint32, s Sample) error {
 		// repeat the tables, so joining at this point describes itself.
 		data.AdaptationField = &astits.PacketAdaptationField{
 			HasPCR:                true,
-			PCR:                   &astits.ClockReference{Base: t.rescale(dts)},
+			PCR:                   &astits.ClockReference{Base: (dts - tsMuxDelay) % tsClockWrap},
 			RandomAccessIndicator: s.Sync,
 		}
 	}
@@ -331,7 +376,17 @@ func (m *TSMuxer) WriteSample(trackID uint32, s Sample) error {
 		return fmt.Errorf("container: write unit of stream %d: %w", t.pid, err)
 	}
 	t.nextTime += int64(s.Duration)
+	t.start, t.started = start, true
 	return nil
+}
+
+// tsPrimingTicks is a StartDelay in a track's own timescale, rounded to the
+// nearest tick, as the MP4 muxers round the edit list stating it.
+func tsPrimingTicks(delay time.Duration, timescale uint32) int64 {
+	if delay <= 0 {
+		return 0
+	}
+	return (int64(delay)*int64(timescale) + int64(time.Second)/2) / int64(time.Second)
 }
 
 // timing states when a unit is decoded and shown. astits refuses to write a
@@ -345,20 +400,22 @@ func (t *tsMuxTrack) timing(dts, pts int64) *astits.PESOptionalHeader {
 		// and ATSC A/52 Annex G (3.3) require it.
 		DataAlignmentIndicator: true,
 		PTSDTSIndicator:        astits.PTSDTSIndicatorOnlyPTS,
-		PTS:                    &astits.ClockReference{Base: t.rescale(pts)},
+		PTS:                    &astits.ClockReference{Base: pts % tsClockWrap},
 	}
 	if dts != pts {
 		h.PTSDTSIndicator = astits.PTSDTSIndicatorBothPresent
-		h.DTS = &astits.ClockReference{Base: t.rescale(dts)}
+		h.DTS = &astits.ClockReference{Base: dts % tsClockWrap}
 	}
 	return h
 }
 
-// rescale converts a time in the track's own timescale into the 90 kHz clock
-// every timestamp in a transport stream is counted in, counting around at the
-// width of the field it is written to.
-func (t *tsMuxTrack) rescale(when int64) int64 {
-	return (when * TSTimescale / int64(t.timescale)) % tsClockWrap
+// clock converts a time in the track's own timescale, counted from the
+// track's first presented frame, into the 90 kHz clock every timestamp in a
+// transport stream is counted in, on which the program starts at
+// tsTimestampOffset. It is not wrapped yet: the fields it is written to count
+// around at 33 bits, and timing does that.
+func (t *tsMuxTrack) clock(when int64) int64 {
+	return when*TSTimescale/int64(t.timescale) + tsTimestampOffset
 }
 
 // packetise converts one sample into the bytes its elementary stream carries.
