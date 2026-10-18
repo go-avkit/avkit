@@ -6,6 +6,7 @@ package container
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -648,9 +649,9 @@ func TestMuxerRefusesOpusItCannotDescribe(t *testing.T) {
 			TrackConfig{Codec: "Opus", Timescale: 48000, CodecConfig: []byte("not a header at all")}},
 		{"a header that stops short",
 			TrackConfig{Codec: "Opus", Timescale: 48000, CodecConfig: head(1, 2, 0, 0)}},
-		{"a header version this cannot read",
+		{"a header of an incompatible major version",
 			TrackConfig{Codec: "Opus", Timescale: 48000,
-				CodecConfig: head(2, 2, 0, 0, 0x80, 0xBB, 0, 0, 0, 0, 0)}},
+				CodecConfig: head(16, 2, 0, 0, 0x80, 0xBB, 0, 0, 0, 0, 0)}},
 		{"a header stating no channel",
 			TrackConfig{Codec: "Opus", Timescale: 48000, CodecConfig: full(0, 0)}},
 		{"a header mapping too many channels implicitly",
@@ -668,6 +669,58 @@ func TestMuxerRefusesOpusItCannotDescribe(t *testing.T) {
 				t.Errorf("%d bytes were written for a track that was refused", buf.Len())
 			}
 		})
+	}
+}
+
+// TestOpusHeadAcceptsEveryCompatibleVersion holds RFC 7845 §5.1: the version
+// octet is a major nibble and a minor one, a reader SHOULD accept anything up to
+// 15 and SHOULD refuse 16 and above. A later minor version may carry fields
+// past the ones this reads, and they MUST NOT make the header invalid.
+//
+// ffmpeg is the oracle: libavcodec/opus/parse.c refuses only version > 15, and
+// it decodes a Matroska Opus track whose header says 0, 2 or 15.
+func TestOpusHeadAcceptsEveryCompatibleVersion(t *testing.T) {
+	for _, version := range []byte{0, 1, 2, 15} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			head := opusHeadFor(2, 312, 44100)
+			head[8] = version
+			// A field a later minor version appended, past the ones read.
+			head = append(head, 0xA5, 0x5A)
+			dops, err := opusHead(head)
+			if err != nil {
+				t.Fatalf("opusHead: %v", err)
+			}
+			if dops.OutputChannelCount != 2 || dops.PreSkip != 312 || dops.InputSampleRate != 44100 {
+				t.Fatalf("dOps = %+v", dops)
+			}
+			// The header written back states what was read, as version 1.
+			back := opusHeadBytes(dops)
+			if back[8] != 1 || !bytes.Equal(back[9:], head[9:opusHeadSize]) {
+				t.Fatalf("written back = % x", back)
+			}
+			// And the Matroska reader, which goes through the same function,
+			// reads the track instead of refusing it.
+			doc := webmDoc()
+			doc.Segment.Tracks.TrackEntry[1].CodecPrivate = head
+			r, err := NewReader(marshalDoc(t, doc))
+			if err != nil {
+				t.Fatalf("NewReader: %v", err)
+			}
+			cfg, err := r.TrackConfig(2)
+			if err != nil {
+				t.Fatalf("TrackConfig: %v", err)
+			}
+			if cfg.Channels != 2 || cfg.PreSkip != 312 {
+				t.Fatalf("config = %d channels, pre-skip %d", cfg.Channels, cfg.PreSkip)
+			}
+		})
+	}
+	for _, version := range []byte{16, 0x21, 0xFF} {
+		head := opusHeadFor(2, 312, 48000)
+		head[8] = version
+		if _, err := opusHead(head); !errors.Is(err, ErrTrackConfig) {
+			t.Errorf("version %d: err = %v, want ErrTrackConfig", version, err)
+		}
 	}
 }
 
