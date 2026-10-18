@@ -189,16 +189,17 @@ func TestAProgressiveCopyRestatesFfmpegsEditLists(t *testing.T) {
 			t.Errorf("track %d: edit list %+v; ffmpeg wrote %+v", i+1, got[i], want[i])
 		}
 	}
-	// The fragmented copy cannot state a length its header precedes, and
-	// states the same start.
+	// The fragmented copy carries the source's list too, its durations
+	// restated in the 90 kHz movie timescale that muxer writes.
 	var frag bytes.Buffer
 	if err := Remux(&frag, r); err != nil {
 		t.Fatal(err)
 	}
 	for i, entries := range edits(t, frag.Bytes()) {
-		if len(entries) != 1 || entries[0].MediaTime != want[i][0].MediaTime || entries[0].SegmentDuration != 0 {
-			t.Errorf("track %d: fragmented edit list %+v; want media time %d to the end",
-				i+1, entries, want[i][0].MediaTime)
+		w := want[i][0]
+		w.SegmentDuration *= 90
+		if len(entries) != 1 || entries[0] != w {
+			t.Errorf("track %d: fragmented edit list %+v; want %+v", i+1, entries, w)
 		}
 	}
 }

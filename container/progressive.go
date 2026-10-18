@@ -198,6 +198,9 @@ type progressiveTrack struct {
 	presentedUntil int64
 	// priming is the track's StartDelay in its own timescale.
 	priming int64
+	// editList is the caller's own edit list, written in place of the one
+	// built from the first composition offset and the priming.
+	editList *EditList
 	// syncs are the numbers of the samples a player may start at.
 	syncs []uint32
 
@@ -243,6 +246,11 @@ func (m *ProgressiveMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	case cfg.Timescale == 0:
 		return 0, fmt.Errorf("%w: %s track has no timescale", ErrTrackConfig, cfg.Codec)
 	}
+	if cfg.EditList != nil {
+		if err := cfg.EditList.check(); err != nil {
+			return 0, err
+		}
+	}
 	lang := cfg.Language
 	if lang == "" {
 		lang = "und"
@@ -255,7 +263,7 @@ func (m *ProgressiveMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 		return 0, err
 	}
 	t := &progressiveTrack{id: id, trak: trak, timescale: cfg.Timescale,
-		priming: primingTicks(cfg.StartDelay, cfg.Timescale)}
+		priming: primingTicks(cfg.StartDelay, cfg.Timescale), editList: cfg.EditList}
 	m.tracks = append(m.tracks, t)
 	m.byID[id] = t
 	return id, nil
@@ -636,7 +644,12 @@ func (t *progressiveTrack) addComposition(offset int32) {
 // frame presented, so the frames a reordering stream presents after its last
 // decode are all inside it. A track whose priming covers everything it holds
 // presents nothing, and has no edit that could say so: it is left without one.
+//
+// A track that was handed an edit list of its own is given that one instead.
 func (t *progressiveTrack) edits() (*mp4.EdtsBox, uint64) {
+	if t.editList != nil {
+		return t.editList.mp4Edits(progressiveMovieTimescale, t.timescale, t.presentedUntil)
+	}
 	// Every track holds a sample by now -- Close refuses one that does not --
 	// so the first run of offsets is the first sample's.
 	start := presentationStart(t.cttsOffsets[0], t.priming)

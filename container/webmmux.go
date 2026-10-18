@@ -195,6 +195,9 @@ type webmTrack struct {
 	// WriteSample.
 	shift   int64
 	shifted bool
+	// edit is what the track's MP4 edit list says, when it has one: see
+	// webmEdit.
+	edit *webmShift
 	// endTick is the same end in file ticks. Every frame's end was converted
 	// when it was written, and refused there if the scale could not state it,
 	// so the segment's duration is the largest of them rather than a
@@ -378,12 +381,16 @@ func (m *WebMMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	case cfg.Timescale == 0:
 		return 0, fmt.Errorf("%w: %s track has no timescale", ErrTrackConfig, cfg.Codec)
 	}
+	edit, err := webmEdit(cfg)
+	if err != nil {
+		return 0, err
+	}
 	number := uint64(len(m.tracks)) + 1
 	entry, codec, err := describeWebMTrack(cfg, number)
 	if err != nil {
 		return 0, err
 	}
-	t := &webmTrack{id: uint32(number), timescale: cfg.Timescale, inWebM: codec.inWebM}
+	t := &webmTrack{id: uint32(number), timescale: cfg.Timescale, inWebM: codec.inWebM, edit: edit}
 	m.entries = append(m.entries, entry)
 	m.tracks = append(m.tracks, t)
 	m.byID[t.id] = t
@@ -715,7 +722,7 @@ func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 	// decide where the next one is shown.
 	shift := t.shift
 	if !t.shifted {
-		shift = presentationStart(s.CompositionOffset, 0)
+		shift = t.edit.shift(presentationStart(s.CompositionOffset, 0))
 	}
 	presentation := int64(t.nextTime) + int64(s.CompositionOffset) - shift
 	if presentation < 0 {
