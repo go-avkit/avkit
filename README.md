@@ -627,6 +627,16 @@ container is not made to claim knowledge it does not have.
 A VP9 track whose samples cannot describe it either is still refused, naming the
 track, rather than written with a `vpcC` of zeroes.
 
+**VP8 has no level at all**, and could not be written to MP4 for that reason:
+every operation failed with `vp08 needs a level; 0 is not one`. The *VP Codec ISO
+Media File Format Binding* (v1.0) gives level 0 as "Undefined" in its level
+table and says "VP8 only supports a profile value of 0", so a `vp08` record
+states profile 0 and level 0, and a VP8 profile other than 0 is refused. ffmpeg
+refuses to write VP8 into MP4 at all (`movenc.c`: "altref frames handling is not
+defined in the spec as of version v1.0"); its reader decodes avkit's `vp08` copy
+of a `libvpx -auto-alt-ref 1` Matroska file frame for frame identically to the
+source (`framemd5`, 50 of 50 frames, same timestamps).
+
 ## A Matroska file that ends before its structure does
 
 A download in progress, or one that stopped, is a Matroska file cut mid-cluster.

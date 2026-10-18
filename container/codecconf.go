@@ -161,10 +161,10 @@ func ConfigFromSamples(codec string, samples []Sample, opts ...ConfigOption) (St
 	case "mp4a":
 		cfg, err = aacStreamConfig(name, samples)
 	case "vp08":
-		// A VP8 key frame states its size, but VP8 defines no level at all,
-		// and a vpcC record whose level is zero states nothing a player can
-		// use — which is why the muxer refuses one.
-		return refuse(name, "VP8 states no level, and a vpcC record without one describes nothing")
+		// A VP8 key frame states its size, but VP8 defines no level at all:
+		// its vpcC states level 0, "Undefined", and the rest of the record
+		// (bit depth, colour) is the container's to say.
+		return refuse(name, "VP8 states no level, and its colour description is the container's")
 	case "opus":
 		return refuse(name, "an Opus stream carries no identification header; only its container states one")
 	case "ac-3", "ec-3":

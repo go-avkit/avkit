@@ -169,8 +169,13 @@ type TrackConfig struct {
 // that means "unspecified", is what a caller that does not know them should do.
 type VPxConfig struct {
 	// Profile is 0 to 3, and Level a value of the VP9 level table (10 for
-	// level 1, 11 for 1.1, and so on). Level 0 is not a level: a record that
-	// states it is refused rather than written as a guess.
+	// level 1, 11 for 1.1, and so on). A VP9 record stating level 0 is
+	// refused rather than written as a guess: the frames state the level.
+	//
+	// VP8 defines no level at all, and the VP Codec ISO Media File Format
+	// Binding's table gives 0 as "Undefined": a vp08 record states level 0,
+	// which is what a VP8 track read out of Matroska carries, and profile 0,
+	// the only one the binding allows for VP8.
 	Profile, Level byte
 	// BitDepth is 8, 10 or 12.
 	BitDepth byte
@@ -677,8 +682,16 @@ func vpxConfig(codec string, cfg TrackConfig) (*mp4.VppCBox, error) {
 			ErrTrackConfig, codec, cfg.Width, cfg.Height)
 	case v.Profile > 3:
 		return nil, fmt.Errorf("%w: %s profile %d is not one of 0 to 3", ErrTrackConfig, codec, v.Profile)
-	case v.Level == 0:
+	case v.Level == 0 && codec != "vp08":
+		// The binding's level table lists 0 as "Undefined", and a VP9 track
+		// has a level its frames state, which Remux reads when the container
+		// did not (describeFromSamples): a VP9 record stating none is refused
+		// rather than written as one.
 		return nil, fmt.Errorf("%w: %s needs a level; 0 is not one", ErrTrackConfig, codec)
+	case codec == "vp08" && v.Profile != 0:
+		// "VP8 only supports a profile value of 0." (VP Codec ISO Media File
+		// Format Binding v1.0, semantics of the VPCodecConfigurationRecord).
+		return nil, fmt.Errorf("%w: vp08 profile %d; VP8 only supports profile 0", ErrTrackConfig, v.Profile)
 	case v.BitDepth != 8 && v.BitDepth != 10 && v.BitDepth != 12:
 		return nil, fmt.Errorf("%w: %s bit depth %d is not 8, 10 or 12", ErrTrackConfig, codec, v.BitDepth)
 	case v.ChromaSubsampling > 3:
