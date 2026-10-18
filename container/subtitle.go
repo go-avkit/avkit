@@ -369,9 +369,12 @@ func readWebMCueBlock(data []byte) (webvttCue, error) {
 	if !ok {
 		return webvttCue{}, fmt.Errorf("%w: a %s block has no line for its settings", ErrMatroska, webmWebVTT)
 	}
+	// A carriage return cannot be part of either line in WebVTT, where it
+	// ends one, so all of them go: a reader of what is written again would
+	// otherwise see a line feed after the last and lose it there instead.
 	return webvttCue{
-		id:       strings.TrimSuffix(id, "\r"),
-		settings: strings.TrimSuffix(settings, "\r"),
+		id:       strings.TrimRight(id, "\r"),
+		settings: strings.TrimRight(settings, "\r"),
 		text:     strings.TrimRight(payload, "\r\n"),
 	}, nil
 }
@@ -403,7 +406,7 @@ func readMatroskaCueAddition(c *webvttCue, addition []byte) error {
 	if !ok {
 		return fmt.Errorf("%w: an %s BlockAddition has no line for its identifier", ErrMatroska, mkvWebVTT)
 	}
-	c.settings, c.id = strings.TrimSuffix(settings, "\r"), strings.TrimSuffix(id, "\r")
+	c.settings, c.id = strings.TrimRight(settings, "\r"), strings.TrimRight(id, "\r")
 	if comments = strings.TrimRight(comments, "\r\n"); comments != "" {
 		c.comments = strings.Split(comments, "\n\n")
 	}
