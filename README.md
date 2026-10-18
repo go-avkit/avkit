@@ -240,6 +240,22 @@ container is not made to claim knowledge it does not have.
 A VP9 track whose samples cannot describe it either is still refused, naming the
 track, rather than written with a `vpcC` of zeroes.
 
+## The shape of a pixel
+
+VP8 and VP9 state no aspect ratio in their bitstream, so an MP4 can only say it
+in the sample entry, as a `pasp` box (ISO/IEC 14496-12 §12.1.4). Without one,
+`ffprobe` read a VP9 track remuxed from WebM as `sample_aspect_ratio=N/A` where
+the WebM said `1:1`.
+
+`TrackConfig.SARWidth` and `SARHeight` now carry it. The Matroska reader takes it
+from `DisplayWidth`/`DisplayHeight` against the cropped frame (RFC 9559
+§5.1.4.1.28), whose defaults state square pixels, and leaves it unknown (0:0)
+under `DisplayUnit` 4; the MP4 reader takes it from `pasp`. Both MP4 muxers write
+a known ratio as `pasp`, reduced, and scale the track header's width by it, as
+ffmpeg's movenc does; an unknown one writes nothing. A WebM written by ffmpeg
+with `setsar=4/3` remuxes to an MP4 `ffprobe` reads as `427:320`, as ffmpeg's own
+`-c copy` does. The WebM muxer does not write a display size yet.
+
 ## A Matroska file that ends before its structure does
 
 A download in progress, or one that stopped, is a Matroska file cut mid-cluster.

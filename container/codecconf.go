@@ -50,9 +50,12 @@ var (
 // StreamConfig is what a track's own samples say about it.
 //
 // The embedded TrackConfig is what Muxer.AddTrack and TSMuxer.AddTrack take, so
-// deriving a configuration and writing the track is two calls. The remaining
-// fields are what a manifest states and a sample entry does not: the coded frame
-// size before cropping, the pixel aspect ratio, and the profile, tier and level.
+// deriving a configuration and writing the track is two calls. Its SARWidth and
+// SARHeight are the sample (pixel) aspect ratio, 1:1 unless the bitstream states
+// otherwise: display size is the visible size scaled by it, which is how
+// anamorphic video ends up wider than it is coded. The remaining fields are what
+// a manifest states and a sample entry does not: the coded frame size before
+// cropping, and the profile, tier and level.
 type StreamConfig struct {
 	TrackConfig
 
@@ -62,11 +65,6 @@ type StreamConfig struct {
 	// 1088 and cropped. TrackConfig.Width and Height hold the visible size,
 	// the one a player displays and a sample entry states.
 	CodedWidth, CodedHeight int
-	// SARWidth and SARHeight are the sample (pixel) aspect ratio, 1:1 unless
-	// the bitstream states otherwise. Display size is the visible size scaled
-	// by this ratio, which is how anamorphic video ends up wider than it is
-	// coded.
-	SARWidth, SARHeight int
 	// Profile, Tier and Level are the bitstream's own, as its headers code
 	// them: profile_idc and level_idc for AVC, general_profile_idc,
 	// general_tier_flag and general_level_idc for HEVC, seq_profile,
@@ -541,9 +539,9 @@ func av1StreamConfig(codec string, samples []Sample) (StreamConfig, error) {
 				TrackConfig: TrackConfig{
 					Kind: Video, Width: int(seq.Width()), Height: int(seq.Height()),
 					CodecConfig: payload.Bytes(),
+					SARWidth:    1, SARHeight: 1,
 				},
 				CodedWidth: int(seq.Width()), CodedHeight: int(seq.Height()),
-				SARWidth: 1, SARHeight: 1,
 				Profile: seq.SeqProfile, Tier: seq.SeqTier0, Level: seq.SeqLevelIdx0,
 				CodecString: seq.CodecString(codec),
 			}, nil
@@ -588,9 +586,9 @@ func vp9StreamConfig(codec string, samples []Sample, timescale uint32) (StreamCo
 					ColourPrimaries: primaries, TransferCharacteristics: transfer,
 					MatrixCoefficients: matrix,
 				},
+				SARWidth: 1, SARHeight: 1,
 			},
 			CodedWidth: int(header.Width), CodedHeight: int(header.Height),
-			SARWidth: 1, SARHeight: 1,
 			Profile: header.Profile, Level: level,
 			CodecString: fmt.Sprintf("%s.%02d.%02d.%02d", codec, header.Profile, level, header.BitDepth),
 		}, nil
