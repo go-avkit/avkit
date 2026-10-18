@@ -34,6 +34,9 @@ which is a change of container and not of pictures: the samples are the same
 bytes. `CheckHVC1` answers the question without changing anything, so a caller
 can tell a file that needs it from one that does not.
 
+It is an option of `Remux`, `Cut`, `Concat`, `Join` and `JoinProgressive`
+alike, so a copy, a cut or a join is made conformant in the same pass.
+
 ⛔ It takes the **stream** as authority wherever the samples state a set, keeps
 the entry's sets where they do not, and **refuses** a stream whose sets change
 part way through — because a single entry cannot describe two of them, and

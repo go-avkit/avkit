@@ -6,6 +6,8 @@ package container
 import (
 	"bytes"
 	"errors"
+	"io"
+	"strings"
 	"testing"
 )
 
@@ -460,6 +462,80 @@ func TestARemuxThatCannotConformFailsTheCopy(t *testing.T) {
 	var out bytes.Buffer
 	if err := Remux(&out, src, ConformHVC1()); !errors.Is(err, ErrTrackConfig) {
 		t.Errorf("err = %v, want ErrTrackConfig", err)
+	}
+}
+
+// TestConformHVC1ThroughAJoin: the README says the operations take the option,
+// and Join and JoinProgressive used to accept it and do nothing with it -- a
+// hev1 file came out hev1, its parameter sets still in the samples.
+func TestConformHVC1ThroughAJoin(t *testing.T) {
+	vps, sps, pps := hevcSets(t)
+	streamPPS := bytes.Clone(pps)
+	streamPPS[3] ^= 0xff
+	for name, join := range map[string]func(io.Writer, []*Reader, ...RemuxOption) error{
+		"Join": Join, "JoinProgressive": JoinProgressive,
+	} {
+		t.Run(name, func(t *testing.T) {
+			src, err := NewReader(hevcMP4(t, "hev1", videoSamples(
+				lengthPrefixed(vps, sps, streamPPS, hevcIDR),
+				lengthPrefixed(hevcIDR),
+			)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			if err := join(&out, []*Reader{src}, ConformHVC1()); err != nil {
+				t.Fatal(err)
+			}
+			back, err := NewReader(out.Bytes())
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := back.TrackIDs()[0]
+			cfg, err := back.TrackConfig(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := back.Samples(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := CheckHVC1(cfg, got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !c.Conformant() {
+				t.Errorf("the output is not conformant: %+v", c)
+			}
+			if len(cfg.PPS) != 1 || !bytes.Equal(cfg.PPS[0], streamPPS) {
+				t.Errorf("the entry states %x, want the stream's own %x", cfg.PPS, streamPPS)
+			}
+			want := lengthPrefixed(hevcIDR)
+			for i, s := range got {
+				if !bytes.Equal(s.Data, want) {
+					t.Errorf("sample %d = %x, want the picture alone %x", i, s.Data, want)
+				}
+			}
+		})
+	}
+}
+
+// TestAJoinThatCannotConformFailsTheJoin: as with Remux, a track the option
+// cannot make conformant stops the join, naming the track.
+func TestAJoinThatCannotConformFailsTheJoin(t *testing.T) {
+	vps, sps, pps := hevcSets(t)
+	second := bytes.Clone(pps)
+	second[3] ^= 0x0f
+	src, err := NewReader(hevcMP4(t, "hev1", videoSamples(
+		lengthPrefixed(vps, sps, pps, hevcIDR),
+		lengthPrefixed(vps, sps, second, hevcIDR),
+	)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = Join(io.Discard, []*Reader{src}, ConformHVC1())
+	if !errors.Is(err, ErrTrackConfig) || !strings.Contains(err.Error(), "declare track 1") {
+		t.Errorf("err = %v, want ErrTrackConfig naming track 1", err)
 	}
 }
 
