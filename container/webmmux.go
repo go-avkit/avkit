@@ -142,13 +142,18 @@ func (c *webmCounter) Write(p []byte) (int, error) {
 // By default nothing is buffered: the segment and every cluster are written
 // with their size left unknown, so the file is playable as it is produced and
 // can be streamed straight into an HTTP response. A player reading such a file
-// loses two things, and a caller who can hold the file in memory gets them
-// back with BufferedSegment:
+// loses two things:
 //
 //   - the duration, which Info cannot state before the last sample is known, so
 //     a player shows no total time and no seek bar until it has read the file;
 //   - the segment's size, which a player has to reach the end of the file to
 //     learn.
+//
+// A writer that is an [io.Seeker] gets both back at Close, as ffmpeg's
+// matroskaenc writes them at its trailer: Info is sent with a Void holding the
+// Duration's place, and the Duration, the segment's size and every cluster's
+// size are written over what held their place. A caller writing elsewhere who
+// can hold the file in memory gets them with BufferedSegment.
 //
 // Cues are written in every mode, after the last cluster. A SeekHead saying
 // where they are, and where Info, Tracks and every other Top-Level Element
@@ -326,6 +331,22 @@ type webmInfo struct {
 	WritingApp    string  `ebml:"WritingApp"`
 	Duration      float64 `ebml:"Duration,omitempty"`
 	Title         string  `ebml:"Title,omitempty"`
+	// DurationRoom is a Void standing where Duration will be, in a segment
+	// streamed to a writer that can seek: Close writes the Duration over it.
+	DurationRoom []byte `ebml:"Void,omitempty"`
+}
+
+// webmDurationRoom is the payload of the Void that holds a Duration's place:
+// a Duration element is its two-byte identifier, a one-byte size and an
+// eight-byte float, eleven bytes, and a Void of nine bytes is eleven bytes
+// with its one-byte identifier and size. ffmpeg's matroskaenc reserves the
+// same eleven bytes (put_ebml_void(pb, 11)).
+const webmDurationRoom = 9
+
+// webmInfoDoc is the Info element marshalled on its own, to be written over
+// the one a seekable writer was given at the start.
+type webmInfoDoc struct {
+	Info webmInfo `ebml:"Info"`
 }
 
 type webmTracks struct {
@@ -1011,6 +1032,10 @@ func (m *WebMMuxer) begin() error {
 			return fmt.Errorf("container: write webm header: %w", err)
 		}
 		head := m.segmentHead(0)
+		if m.seeker != nil && m.locateOrigin() {
+			// Close knows the duration, and will write it here.
+			head.Info.DurationRoom = make([]byte, webmDurationRoom)
+		}
 		// The segment element costs its identifier plus the length of the
 		// size it states, and how many bytes that takes is the encoder's
 		// choice, not a constant worth guessing: encoding the segment and its
@@ -1142,9 +1167,11 @@ func (m *WebMMuxer) Close() error {
 	m.closed = true
 	if !m.settings.buffered {
 		// Every cluster is already out; a track declared and never fed still
-		// deserves the header that names it.
+		// deserves the header that names it, and a seekable writer its size.
 		if !m.started {
-			return m.begin()
+			if err := m.begin(); err != nil {
+				return err
+			}
 		}
 		// Where the Cues begin is read before they are written, as a
 		// cluster's is.
@@ -1152,8 +1179,8 @@ func (m *WebMMuxer) Close() error {
 		if err := m.writeCues(); err != nil {
 			return err
 		}
-		if m.seeker != nil && len(m.cues) > 0 {
-			return m.rewriteSeekHead(cuesAt)
+		if m.seeker != nil {
+			return m.finishSeekable(cuesAt)
 		}
 		return nil
 	}
@@ -1244,24 +1271,29 @@ func (m *WebMMuxer) placeCues(at uint64) (uint64, error) {
 
 // openSeekHead puts a SeekHead at the head of a streamed segment, naming what
 // precedes the first cluster, with room left for the Cues entry Close will add.
-//
-// A writer that says it can seek and then cannot — os.Stdout on a pipe is an
-// io.Seeker whose Seek fails — gets the segment it would have had without one:
-// a stream is still worth writing, and a SeekHead nothing will ever complete is
-// not.
+// It is called only for a writer locateOrigin found it can seek in.
 func (m *WebMMuxer) openSeekHead(open *webmOpenSegment, seeks []webmSeek) {
-	pos, err := m.seeker.Seek(0, io.SeekCurrent)
-	if err != nil {
-		m.seeker = nil
-		return
-	}
-	// The header just written is what the counter holds, so the writer was
-	// that much earlier when the muxer started.
-	m.origin = pos - int64(m.w.n)
 	m.seekReserve = webmSeekReserve(len(seeks) + 1)
 	placeSeeks(seeks, uint64(m.seekReserve))
 	m.seeks = seeks
 	open.SeekHead, open.Void = webmSeekRegion(seeks, m.seekReserve)
+}
+
+// locateOrigin asks the writer where it is, which is what every rewrite at
+// Close is counted from. A writer that says it can seek and then cannot --
+// os.Stdout on a pipe is an io.Seeker whose Seek fails -- is written to as one
+// that cannot: a stream is still worth writing, and room nothing will ever fill
+// is not.
+func (m *WebMMuxer) locateOrigin() bool {
+	pos, err := m.seeker.Seek(0, io.SeekCurrent)
+	if err != nil {
+		m.seeker = nil
+		return false
+	}
+	// The header just written is what the counter holds, so the writer was
+	// that much earlier when the muxer started.
+	m.origin = pos - int64(m.w.n)
+	return true
 }
 
 // duration is how long the longest track lasts, in segment ticks.

@@ -184,9 +184,9 @@ func TestWebMSeekHeadNamesEveryTopLevelElement(t *testing.T) {
 			if want := int64(100 + len(sink.data)); sink.pos != want {
 				t.Errorf("the writer is left at %d, want the end of the file at %d", sink.pos, want)
 			}
-			if got := segmentSizeBytes(t, sink.data); !bytes.Equal(got, unknownSize) {
-				t.Errorf("a streamed segment states its size as %x", got)
-			}
+			// And its size and duration are stated, as the buffered mode states
+			// them: the two files say the same thing about the same media.
+			checkSeekableSegment(t, sink.data, buffered.Bytes())
 			// Both still read, and the cues still point at clusters.
 			for name, data := range map[string][]byte{"buffered": buffered.Bytes(), "seekable": sink.data} {
 				if _, err := NewReader(data); err != nil {
@@ -195,6 +195,49 @@ func TestWebMSeekHeadNamesEveryTopLevelElement(t *testing.T) {
 			}
 		})
 	}
+}
+
+// checkSeekableSegment holds a segment streamed to a writer that can seek to
+// what ffmpeg's matroskaenc writes at its trailer: the Segment's real size in
+// the eight bytes the unknown size took, every Cluster's likewise, and the
+// Info's Duration where a Void held its place -- the Duration the buffered mode
+// states for the same media (RFC 9559 §5.1.2.10).
+func checkSeekableSegment(t *testing.T, data, buffered []byte) {
+	t.Helper()
+	size := segmentSizeBytes(t, data)
+	if bytes.Equal(size, unknownSize) {
+		t.Fatalf("the segment states an unknown size")
+	}
+	_, content := segmentChildren(t, data)
+	if got, want := binaryValue(size[1:]), uint64(len(data)-content); got != want {
+		t.Errorf("the segment states %d bytes, it holds %d", got, want)
+	}
+	children, _ := segmentChildren(t, data)
+	for _, c := range children {
+		if c.id != 0x1F43B675 {
+			continue
+		}
+		_, w, unknown, _ := ebmlVint(data, content+int(c.pos)+4, false)
+		if unknown || w != 8 {
+			t.Errorf("the cluster at %d keeps an unknown size", c.pos)
+		}
+	}
+	f, want := readWebM(t, data), readWebM(t, buffered)
+	if f.Segment.Info.Duration != want.Segment.Info.Duration {
+		t.Errorf("duration = %v, the buffered segment states %v", f.Segment.Info.Duration, want.Segment.Info.Duration)
+	}
+	if len(f.Segment.Cluster) != len(want.Segment.Cluster) {
+		t.Errorf("%d clusters read back, the buffered segment holds %d", len(f.Segment.Cluster), len(want.Segment.Cluster))
+	}
+}
+
+// binaryValue is a big-endian unsigned number.
+func binaryValue(b []byte) uint64 {
+	var v uint64
+	for _, x := range b {
+		v = v<<8 | uint64(x)
+	}
+	return v
 }
 
 func TestWebMStreamedToAWriterThatCannotSeekHasNoSeekHead(t *testing.T) {
@@ -276,22 +319,42 @@ func TestWebMSeekHeadNamesWhatTheHeadHolds(t *testing.T) {
 }
 
 func TestWebMSeekHeadReportsAFailureToComplete(t *testing.T) {
-	// The rewrite at Close is the last seek and the last two writes the
-	// muxer makes; each is made to fail in turn.
+	// The rewrites at Close are the last seeks and writes the muxer makes: a
+	// seek and a write each for the SeekHead, the Info, every cluster's size
+	// and the segment's size, then the seek back to the end. Each is made to
+	// fail in turn.
 	probe := newOffsetSink(0)
 	if err := writeWebMTo(probe, 7, 0); err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct {
+	children, _ := segmentChildren(t, probe.data)
+	clusters := 0
+	for _, c := range children {
+		if c.id == 0x1F43B675 {
+			clusters++
+		}
+	}
+	steps := []string{"the seek head", "the segment info"}
+	for range clusters {
+		steps = append(steps, "a cluster size")
+	}
+	steps = append(steps, "the segment size")
+	type failure struct {
 		name string
 		set  func(*offsetSink)
 		says string
-	}{
-		{"seek back", func(s *offsetSink) { s.failSeekAt = probe.seeks - 1 }, "seek back to the seek head"},
-		{"write", func(s *offsetSink) { s.failWriteAt = probe.writes }, "write the seek head"},
+	}
+	cases := []failure{
 		{"seek past", func(s *offsetSink) { s.failSeekAt = probe.seeks }, "seek past the cues"},
-		{"cues", func(s *offsetSink) { s.failWriteAt = probe.writes - 1 }, "write cues"},
-	} {
+		{"cues", func(s *offsetSink) { s.failWriteAt = probe.writes - len(steps) }, "write cues"},
+	}
+	for j, what := range steps {
+		seekAt, writeAt := probe.seeks-(len(steps)-j), probe.writes-(len(steps)-1-j)
+		cases = append(cases,
+			failure{"seek back to " + what, func(s *offsetSink) { s.failSeekAt = seekAt }, "seek back to " + what},
+			failure{"write " + what, func(s *offsetSink) { s.failWriteAt = writeAt }, "write " + what})
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sink := newOffsetSink(0)
 			tc.set(sink)
@@ -302,17 +365,20 @@ func TestWebMSeekHeadReportsAFailureToComplete(t *testing.T) {
 		})
 	}
 
-	// And the encoding of the new SeekHead, which cannot fail on its own.
+	// And the encoding of the new SeekHead and the new Info, which cannot
+	// fail on their own.
 	original := measureEBML
 	defer func() { measureEBML = original }()
 	refused := errors.New("staged refusal")
-	measureEBML = func(v any, w io.Writer, opts ...ebml.MarshalOption) error {
-		if _, ok := v.(*webmRegionDoc); ok {
-			return refused
+	for _, doc := range []any{&webmRegionDoc{}, &webmInfoDoc{}} {
+		measureEBML = func(v any, w io.Writer, opts ...ebml.MarshalOption) error {
+			if fmt.Sprintf("%T", v) == fmt.Sprintf("%T", doc) {
+				return refused
+			}
+			return original(v, w, opts...)
 		}
-		return original(v, w, opts...)
-	}
-	if err := writeWebMTo(newOffsetSink(0), 7, 0); !errors.Is(err, refused) {
-		t.Errorf("err = %v, want the staged refusal", err)
+		if err := writeWebMTo(newOffsetSink(0), 7, 0); !errors.Is(err, refused) {
+			t.Errorf("%T: err = %v, want the staged refusal", doc, err)
+		}
 	}
 }

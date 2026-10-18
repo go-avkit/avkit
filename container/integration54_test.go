@@ -230,6 +230,51 @@ func TestTheSeekHeadNamesTheTagsAndTheCover(t *testing.T) {
 		}
 		assertMetadata(t, what, f.Metadata, want)
 	}
+	// #76: the stream to a seeker is completed at Close with its Duration and
+	// its sizes, Info rewritten in place behind a SeekHead and before the
+	// Tags and the cover -- and comes out stating what the buffered file does.
+	streamed, held := readWebM(t, sink.data).Segment.Info, readWebM(t, buffered).Segment.Info
+	if streamed.Duration == 0 || streamed.Duration != held.Duration {
+		t.Errorf("streamed Info: duration %v; buffered %v", streamed.Duration, held.Duration)
+	}
+	// (The title rewritten with the Info is checked by the metadata read
+	// above, from Info/Title.)
+	if got := segmentSizeBytes(t, sink.data); bytes.Equal(got, unknownSize) {
+		t.Error("the segment streamed to a seeker still states an unknown size")
+	}
+}
+
+// TestASubtitleStreamToASeekerIsCompletedAtClose: WebVTT cues (#56) are
+// written as block groups once their end is known, the last of them at
+// Close; #76 then rewrites every cluster's size from where the Cues say the
+// clusters start, the Duration and the segment's size, and #66 the SeekHead.
+// The completed file reads back, cue for cue, with ebml-go's strict reader,
+// and lasts as long as its cues.
+func TestASubtitleStreamToASeekerIsCompletedAtClose(t *testing.T) {
+	text, err := subtitleFixture(t, "subtitles-webvtt.mkv").Samples(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := subtitleClip(t, text...)
+	sink := newOffsetSink(0)
+	copyInto(t, NewWebMMuxer(sink, ClusterDuration(200*time.Millisecond)), r)
+	keepForOracle(t, "subtitles-seekable.mkv", sink.data)
+	checkSeekHead(t, sink.data, true)
+	if got := segmentSizeBytes(t, sink.data); bytes.Equal(got, unknownSize) {
+		t.Error("the segment still states an unknown size")
+	}
+	if d := readWebM(t, sink.data).Segment.Info.Duration; d != 4000 {
+		t.Errorf("Duration %v ms, the cues last 4000", d)
+	}
+	back, err := NewReader(sink.data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cues, err := back.Samples(back.TrackIDs()[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertShown(t, "seekable stream", shown(t, cues), threeCues)
 }
 
 // TestAMatroskaCopyStatesThePrimingOnceBesideTheBFrameShift: #60 takes the
