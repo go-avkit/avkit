@@ -118,16 +118,26 @@ func (f *File) tracksOfKind(k Kind) []Track {
 // Demux sniffs data's container format and returns its demuxed structure. It
 // returns an error for an unrecognised or malformed container.
 func Demux(data []byte) (*File, error) {
-	switch Sniff(data) {
+	format := Sniff(data)
+	switch format {
 	case FormatMP4:
 		return demuxMP4(data)
 	case FormatMatroska:
 		return demuxMatroska(data)
 	case FormatMPEGTS:
 		return demuxTS(data)
-	default:
-		return nil, fmt.Errorf("container: unrecognised format")
 	}
+	if f, ok := elementaryFor(format); ok {
+		// Read whole, samples and all: these formats have no header that
+		// describes the stream, only the frames do. A stream cut short is
+		// described as far as it goes, and the cut is reported beside it.
+		r, err := newElementaryReader(f, data)
+		if r == nil {
+			return nil, err
+		}
+		return r.file, err
+	}
+	return nil, fmt.Errorf("container: unrecognised format")
 }
 
 // Format identifies a container format.
@@ -154,5 +164,7 @@ func Sniff(data []byte) Format {
 	if sniffTS(data) {
 		return FormatMPEGTS
 	}
-	return FormatUnknown
+	// The elementary streams and legacy containers, each registered by the
+	// file that reads it.
+	return sniffElementary(data)
 }
