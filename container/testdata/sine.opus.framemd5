@@ -1,0 +1,27 @@
+#format: frame checksums
+#version: 2
+#hash: MD5
+#extradata 0,                              19, d6d61e18d84ec84d12baee22856531bb
+#software: Lavf63.1.102
+#tb 0: 1/48000
+#media_type 0: audio
+#codec_id 0: opus
+#sample_rate 0: 48000
+#channel_layout_name 0: mono
+#stream#, dts,        pts, duration,     size, hash
+0,       -312,       -312,      960,       69, e2db4fd46477a3d63a188afefbb20c16, S=1,       10, edace68fd204eb5d02d383eda0ea841a
+0,        648,        648,      960,       59, 523557dbbcfd99ba2f23e66abb9e85ca
+0,       1608,       1608,      960,       53, f8ba0373799ca2e952d70e118817e5e7
+0,       2568,       2568,      960,       51, 7054a03d7461164b9643631ebea540cc
+0,       3528,       3528,      960,       54, d25cf68c38146e22f74ac0071bae7523
+0,       4488,       4488,      960,       55, 91cee865d18754fd0b19d6bc59eb0874
+0,       5448,       5448,      960,       53, 2b978ba3d0f4cf35cf29995c47f8fd2f
+0,       6408,       6408,      960,       53, a62a90f0c9356049af4e74ad4335b0a2
+0,       7368,       7368,      960,       53, 0083d90a3e1bf032e0df9b4a6cd6bda9
+0,       8328,       8328,      960,       45, d9d1840d386a494588b0247e1c686465
+0,       9288,       9288,      960,       43, 8eed6eb604b7e9c70b0268251e0c44dc
+0,      10248,      10248,      960,       41, 588fb0624383982c807a35924c071bcd
+0,      11208,      11208,      960,       45, 8443c641c4adf121c849f4daf3f0172a
+0,      12168,      12168,      960,       51, 034aa732522b1d79dc5f79cda7613618
+0,      13128,      13128,      960,       41, 1f201f4958c22016e0c05b728627526e
+0,      14088,      14088,      312,       25, c08d63843ccf8aef90ecbd8b96a27194, S=1,       10, 1fe696152ad8cd4091f17d37e2de5e69

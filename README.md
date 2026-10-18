@@ -19,7 +19,7 @@ model, and converts the payloads each container spells differently.
 
 | Package     | What it does |
 |-------------|--------------|
-| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of an MP4 or a transport stream, one file or a sequence of segments; mux a fragmented or a progressive MP4, or an MPEG-TS, from tracks delivered separately; copy, cut, join, concatenate and drop tracks with `Remux`, `Cut`, `Join` and `Concat`; and rewrite an HEVC track's sample entry to `hvc1` with `ConformHVC1`. No re-encoding anywhere. |
+| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS — and, demux only, ADTS, native FLAC, Ogg and WAV — into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of an MP4 or a transport stream, one file or a sequence of segments; mux a fragmented or a progressive MP4, or an MPEG-TS, from tracks delivered separately; copy, cut, join, concatenate and drop tracks with `Remux`, `Cut`, `Join` and `Concat`; and rewrite an HEVC track's sample entry to `hvc1` with `ConformHVC1`. No re-encoding anywhere. |
 
 ### Why `ConformHVC1` is there
 
@@ -53,10 +53,51 @@ adding a codec to the dispatch without adding it here fails the suite.
 | MP4 / ISO-BMFF | ✓ | ✓ one file, a sequence of segments, or fragmented | ✓ fragmented **and** progressive |
 | Matroska / WebM | ✓ | ✓ | ✓ |
 | MPEG-TS | ✓ | ✓ | ✓ |
+| ADTS (raw AAC) | ✓ | ✓ | — |
+| MPEG audio (MP3, MP2, MP1) | ✓ | ✓ the Xing/Info/VBRI frame dropped, the LAME encoder delay kept | — |
+| native FLAC | ✓ | ✓ | — |
+| Ogg | ✓ | ✓ Opus, Vorbis and FLAC streams; Theora, Speex, VP8 and Kate named, not read | — |
+| WAV (RIFF, RF64, BW64) | ✓ | ✓ linear PCM; other format tags named, not read | — |
 
-Nothing else: no AVI, no FLV, no Ogg, no WAV, no MXF, and no HLS or DASH
-manifests. A file that is none of the three sniffs as `FormatUnknown` rather
-than being guessed at.
+The last five are read whole, in one pass, by `Demux` and `NewReader` (not by
+`NewFileReader`, which serves MP4 alone), and are never written. Nothing else: no
+AVI, no FLV, no MXF, and no HLS or DASH manifests.
+A file that is none of these sniffs as `FormatUnknown` rather than being guessed
+at.
+
+#### How the one-pass formats are read
+
+- **ADTS** (ISO/IEC 13818-7 §6.2, 14496-3 §1.A.2): each header is stripped and
+  the first becomes the `AudioSpecificConfig`; a frame of several raw data blocks
+  is refused, because an MP4 sample is one block and only a decoder can find
+  where they part. Channel configuration 0 reads, and its `TrackConfig` says why
+  it cannot be written.
+- **MPEG audio** (ISO/IEC 11172-3 and 13818-3 §2.4.1.3): frames are cut by the
+  header `parseMPAFrame` reads, as the transport stream reader does. The first
+  frame is dropped when it is a Xing, Info or VBRI frame, which describes the
+  stream and holds no audio; the LAME extension's encoder delay, plus the
+  decoder's 529 samples, becomes `TrackConfig.StartDelay`, so a remux keeps the
+  priming out of what is presented. The unofficial "MPEG 2.5" rates and free
+  format are not read.
+- **FLAC** (RFC 9639): `CodecConfig` is the marker and STREAMINFO, Matroska's
+  `A_FLAC` CodecPrivate. Frames are found where a header's CRC-8 holds, the frame
+  before it closes with a CRC-16 of zero, and the frame or sample number follows on.
+- **Ogg** (RFC 3533; RFC 7845; Vorbis I §A; RFC 9639 §10.1): page CRCs are
+  checked, packets reassembled across pages, and each packet timed from its own
+  header — the Opus TOC, the Vorbis mode, the FLAC block size. Vorbis's mode table
+  is found by reading the setup header backwards, as FFmpeg does, and **checked
+  against the granule positions**, which are normative. The last packet is cut to
+  the last granule. Opus pre-skip is `TrackConfig.PreSkip`.
+- **Streams around frames**: an ID3v2 tag at the head or between frames, an
+  ID3v1 or APEv2 tag at the tail, and resynchronisation over rubbish — but only
+  onto a frame that is followed by another one.
+- **A stream cut short** is read as far as its last whole frame, page or block,
+  and `ErrTruncated` comes back **beside** the reader, as for Matroska.
+
+Every packet of the fixtures in `container/testdata/sine.*` is compared with what
+FFmpeg's own demuxer hands over (`-c copy -f framemd5`, stored beside each). The
+one disagreement is FFmpeg's: it gives this Vorbis file's last packet a duration
+of −192, and the test holds the granule instead.
 
 ### Per-track configuration, from the samples
 
@@ -82,6 +123,16 @@ before it existed still matches.
 | Matroska demux | AVC, HEVC, AV1, VP8, VP9 | AAC, AC-3, E-AC-3, FLAC, Opus, Vorbis |
 | WebM mux | AV1, VP8, VP9 | AAC, Opus, Vorbis |
 | MPEG-TS | `avc1`, `hvc1`, `av01`, in and out | `mp4a`, `ac-3`, `ec-3`, `mp1`, `mp2`, `mp3`, in and out; **not** `opus` (see [MPEG-TS carriage](#mpeg-ts-carriage)) |
+| ADTS demux | — | `mp4a` |
+| MPEG audio demux | — | `mp1`, `mp2`, `mp3` |
+| FLAC demux | — | `fLaC` |
+| Ogg demux | — | `Opus`, `vorb`, `fLaC` |
+| WAV demux | — | `ipcm` (signed integer), `fpcm` (float), `raw ` (unsigned 8-bit) |
+
+PCM is reported under the ISO/IEC 23003-5 entries with its `pcmC` record as
+`CodecConfig`, and refused by the MP4 muxer **by name**: mp4ff does not write
+those entries yet. FLAC and MP3 into MP4 and Matroska are lot L2 of
+[#54](https://github.com/go-avkit/avkit/issues/54).
 
 ### What is deliberately absent
 

@@ -1,0 +1,15 @@
+#format: frame checksums
+#version: 2
+#hash: MD5
+#extradata 0,                              34, fd4967d769d3282b75d885ef9ca3c44c
+#software: Lavf63.1.102
+#tb 0: 1/8000
+#media_type 0: audio
+#codec_id 0: flac
+#sample_rate 0: 8000
+#channel_layout_name 0: mono
+#stream#, dts,        pts, duration,     size, hash
+0,          0,          0,     1024,      416, 5b7e6c816fa33021e261a9920629bf53
+0,       1024,       1024,     1024,      396, 97908255289b922958aefe8afd1a4c5c
+0,       2048,       2048,     1024,      453, a260b08ea76bd89888ed2d8f90cd1b40
+0,       3072,       3072,      128,      113, fefdc413187569213f3f418a739f984e
