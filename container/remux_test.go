@@ -224,9 +224,7 @@ func TestRemuxPassesMuxOptionsOn(t *testing.T) {
 	if err := Remux(&out, src, MuxOptions(Brand("iso6"))); err != nil {
 		t.Fatalf("Remux: %v", err)
 	}
-	if !bytes.Contains(out.Bytes()[:32], []byte("iso6")) {
-		t.Errorf("the chosen brand did not reach the output: %q", out.Bytes()[:32])
-	}
+	assertFtyp(t, out.Bytes(), "iso6", "isom", "iso6", "dash")
 }
 
 func TestEveryOperationNeedsAnInput(t *testing.T) {

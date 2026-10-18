@@ -307,6 +307,25 @@ func (m *Muxer) writeHeader() error {
 	return nil
 }
 
+// setFtyp makes ftyp the file type box the initialisation segment is written
+// with.
+//
+// mp4ff's CreateEmptyInit already holds one -- major brand cmfc, compatible
+// cmfc and iso6 -- and an InitSegment is ENCODED from its Children, not from
+// its Ftyp field, which is filled only when a file is decoded. Setting the field
+// alone left that default in the bytes: every fragmented file claimed CMAF
+// (ISO/IEC 23000-19), which nothing here promises, and none carried the brand
+// the caller asked for. ISO/IEC 14496-12 §4.3 allows one ftyp, first in the
+// file, so the child is replaced where it stands.
+func setFtyp(init *mp4.InitSegment, ftyp *mp4.FtypBox) {
+	init.Ftyp = ftyp
+	for i, child := range init.Children {
+		if _, ok := child.(*mp4.FtypBox); ok {
+			init.Children[i] = ftyp
+		}
+	}
+}
+
 // NewMuxer returns a Muxer writing to w.
 func NewMuxer(w io.Writer, opts ...MuxOption) *Muxer {
 	settings := muxSettings{
@@ -343,7 +362,7 @@ func (m *Muxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	if m.init == nil {
 		m.init = mp4.CreateEmptyInit()
 		m.init.Moov.Mvhd.NextTrackID = 1
-		m.init.Ftyp = mp4.NewFtyp(m.settings.brand, 0x200, []string{"isom", m.settings.brand, "dash"})
+		setFtyp(m.init, mp4.NewFtyp(m.settings.brand, 0x200, []string{"isom", m.settings.brand, "dash"}))
 	}
 	lang := cfg.Language
 	if lang == "" {

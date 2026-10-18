@@ -126,6 +126,46 @@ func countBoxes(t *testing.T, data []byte, name string) int {
 	return n
 }
 
+// assertFtyp reads the written file's ftyp back and holds it to the brands
+// expected, in order: one ftyp, and nothing else in it.
+func assertFtyp(t *testing.T, data []byte, major string, compatible ...string) {
+	t.Helper()
+	if got := countBoxes(t, data, "ftyp"); got != 1 {
+		t.Fatalf("ftyp boxes = %d, want 1", got)
+	}
+	parsed, err := mp4.DecodeFile(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decode what was written: %v", err)
+	}
+	ftyp := parsed.Ftyp
+	if ftyp == nil {
+		t.Fatal("no ftyp")
+	}
+	if ftyp.MajorBrand() != major || ftyp.MinorVersion() != 0x200 {
+		t.Errorf("major brand %q, minor version %#x; want %q and 0x200",
+			ftyp.MajorBrand(), ftyp.MinorVersion(), major)
+	}
+	if got := ftyp.CompatibleBrands(); strings.Join(got, ",") != strings.Join(compatible, ",") {
+		t.Errorf("compatible brands = %v, want %v", got, compatible)
+	}
+}
+
+// TestMuxerWritesTheBrandItStates is the ftyp mp4ff's CreateEmptyInit starts
+// with -- cmfc, compatible cmfc and iso6 -- reaching every fragmented file in
+// place of the one the Muxer built: a CMAF claim nothing here makes, and no
+// iso5 or dash. ffprobe read `major_brand=cmfc compatible_brands=cmfciso6`.
+func TestMuxerWritesTheBrandItStates(t *testing.T) {
+	data := writeOneTrack(t, audioConfig(), 2)
+	assertFtyp(t, data, DefaultBrand, "isom", DefaultBrand, "dash")
+	file, err := Demux(data)
+	if err != nil {
+		t.Fatalf("Demux: %v", err)
+	}
+	if file.Brand != DefaultBrand {
+		t.Errorf("File.Brand = %q, want %q", file.Brand, DefaultBrand)
+	}
+}
+
 func TestMuxWritesOneFragmentPerWindow(t *testing.T) {
 	var buf bytes.Buffer
 	// A window of one sample: every sync sample opens a new fragment.
@@ -157,9 +197,9 @@ func TestMuxWritesOneFragmentPerWindow(t *testing.T) {
 	if got := countBoxes(t, out, "mdat"); got != 4 {
 		t.Errorf("mdat boxes = %d", got)
 	}
-	if !bytes.Contains(out[:32], []byte("iso6")) {
-		t.Errorf("the chosen brand is missing from ftyp: %q", out[:32])
-	}
+	// The brand as the MAJOR brand: it is also a compatible brand of the cmfc
+	// ftyp mp4ff starts from, so finding the bytes anywhere proved nothing.
+	assertFtyp(t, out, "iso6", "isom", "iso6", "dash")
 	if _, err := Demux(out); err != nil {
 		t.Fatalf("a fragmented file must still demux: %v", err)
 	}
