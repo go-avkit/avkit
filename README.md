@@ -655,7 +655,10 @@ last, puts anything before STREAMINFO, or is followed by frame bytes is refused.
 An MP4's `esds` names the MPEG audio standard, not the layer, so `Reader` names
 such a track `mp1`, `mp2` or `mp3` **from its first frame** (as FFmpeg's parser
 does), and a track whose first sample is not a frame is refused rather than read
-as AAC — which is what it was read as before. ⛔ FFmpeg's own reader names every
+as AAC — which is what it was read as before. Only that first sample is read:
+`TrackConfig` used to read the whole track for it, which from `NewFileReader`
+fetched 960 470 bytes of a 60 s, 970 424-byte MP3-in-MP4 file, and fetches the
+first frame's 417 now. ⛔ FFmpeg's own reader names every
 `mp4a` of object type `0x6B` or `0x69` `mp3` (`isom.c`), Layer II included, and
 decodes it correctly all the same.
 

@@ -448,8 +448,10 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 		}
 	case stsd.Mp4a != nil && stsd.Mp4a.Esds != nil && isMPEGAudioEsds(stsd.Mp4a.Esds):
 		// Read as AAC, MP3 frames would be written back out under an AAC
-		// configuration that describes nothing they hold.
-		samples, err := r.Samples(trackID)
+		// configuration that describes nothing they hold. The first frame
+		// names it, and only that one is read: the whole track was, and from
+		// disk that is the whole file.
+		samples, err := r.mp4Samples(trak, 1)
 		if err := mpegAudioTrackConfig(&cfg, samples, err); err != nil {
 			return TrackConfig{}, err
 		}
@@ -658,20 +660,33 @@ func (r *Reader) Samples(trackID uint32) ([]Sample, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
 	}
-	if r.mp4.IsFragmented() {
-		return r.fragmentedSamples(trackID)
-	}
-	return r.progressiveSamples(trak)
+	return r.mp4Samples(trak, 0)
 }
 
-// fragmentedSamples walks the fragments of every segment.
-func (r *Reader) fragmentedSamples(trackID uint32) ([]Sample, error) {
+// mp4Samples reads an MP4 track's samples in decoding order: all of them, or
+// the first limit when limit is positive, without fetching the rest. A reader
+// left on disk fetches every sample it reads (NewFileReader), so a caller that
+// needs only the first one -- TrackConfig naming an MPEG audio track -- must
+// not pay for the track.
+func (r *Reader) mp4Samples(trak *mp4.TrakBox, limit int) ([]Sample, error) {
+	if r.mp4.IsFragmented() {
+		return r.fragmentedSamples(trak.Tkhd.TrackID, limit)
+	}
+	return r.progressiveSamples(trak, limit)
+}
+
+// fragmentedSamples walks the fragments of every segment, stopping once it
+// holds limit samples when limit is positive.
+func (r *Reader) fragmentedSamples(trackID uint32, limit int) ([]Sample, error) {
 	// The track extends box only supplies defaults for what a fragment does
 	// not state; a file that declares none still reads.
 	trex := r.trackExtends(trackID)
 	var out []Sample
 	for moofStart, traf := range r.trackFragments(trackID) {
-		samples, err := r.trafSamples(moofStart, traf, trex)
+		if limit > 0 && len(out) == limit {
+			break
+		}
+		samples, err := r.trafSamples(moofStart, traf, trex, limit-len(out))
 		if err != nil {
 			return nil, err
 		}
@@ -688,8 +703,9 @@ func (r *Reader) fragmentedSamples(trackID uint32) ([]Sample, error) {
 // pictures — and reading only the first is how most of a file goes missing
 // without a word. Each run states where its data sits relative to the fragment
 // header, and a run that states nothing continues where the one before it
-// ended; what a run leaves out, the track defaults supply.
-func (r *Reader) trafSamples(moofStart uint64, traf *mp4.TrafBox, trex *mp4.TrexBox) ([]Sample, error) {
+// ended; what a run leaves out, the track defaults supply. A positive need
+// stops it once it holds that many samples.
+func (r *Reader) trafSamples(moofStart uint64, traf *mp4.TrafBox, trex *mp4.TrexBox, need int) ([]Sample, error) {
 	// ⛔ A track fragment with no sample run is legal and means what it says:
 	// this track has no samples in this fragment. ISO/IEC 14496-12 puts zero or
 	// more trun boxes in a traf, and a stream whose tracks do not divide evenly
@@ -720,6 +736,9 @@ func (r *Reader) trafSamples(moofStart uint64, traf *mp4.TrafBox, trex *mp4.Trex
 			offset = uint64(int64(base) + int64(trun.DataOffset))
 		}
 		for i, s := range trun.Samples {
+			if need > 0 && len(out) == need {
+				return out, nil
+			}
 			end := offset + uint64(s.Size)
 			data, err := r.sampleBytes(offset, end)
 			if err != nil {
@@ -755,8 +774,9 @@ func (r *Reader) trackExtends(trackID uint32) *mp4.TrexBox {
 
 // progressiveSamples walks the sample tables of a plain MP4: the chunks say
 // where the data is, the other tables say how long each sample lasts and
-// whether a player may start at it.
-func (r *Reader) progressiveSamples(trak *mp4.TrakBox) ([]Sample, error) {
+// whether a player may start at it. A positive limit reads the first that many
+// samples and no more.
+func (r *Reader) progressiveSamples(trak *mp4.TrakBox, limit int) ([]Sample, error) {
 	stbl := trak.Mdia.Minf.Stbl
 	if stbl == nil || stbl.Stsz == nil || stbl.Stts == nil || stbl.Stsc == nil {
 		return nil, fmt.Errorf("%w: track %d has no sample table", ErrNoSamples, trak.Tkhd.TrackID)
@@ -783,6 +803,11 @@ func (r *Reader) progressiveSamples(trak *mp4.TrakBox) ([]Sample, error) {
 	if len(stbl.Stsc.Entries) == 0 {
 		return nil, fmt.Errorf("%w: track %d has an empty chunk table",
 			ErrNoSamples, trak.Tkhd.TrackID)
+	}
+	// Checked against the whole table above, and only then cut short: a table
+	// that lies is refused whatever part of it is asked for.
+	if limit > 0 && uint64(limit) < uint64(count) {
+		count = uint32(limit)
 	}
 	chunks, err := containingChunks(stbl.Stsc, 1, count)
 	if err != nil {
