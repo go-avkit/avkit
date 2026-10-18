@@ -53,7 +53,7 @@ func firstDifferent(t *testing.T, in, out []Sample, inScale, outScale uint32) in
 // writes FLAC and MPEG audio into an MP4 and into Matroska. Every track comes
 // back with the same codec, format and sample bytes.
 func TestElementaryAudioRemuxesToMP4AndMatroska(t *testing.T) {
-	for _, file := range []string{"sine.flac", "sine.oga", "sine.mp3", "sine.mp2"} {
+	for _, file := range []string{"sine.flac", "sine.oga", "sine.mp3", "sine.mp2", "sine.aac"} {
 		t.Run(file, func(t *testing.T) {
 			data, err := os.ReadFile("testdata/" + file)
 			if err != nil {
@@ -76,6 +76,7 @@ func TestElementaryAudioRemuxesToMP4AndMatroska(t *testing.T) {
 			if err := Remux(&mp4Out, r); err != nil {
 				t.Fatalf("into MP4: %v", err)
 			}
+			keepForOracle(t, "elementary-"+file+".mp4", mp4Out.Bytes())
 			checkBack(t, "MP4", mp4Out.Bytes(), cfg, in)
 
 			var mkv bytes.Buffer
@@ -92,6 +93,7 @@ func TestElementaryAudioRemuxesToMP4AndMatroska(t *testing.T) {
 			if err := m.Close(); err != nil {
 				t.Fatal(err)
 			}
+			keepForOracle(t, "elementary-"+file+".mkv", mkv.Bytes())
 			checkBack(t, "Matroska", mkv.Bytes(), cfg, in)
 		})
 	}
@@ -242,8 +244,11 @@ func checkBack(t *testing.T, what string, data []byte, cfg TrackConfig, in []Sam
 		t.Errorf("%s: %s %d ch %d Hz, the source %s %d ch %d Hz", what,
 			got.Codec, got.Channels, got.SampleRate, cfg.Codec, cfg.Channels, cfg.SampleRate)
 	}
-	if cfg.Codec == "fLaC" && !bytes.Equal(got.CodecConfig, cfg.CodecConfig) {
-		t.Errorf("%s: FLAC configuration % x, the source % x", what, got.CodecConfig, cfg.CodecConfig)
+	// FLAC's STREAMINFO, and AAC's AudioSpecificConfig in an MP4 (#68 writes
+	// it verbatim), travel as they are. (WebMMuxer rebuilds the AAC one from
+	// fields, a residual L10 noted on #54, so it is not compared there.)
+	if (cfg.Codec == "fLaC" || cfg.Codec == "mp4a" && what == "MP4") && !bytes.Equal(got.CodecConfig, cfg.CodecConfig) {
+		t.Errorf("%s: %s configuration % x, the source % x", what, cfg.Codec, got.CodecConfig, cfg.CodecConfig)
 	}
 	out, err := back.Samples(ids[0])
 	if err != nil {
