@@ -146,6 +146,28 @@ func FuzzRemux(f *testing.F) {
 	})
 }
 
+// FuzzNewSegmentedReader cuts the input into segments -- at a point the first
+// byte chooses, so a transport stream is split mid-packet as well as between
+// packets -- and reads them as one stream, the way a downloader hands over the
+// segments of a playlist.
+func FuzzNewSegmentedReader(f *testing.F) {
+	fuzzSeeds(f)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) < 2 {
+			return
+		}
+		cut := 1 + int(data[0])*len(data)/256
+		parts := [][]byte{data[1:cut], data[cut:], data[1:]}
+		withinBudget(t, len(data), func() {
+			r, err := NewSegmentedReader(parts)
+			if err != nil {
+				return
+			}
+			readAll(r)
+		})
+	})
+}
+
 // FuzzConfigFromSamples hands the configuration reader samples cut from fuzzed
 // bytes, under every codec name it knows: this is where the codec headers in a
 // sample -- parameter sets, sequence headers, sync frames -- are parsed.
