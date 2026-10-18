@@ -33,7 +33,9 @@ func mp3Frame(t *testing.T) []byte {
 // tags at the tail.
 func TestAnMPEGStreamIsReadPastWhatSurroundsItsFrames(t *testing.T) {
 	frame := mp3Frame(t)
-	rubbish := concat([]byte{1, 2, 0xFF, 0xFB, 3}, mpegFrame(t, mpaHeader(1, 2, 1, 0, 0, 0), 0x22), []byte{4, 5})
+	// Two of them in a row, so they chain: only the stream lock keeps them out.
+	layer2 := mpegFrame(t, mpaHeader(1, 2, 1, 0, 0, 0), 0x22)
+	rubbish := concat([]byte{1, 2, 0xFF, 0xFB, 3}, layer2, layer2, []byte{4, 5})
 	data := concat(id3v2Tag(20, false), []byte{0, 0, 0}, frame, frame, id3v2Tag(5, true), frame,
 		rubbish, frame, frame, apeTag(10, true, 42), append([]byte("TAG"), make([]byte, 125)...))
 	if Sniff(data) != FormatMPEGAudio {
