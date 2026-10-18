@@ -220,7 +220,7 @@ func unmarshalMatroska(data []byte) (*mkvReadDoc, []bool, error) {
 			groups = append(groups, true)
 		}
 	}
-	if err := ebml.Unmarshal(bytes.NewReader(data), &doc, ebml.WithElementReadHooks(hook)); err != nil {
+	if err := ebml.Unmarshal(bytes.NewReader(data), &doc, ebml.WithElementReadHooks(hook), mkvLeafLimit(len(data))); err != nil {
 		return nil, nil, err
 	}
 	return &doc, groups, nil

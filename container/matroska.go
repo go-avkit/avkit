@@ -97,6 +97,23 @@ type mkvAudio struct {
 	Channels          uint64  `ebml:"Channels"`
 }
 
+// mkvLeafLimit caps the leaf elements ebml-go will read from a document of n
+// bytes at n.
+//
+// ⛔ ebml-go sizes a leaf's buffer from the size the element STATES and only
+// then finds out whether the bytes are there; its own cap is 128 MiB. A
+// 26-byte file stating a DocType of 128 MiB - 1 made each parse allocate 128
+// MiB. Every document parsed here is whole in memory, so no leaf in it can be
+// longer than it, and a stated size past that is refused before any buffer is
+// made. (Zero would turn the limit off, hence the floor of one byte.)
+func mkvLeafLimit(n int) ebml.UnmarshalOption {
+	limit := uint64(ebml.DefaultMaxLeafElementSize)
+	if uint64(n) < limit {
+		limit = uint64(n)
+	}
+	return ebml.WithMaxLeafElementSize(max(limit, 1))
+}
+
 // demuxMatroska reads an EBML/Matroska (MKV or WebM) file with the reference
 // ebml-go library and projects its Info + Tracks onto the unified metadata.
 // Unknown-element tolerance is deliberately off: ebml-go's ignore-unknown mode
@@ -104,7 +121,7 @@ type mkvAudio struct {
 // would look like an empty one — surfacing the error is the safer contract.
 func demuxMatroska(data []byte) (*File, error) {
 	var doc mkvDoc
-	if err := ebml.Unmarshal(bytes.NewReader(data), &doc); err != nil {
+	if err := ebml.Unmarshal(bytes.NewReader(data), &doc, mkvLeafLimit(len(data))); err != nil {
 		return nil, err
 	}
 	scale := doc.Segment.Info.TimecodeScale

@@ -84,6 +84,14 @@ func newTSReader(data []byte) (*Reader, error) {
 	return r, nil
 }
 
+// sourceSize is how many bytes the file holds, wherever it is read from.
+func (r *Reader) sourceSize() uint64 {
+	if held := len(r.data); held > 0 {
+		return uint64(held)
+	}
+	return uint64(r.size)
+}
+
 // sampleBytes is one sample's data, sliced out of what is held in memory or
 // read from the file at the position the tables state.
 func (r *Reader) sampleBytes(offset, end uint64) ([]byte, error) {
@@ -140,13 +148,30 @@ func NewFileReader(src FileSource, size int64) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &Reader{at: src, size: size, file: file, mp4: parsed, traks: map[uint32]*mp4.TrakBox{}}
+	return &Reader{at: src, size: size, file: file, mp4: parsed, traks: readableTraks(parsed)}, nil
+}
+
+// readableTraks indexes the tracks of a movie by ID.
+//
+// ⛔ A trak lacking any box this reader dereferences is left out. mp4ff parses
+// a trak whatever children it has and leaves the field of a missing one nil;
+// indexing, describing and reading a track went through tkhd, mdia, minf, stbl
+// and stsd without asking, so a downloaded file missing one of them -- one
+// flipped byte in a box type is enough -- panicked the caller. A track left out
+// is ErrUnknownTrack to TrackConfig and Samples: there is nothing in it to
+// describe or to read.
+func readableTraks(parsed *mp4.File) map[uint32]*mp4.TrakBox {
+	traks := map[uint32]*mp4.TrakBox{}
 	if moov := movieBox(parsed); moov != nil {
 		for _, trak := range moov.Traks {
-			r.traks[trak.Tkhd.TrackID] = trak
+			if trak.Tkhd == nil || trak.Mdia == nil || trak.Mdia.Minf == nil ||
+				trak.Mdia.Minf.Stbl == nil || trak.Mdia.Minf.Stbl.Stsd == nil {
+				continue
+			}
+			traks[trak.Tkhd.TrackID] = trak
 		}
 	}
-	return r, nil
+	return traks
 }
 
 // NewReader reads the structure of a container and prepares its samples: an
@@ -175,13 +200,7 @@ func NewReader(data []byte) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &Reader{data: data, file: file, mp4: parsed, traks: map[uint32]*mp4.TrakBox{}}
-	if moov := movieBox(parsed); moov != nil {
-		for _, trak := range moov.Traks {
-			r.traks[trak.Tkhd.TrackID] = trak
-		}
-	}
-	return r, nil
+	return &Reader{data: data, file: file, mp4: parsed, traks: readableTraks(parsed)}, nil
 }
 
 // mp4StartDelay reads a track's encoder priming out of its edit list.
@@ -628,6 +647,18 @@ func (r *Reader) progressiveSamples(trak *mp4.TrakBox) ([]Sample, error) {
 	count := stbl.Stsz.GetNrSamples()
 	if count == 0 {
 		return nil, fmt.Errorf("%w: track %d is empty", ErrNoSamples, trak.Tkhd.TrackID)
+	}
+	// ⛔ The count is a CLAIM, and everything below is sized from it. A table
+	// of sizes is bounded by the bytes that hold it, but a uniform size makes
+	// stsz twenty bytes whatever count it states: a 674-byte file stating
+	// 0xFFFFFFFF samples made this reserve 164 GiB. Every sample is the
+	// uniform size, so together they cannot outrun the file -- and a count
+	// that says they do is refused before anything is sized from it.
+	if uniform := uint64(stbl.Stsz.SampleUniformSize); uniform > 0 {
+		if need, held := uint64(count)*uniform, r.sourceSize(); need > held {
+			return nil, fmt.Errorf("%w: track %d states %d samples of %d bytes, and the file holds %d",
+				ErrSampleData, trak.Tkhd.TrackID, count, uniform, held)
+		}
 	}
 	// A chunk table with no entry cannot say where sample one lives, and
 	// asking anyway panics inside the box reader. A file off the network is
