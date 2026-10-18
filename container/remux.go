@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/bits"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -206,6 +208,20 @@ func Concat(w io.Writer, srcs []*Reader, opts ...RemuxOption) error {
 	}
 	if err := checkJoinable(inputs); err != nil {
 		return err
+	}
+	for i, in := range inputs[1:] {
+		for _, t := range in {
+			if !isTimedText(t.cfg.Codec) {
+				continue
+			}
+			doing := fmt.Sprintf("putting input %d after input %d", i+2, i+1)
+			if err := refuseTimedTextShift(t, t.samples, ErrTrackMismatch, doing); err != nil {
+				return err
+			}
+		}
+	}
+	for _, in := range inputs[:len(inputs)-1] {
+		padTimedText(in)
 	}
 	return writeCopy(w, set, inputs)
 }
@@ -442,13 +458,119 @@ func trim(tracks []sourceTrack, start, end time.Duration, strict bool) error {
 	for i := range tracks {
 		// The primary track is asked again, now about the point it chose
 		// itself: the answer is the same sample, and the loop stays one.
-		from, _, err := syncStart(tracks[i], cutAt, scale)
+		from, at, err := syncStart(tracks[i], cutAt, scale)
 		if err != nil {
 			return err
 		}
-		tracks[i].samples = cutRange(tracks[i], from, end)
+		kept := cutRange(tracks[i], from, end)
+		if isTimedText(tracks[i].cfg.Codec) {
+			if kept, err = cutCues(tracks[i], kept, at, cutAt, scale); err != nil {
+				return err
+			}
+		}
+		tracks[i].samples = kept
 	}
 	return nil
+}
+
+// cutCues starts a timed-text track exactly where the cut does.
+//
+// ⛔ Snapping back to a sync sample, which is right for audio, is wrong here by
+// as much as a whole sample, and a subtitle sample is no audio frame: the empty
+// stretch between two cues is one sample, and lasts as long as the silence
+// between two lines of dialogue. Started at the beginning of it, every later
+// cue of the clip would show that much early. A WebVTT sample is the set of
+// cues on screen during its stretch, so the part before the cut is simply not
+// shown: the first sample is shortened, and its bytes stay the same.
+func cutCues(t sourceTrack, kept []Sample, at, cutAt uint64, scale uint32) ([]Sample, error) {
+	point := scaleDuration(cutAt, scale, t.cfg.Timescale)
+	if point == 0 {
+		return kept, nil // nothing moves
+	}
+	if err := refuseTimedTextShift(t, kept, ErrTimeRange, "cutting it"); err != nil {
+		return nil, err
+	}
+	if len(kept) == 0 {
+		return kept, nil
+	}
+	// The sample kept first starts at or before the cut, being the last one
+	// that does; the cut falls past its end only when it is the track's last.
+	into := point - at
+	if into >= uint64(kept[0].Duration) {
+		return kept[1:], nil
+	}
+	first := kept[0]
+	first.Duration -= uint32(into)
+	return append([]Sample{first}, kept[1:]...), nil
+}
+
+// refuseTimedTextShift refuses moving timed text whose content states times of
+// its own, since moving the samples would not move those.
+//
+// A TTML document states the time of everything it shows, counted from the
+// start of the track (ISO/IEC 14496-30 keeps its times on the track's
+// timeline), and a WebVTT cue may state times inside its text. Rewriting an XML
+// document is beyond what a remux should do to a sample, so both are refused,
+// and DropTracks is how a caller who does not need the track goes on without
+// it.
+func refuseTimedTextShift(t sourceTrack, samples []Sample, sentinel error, doing string) error {
+	if strings.EqualFold(t.cfg.Codec, codecTTML) {
+		return fmt.Errorf("%w: track %d is TTML, whose documents state their own times, and %s would show them at the wrong time",
+			sentinel, t.id, doing)
+	}
+	for i, s := range samples {
+		cues, err := readWebVTTSample(s.Data)
+		if err != nil {
+			return fmt.Errorf("sample %d of track %d: %w", i+1, t.id, err)
+		}
+		for _, c := range cues {
+			if hasCueTimestamp(c.text) {
+				return fmt.Errorf("%w: a cue of WebVTT track %d states times inside its text, and %s would show them at the wrong time",
+					sentinel, t.id, doing)
+			}
+		}
+	}
+	return nil
+}
+
+// padTimedText ends every WebVTT track of an input where its longest track
+// ends, with an empty sample.
+//
+// ⛔ Without it a concatenation puts the next input's cues early by however long
+// the last cue of this one ended before the film did -- often a minute of
+// credits, against which the drift of an audio track is a frame. A wvtt
+// track's samples cover its timeline without a gap, so the stretch after the
+// last cue is one more empty sample, which ISO/IEC 14496-30 has a box for.
+func padTimedText(tracks []sourceTrack) {
+	var longest uint64
+	longestScale := uint32(1)
+	for _, t := range tracks {
+		total := trackLength(t)
+		if compareTimes(total, t.cfg.Timescale, longest, longestScale) > 0 {
+			longest, longestScale = total, t.cfg.Timescale
+		}
+	}
+	for i := range tracks {
+		t := &tracks[i]
+		if !strings.EqualFold(t.cfg.Codec, codecWebVTT) {
+			continue
+		}
+		total, target := trackLength(*t), scaleDuration(longest, longestScale, t.cfg.Timescale)
+		for total < target {
+			step := min(target-total, math.MaxUint32)
+			t.samples = append(t.samples, Sample{Data: vtteSample, Duration: uint32(step), Sync: true})
+			total += step
+		}
+	}
+}
+
+// trackLength is how long a track's samples last, in its own units.
+func trackLength(t sourceTrack) uint64 {
+	var total uint64
+	for _, s := range t.samples {
+		total += uint64(s.Duration)
+	}
+	return total
 }
 
 // primaryIndex is the track whose sync samples decide where a cut lands: the
