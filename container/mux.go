@@ -543,6 +543,10 @@ const opusHeadMagic = "OpusHead"
 // implicitly (mapping family 0).
 const opusHeadSize = 19
 
+// opusHeadMajor is the major version, the upper four bits of the version
+// octet, of the identification header RFC 7845 defines.
+const opusHeadMajor = 0
+
 // opusConfig builds the Opus configuration to write, from the identification
 // header when the caller has one and from the track's own fields otherwise.
 func opusConfig(cfg TrackConfig) (*mp4.DopsBox, error) {
@@ -572,9 +576,15 @@ func opusHead(head []byte) (*mp4.DopsBox, error) {
 	if len(head) < opusHeadSize || string(head[:len(opusHeadMagic)]) != opusHeadMagic {
 		return nil, fmt.Errorf("%w: Opus needs an %s identification header", ErrTrackConfig, opusHeadMagic)
 	}
-	if version := head[8]; version != 1 {
-		return nil, fmt.Errorf("%w: %s version %d is not one this can read",
-			ErrTrackConfig, opusHeadMagic, version)
+	// RFC 7845 §5.1 splits the version into a major nibble and a minor one: a
+	// change of the minor nibble is a compatible one, so a reader of version 1
+	// SHOULD accept anything up to 15 and SHOULD refuse 16 and above. A later
+	// minor version may append fields after the ones read here, and the RFC
+	// says those MUST NOT make the header invalid; they are ignored, and the
+	// header written back is a version 1 one, which is all this states.
+	if version := head[8]; version>>4 != opusHeadMajor {
+		return nil, fmt.Errorf("%w: %s version %d is major version %d, and only %d is defined",
+			ErrTrackConfig, opusHeadMagic, version, version>>4, opusHeadMajor)
 	}
 	channels := head[9]
 	if channels == 0 {
