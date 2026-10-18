@@ -258,6 +258,15 @@ aligns them, so a reader assuming it would pass every test made from FFmpeg's
 output. A frame that straddles two units is carried over and timed from the unit
 it began in.
 
+⛔ **A video unit's PTS is read back, not only its DTS.** A track that reorders
+its frames (H.264 or HEVC with B-frames) states both in every PES header
+(13818-1 2.4.3.7, `PTS_DTS_flags` `'11'`), and their difference, taken modulo the
+33-bit clock, is each sample's `CompositionOffset`; a unit stating a PTS alone is
+presented when it decodes, as FFmpeg's `mpegts.c` reads it. Timed by the DTS
+alone, an `x264 -bf 2` stream came out of a remux in decoding order as if it
+were presented in it, and FFmpeg decoded 49 of its 50 pictures. The copy now
+decodes to the same pictures at the same times as FFmpeg's own `-c copy`.
+
 An Enhanced AC-3 frame of a dependent substream (or of an independent substream
 other than the first) joins the frame before it: A/52 Annex G §3.3 makes the
 access unit every substream of one period, and an MP4 `ec-3` sample is that

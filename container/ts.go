@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/Eyevinn/mp4ff/aac"
 	"github.com/asticode/go-astits"
@@ -76,6 +77,9 @@ type tsTrack struct {
 type tsUnit struct {
 	data []byte
 	time int64 // decode time in TSTimescale units
+	// offset is how long after its decode time the unit is presented: its
+	// PES header's PTS less its DTS. See pesCompositionOffset.
+	offset int32
 }
 
 // readTS reads a transport stream once, and returns its tracks with their
@@ -196,14 +200,14 @@ func (t *tsTrack) append(pes *astits.PESData) {
 				payload = converted
 			}
 			if len(payload) > 0 {
-				t.pending = append(t.pending, tsUnit{data: payload, time: when})
+				t.pending = append(t.pending, tsUnit{data: payload, time: when, offset: pesCompositionOffset(pes)})
 			}
 			return
 		}
 		payload, params := convertAnnexB(pes.Data, t.hevc)
 		t.adoptParameterSets(params)
 		if len(payload) > 0 {
-			t.pending = append(t.pending, tsUnit{data: payload, time: when})
+			t.pending = append(t.pending, tsUnit{data: payload, time: when, offset: pesCompositionOffset(pes)})
 		}
 	case Audio:
 		if t.audio != tsADTS {
@@ -261,9 +265,10 @@ func (t *tsTrack) finish() {
 			dur = defaultUnitDuration(t.track.Kind, t.config.SampleRate)
 		}
 		t.samples = append(t.samples, Sample{
-			Data:     u.data,
-			Duration: uint32(dur),
-			Sync:     t.syncUnit(u.data),
+			Data:              u.data,
+			Duration:          uint32(dur),
+			CompositionOffset: u.offset,
+			Sync:              t.syncUnit(u.data),
 		})
 		t.track.Duration += uint64(dur)
 	}
@@ -300,6 +305,37 @@ func pesTime(pes *astits.PESData) int64 {
 		return pts.Base
 	}
 	return 0
+}
+
+// ptsWrap is the period of the 33-bit PTS and DTS fields of a PES header.
+const ptsWrap = 1 << 33
+
+// pesCompositionOffset is how long after its decode time a unit is presented:
+// its PTS less its DTS (ISO/IEC 13818-1 §2.4.3.7, PTS_DTS_flags '11'). That is
+// what a track that reorders its frames -- H.264 or HEVC with B-frames --
+// states in every unit, and what an MP4 calls a composition offset; a reader
+// that kept the DTS alone handed over the pictures in decoding order as if they
+// were presented in it.
+//
+// A unit stating a PTS alone ('10') is presented when it is decoded, as
+// ffmpeg's mpegts.c reads it (pes->dts = pes->pts): an offset of zero. Both
+// fields count modulo 2^33, so the difference is taken in that modulus and a
+// PTS that wrapped past its DTS is still the small delay it is. What is left
+// past 2^31 ticks -- 6.6 hours, or a PTS before its DTS, which no decoder
+// presents and a version 0 ctts cannot state -- is read as no offset at all.
+func pesCompositionOffset(pes *astits.PESData) int32 {
+	if pes.Header == nil || pes.Header.OptionalHeader == nil {
+		return 0
+	}
+	h := pes.Header.OptionalHeader
+	if h.PTS == nil || h.DTS == nil {
+		return 0
+	}
+	d := ((h.PTS.Base-h.DTS.Base)%ptsWrap + ptsWrap) % ptsWrap
+	if d > math.MaxInt32 {
+		return 0
+	}
+	return int32(d)
 }
 
 // parameterSets are the NAL units that describe a stream rather than carry a
