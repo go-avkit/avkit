@@ -140,16 +140,16 @@ func TestTheInfoFrameIsMetadataAndStatesTheEncoderDelay(t *testing.T) {
 		{"plain audio", mpegFrame(t, stereo1, 0), false, 0},
 	} {
 		h, _ := parseMPAFrame(c.frame)
-		delay, info := mpegAudioInfoFrame(c.frame, h)
-		if info != c.info || delay != c.delay {
-			t.Errorf("%s: info %t delay %v, want %t %v", c.name, info, delay, c.info, c.delay)
+		tag, info := mpegAudioInfoFrame(c.frame, h)
+		if delay := tag.startDelay(h.SampleRate); info != c.info || delay != c.delay {
+			t.Errorf("%s: info %t delay %v, want %t %v", c.name, info, tag.startDelay(h.SampleRate), c.info, c.delay)
 		}
 	}
 	// A Xing frame whose extension runs off its end states no delay.
 	short := xingFrame(t, stereo1, "Xing", 7, "", 0)
 	h, _ := parseMPAFrame(short)
-	if delay, info := mpegAudioInfoFrame(short[:150], h); !info || delay != 0 {
-		t.Errorf("a cut extension: info %t delay %v", info, delay)
+	if tag, info := mpegAudioInfoFrame(short[:150], h); !info || tag.lame || tag.startDelay(h.SampleRate) != 0 {
+		t.Errorf("a cut extension: info %t tag %+v", info, tag)
 	}
 	// A frame too small to hold the tag is audio: 24 bytes, the tag at 21.
 	tiny := mpegFrame(t, mpaHeader(0, 3, 1, 1, 0, 0), 0)

@@ -64,7 +64,7 @@ adding a codec to the dispatch without adding it here fails the suite.
 | Matroska / WebM | ✓ | ✓ | ✓ with Cues, and a SeekHead when buffered or the writer can seek |
 | MPEG-TS | ✓ | ✓ | ✓ |
 | ADTS (raw AAC) | ✓ | ✓ | — |
-| MPEG audio (MP3, MP2, MP1) | ✓ | ✓ the Xing/Info/VBRI frame dropped, the LAME encoder delay kept | — |
+| MPEG audio (MP3, MP2, MP1) | ✓ | ✓ the Xing/Info/VBRI frame dropped, the LAME encoder delay and end padding kept | — |
 | native FLAC | ✓ | ✓ | — |
 | Ogg | ✓ | ✓ Opus, Vorbis and FLAC streams; Theora, Speex, VP8 and Kate named, not read | — |
 | WAV (RIFF, RF64, BW64) | ✓ | ✓ linear PCM; other format tags named, not read | — |
@@ -88,8 +88,14 @@ at.
   frame is dropped when it is a Xing, Info or VBRI frame, which describes the
   stream and holds no audio; the LAME extension's encoder delay, plus the
   decoder's 529 samples, becomes `TrackConfig.StartDelay`, so a remux keeps the
-  priming out of what is presented. The unofficial "MPEG 2.5" rates and free
-  format are not read.
+  priming out of what is presented. Its end padding, when the tag also states a
+  frame count that is the stream's own, becomes `TrackConfig.EditList`: one edit
+  from that priming to where FFmpeg's `mp3dec.c` stops presenting (frames × the
+  samples of a frame − padding + 529), which is the edit FFmpeg's `movenc` writes for the same file,
+  and which `WebMMuxer` writes as the last block's `DiscardPadding`, FFmpeg's
+  Matroska form of it. A 1 s `libmp3lame` file decoded as 44 975 samples once
+  copied to MP4 or Matroska, and decodes as its own 44 100 now. The unofficial
+  "MPEG 2.5" rates and free format are not read.
 - **FLAC** (RFC 9639): `CodecConfig` is the marker and STREAMINFO, Matroska's
   `A_FLAC` CodecPrivate. Frames are found where a header's CRC-8 holds, the frame
   before it closes with a CRC-16 of zero, and the frame or sample number follows on.
@@ -361,7 +367,7 @@ What each operation does with it:
 |---|---|
 | `Remux`, `Join`, `JoinProgressive`, a caller's own copy | written as it stands. Durations are restated in the output's movie timescale, rounded up. A progressive copy of a fragmented file's last edit of duration zero ("to the end", §8.6.6.1, only allowed in a fragmented file) states its length. The track header lasts what the edits do (§8.3.2.3). |
 | `Muxer` (fragmented) | takes an optional empty edit followed by one edit at the normal rate, and refuses more with `ErrTrackConfig`. ffmpeg turns its edit list support off for a fragmented file ("multiple edit list entries, not supported in fragmented MP4 files"): a two-edit list copied into one presented all 100 frames where the source presents 50. `ProgressiveMuxer` writes it. |
-| `Cut`, `Concat` of several inputs | both move the media the list counts in, so it cannot be copied. A list that only says where the presentation starts (one edit at the normal rate, reaching the end of the media) is dropped, and the muxer states that start itself. Anything else is refused with `ErrEditList`: an empty edit placing the track later than its siblings, several edits, a dwell or another rate. So is an edit ending before the media does (how a gapless AAC file trims its padding) when the output keeps the track's end. |
+| `Cut`, `Concat` of several inputs | both move the media the list counts in, so it cannot be copied. A list that only says where the presentation starts (one edit at the normal rate, reaching the end of the media) is dropped, and the muxer states that start itself. Anything else is refused with `ErrEditList`: an empty edit placing the track later than its siblings, several edits, a dwell or another rate. So is an edit ending before the media does (how a gapless AAC file trims its padding, and how an MP3 read with its LAME end padding states it) when the output keeps the track's end. |
 | `WebMMuxer` | Matroska has presentation times and no edit lists. An optional empty edit and one edit at the normal rate become a shift of the track's times: the empty edit delays them by its length, and an edit starting before the first frame's composition time shows it that much later. Anything else is refused with `ErrTrackConfig`. A priming after the first frame is the `CodecDelay` of an audio track when the list is the single edit a priming is written as, which the reader states as `StartDelay`; after an empty edit it is shown. An audio edit that stops before the media does is written as the `DiscardPadding` (RFC 9559 §5.1.3.5.7) of every block it cuts into. |
 | `TSMuxer` | ignores it. |
 

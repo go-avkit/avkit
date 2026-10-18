@@ -169,10 +169,13 @@ type TrackConfig struct {
 	// added to it: the list already says where the presentation starts.
 	StartDelay time.Duration
 	// EditList is the track's MP4 edit list, as the MP4 reader found it, or
-	// nil. Muxer and ProgressiveMuxer write it as it stands, in place of the
-	// one they would build from the first composition offset and StartDelay,
-	// so a track copied from one MP4 into another keeps its presentation edit
-	// for edit. A caller who wants the muxers' own edit list sets it to nil.
+	// nil. The MPEG audio reader states one too, for an MP3 whose LAME tag
+	// states padding at its end: one edit from the priming to where that
+	// padding begins. Muxer and ProgressiveMuxer write it as it stands, in
+	// place of the one they would build from the first composition offset and
+	// StartDelay, so a track copied from one MP4 into another keeps its
+	// presentation edit for edit. A caller who wants the muxers' own edit list
+	// sets it to nil.
 	//
 	// Matroska has no edit lists: WebMMuxer takes the one shape it can state,
 	// an optional empty edit followed by one edit at the normal rate, as a
