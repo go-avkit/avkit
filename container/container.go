@@ -34,6 +34,12 @@
 // published specification carrying it. The README's "MPEG-TS carriage"
 // section cites the texts.
 //
+// Both MP4 muxers write FLAC as a fLaC sample entry with its dfLa, and MPEG
+// audio as mp4a with object type indication 0x6B or 0x69; the Matroska muxer
+// writes FLAC, MPEG audio, AC-3 and Enhanced AC-3 under their Matroska codec
+// IDs, in a file whose DocType is "matroska". Vorbis is refused in an MP4,
+// which has no registered sample entry for it.
+//
 // Subtitles travel the same way, in one form: a WebVTT or SRT track of a
 // Matroska file, and a WebVTT track of an MP4, read as the samples of an
 // ISO/IEC 14496-30 wvtt track, which Muxer, ProgressiveMuxer and WebMMuxer all

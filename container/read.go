@@ -366,6 +366,15 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 		if payload, err := boxPayload(stsd.Av01.Av1C); err == nil {
 			cfg.CodecConfig = payload
 		}
+	case stsd.Mp4a != nil && stsd.Mp4a.Esds != nil && isMPEGAudioEsds(stsd.Mp4a.Esds):
+		// Read as AAC, MP3 frames would be written back out under an AAC
+		// configuration that describes nothing they hold.
+		samples, err := r.Samples(trackID)
+		if err := mpegAudioTrackConfig(&cfg, samples, err); err != nil {
+			return TrackConfig{}, err
+		}
+	case flacSampleEntry(stsd) != nil:
+		flacTrackConfig(&cfg, flacSampleEntry(stsd).DfLa)
 	case stsd.Mp4a != nil && stsd.Mp4a.Esds != nil:
 		// A record this cannot read leaves the track described as the sample
 		// entry described it, which is what this did before the record was

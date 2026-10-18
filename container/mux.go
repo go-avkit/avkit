@@ -75,8 +75,9 @@ type Sample struct {
 type TrackConfig struct {
 	Kind Kind
 	// Codec is the sample entry to write: "avc1", "avc3", "hvc1", "hev1",
-	// "av01", "vp08", "vp09", "mjpg", "mp4a", "Opus", "ac-3", "ec-3", and for
-	// timed text "wvtt" (WebVTT, ISO/IEC 14496-30) and "stpp" (TTML).
+	// "av01", "vp08", "vp09", "mjpg", "mp4a", "Opus", "ac-3", "ec-3", "fLaC",
+	// and "mp1", "mp2" or "mp3" for MPEG audio, which an MP4 writes as mp4a;
+	// and for timed text "wvtt" (WebVTT, ISO/IEC 14496-30) and "stpp" (TTML).
 	//
 	// A WebVTT track's samples are what ISO/IEC 14496-30 makes them, whatever
 	// container the track came from: each covers a stretch of time and holds
@@ -97,9 +98,11 @@ type TrackConfig struct {
 	SPS, PPS, VPS [][]byte
 	// CodecConfig is the codec configuration record of a track whose
 	// parameters are not NAL units, such as the av1C payload of AV1. For
-	// WebVTT it is the header of the WebVTT file, the text of the vttC box
-	// (left empty, the bare "WEBVTT" signature is written); for TTML it is the
-	// content of the stpp sample entry, which is carried as it stands.
+	// FLAC it is the "fLaC" signature and every metadata block, STREAMINFO
+	// first, as Matroska's CodecPrivate holds them. For WebVTT it is the
+	// header of the WebVTT file, the text of the vttC box (left empty, the
+	// bare "WEBVTT" signature is written); for TTML it is the content of the
+	// stpp sample entry, which is carried as it stands.
 	CodecConfig []byte
 	// AudioObjectType selects the AAC profile; 0 means AAC-LC.
 	AudioObjectType byte
@@ -376,11 +379,18 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 			return err
 		}
 	case "mp1", "mp2", "mp3":
-		// What a transport stream's MPEG audio track is named when it is
-		// read. In an MP4 it is mp4a with object type indication 0x6B or
-		// 0x69 (MP4RA), which this muxer does not write yet.
-		return fmt.Errorf("%w: %s: MPEG audio in an MP4 is an mp4a sample entry with object type "+
-			"indication 0x6B or 0x69, which this muxer does not write yet", ErrUnsupportedCodec, codec)
+		// What an MPEG audio track is named when it is read. In an MP4 it
+		// is mp4a with object type indication 0x6B or 0x69 (MP4RA).
+		if err := describeMPEGAudio(trak, codec, cfg); err != nil {
+			return err
+		}
+	case "flac":
+		if err := describeFLAC(trak, cfg); err != nil {
+			return err
+		}
+	case "vorb":
+		return fmt.Errorf("%w: vorb: MP4RA registers no ISO-BMFF sample entry for Vorbis, so no player "+
+			"would know the track; Matroska carries it (WebMMuxer)", ErrUnsupportedCodec)
 	case "mp4a":
 		if cfg.SampleRate <= 0 {
 			return fmt.Errorf("%w: mp4a needs a sample rate", ErrTrackConfig)

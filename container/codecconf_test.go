@@ -372,8 +372,10 @@ func TestConfigFromSamplesRefusesWhatItCannotDerive(t *testing.T) {
 			ErrUnsupportedCodec, "no level"},
 		"Opus, whose header is in its container": {"opus", videoSamples([]byte{0x01}),
 			ErrUnsupportedCodec, "identification header"},
-		"AC-3":          {"ac-3", videoSamples([]byte{0x0b, 0x77}), ErrUnsupportedCodec, "bit stream information"},
-		"Enhanced AC-3": {"ec-3", videoSamples([]byte{0x0b, 0x77}), ErrUnsupportedCodec, "bit stream information"},
+		"FLAC, whose STREAMINFO is in its container": {"fLaC", videoSamples([]byte{0xff, 0xf8}),
+			ErrNotInSamples, "STREAMINFO"},
+		"AC-3 with no sync frame": {"ac-3", videoSamples([]byte{0x0b, 0x77}),
+			ErrNoConfiguration, "sync frame"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ConfigFromSamples(tc.codec, tc.samples)

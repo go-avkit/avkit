@@ -484,11 +484,15 @@ func mkvLastDuration(trackID uint32, stated, perFrame, remaining int64, written 
 
 // mkvCodecs maps a Matroska CodecID onto the sample entry TrackConfig states.
 //
-// Vorbis and FLAC are named here because a caller is owed the name of what a
-// track holds even when this package cannot write it: the samples of such a
-// track still read, and it is Muxer.AddTrack that reports the sample entry it
-// cannot build.
+// Vorbis is named here because a caller is owed the name of what a track holds
+// even when an MP4 cannot carry it: the samples of such a track still read, and
+// it is Muxer.AddTrack that reports the sample entry no registry defines.
 var mkvCodecs = map[string]string{
+	// The layer is the codec, as FFmpeg's names for them have it.
+	"A_MPEG/L1": "mp1",
+	"A_MPEG/L2": "mp2",
+	"A_MPEG/L3": "mp3",
+
 	"V_MPEG4/ISO/AVC":  "avc1",
 	"V_MPEGH/ISO/HEVC": "hvc1",
 	"V_AV1":            "av01",
@@ -618,10 +622,21 @@ func mkvCodecPrivate(cfg *TrackConfig, te mkvTrackEntry) error {
 			}
 			cfg.CodecConfig = te.CodecPrivate
 		}
+	case "fLaC":
+		// STREAMINFO is the normative statement of the format, and a
+		// private that does not hold one describes a track nothing can
+		// decode.
+		_, format, err := parseFLACConfig(te.CodecPrivate)
+		if err != nil {
+			return fmt.Errorf("%w (%s CodecPrivate)", err, te.CodecID)
+		}
+		cfg.CodecConfig = te.CodecPrivate
+		cfg.SampleRate, cfg.Channels = format.SampleRate, format.Channels
 	default:
-		// AC-3, Enhanced AC-3, Vorbis and FLAC state their configuration in
-		// their own form, which travels as it stands: AC-3 usually states
-		// none at all in Matroska, keeping it in the frames instead.
+		// AC-3, Enhanced AC-3 and Vorbis state their configuration in their
+		// own form, which travels as it stands: AC-3 usually states none at
+		// all in Matroska, keeping it in the frames instead, and MPEG audio
+		// never states one.
 		cfg.CodecConfig = te.CodecPrivate
 	}
 	return nil

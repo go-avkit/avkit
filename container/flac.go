@@ -35,22 +35,15 @@ func init() {
 	})
 }
 
-// flacMarker opens a native FLAC stream.
-const flacMarker = "fLaC"
+// flacMarker opens a native FLAC stream. It is the signature that opens the
+// CodecConfig of a FLAC track as well, and the metadata constants
+// (flacStreamInfo, flacStreamInfoSize, flacBlockHeaderSize) are declared once,
+// with the configuration parser, in audiocodecs.go.
+const flacMarker = flacSignature
 
-// FLAC metadata block types this reader names.
-const (
-	flacStreamInfo = 0
-	// flacInvalidBlock is reserved by RFC 9639 §8.1 so that a block header
-	// cannot be mistaken for a frame sync code.
-	flacInvalidBlock = 127
-)
-
-// flacStreamInfoSize is the length of a STREAMINFO block's body.
-const flacStreamInfoSize = 34
-
-// flacBlockHeaderSize is the length of a metadata block header.
-const flacBlockHeaderSize = 4
+// flacInvalidBlock is reserved by RFC 9639 §8.1 so that a block header cannot
+// be mistaken for a frame sync code.
+const flacInvalidBlock = flacForbiddenBlock
 
 // sniffFLAC recognises the marker, behind an ID3v2 tag if one leads.
 func sniffFLAC(data []byte) bool {

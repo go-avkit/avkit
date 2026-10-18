@@ -434,6 +434,12 @@ type webmCodecPrivate struct {
 // read out of a Matroska file and the same track read out of an MP4 are one
 // thing here and Muxer and WebMMuxer can be swapped for one another.
 var webmCodecs = map[string]webmCodec{
+	"flac": {id: "A_FLAC", kind: Audio, describe: webmFLACPrivate},
+	"mp1":  {id: "A_MPEG/L1", kind: Audio, describe: webmFramesOnly("A_MPEG/L1")},
+	"mp2":  {id: "A_MPEG/L2", kind: Audio, describe: webmFramesOnly("A_MPEG/L2")},
+	"mp3":  {id: "A_MPEG/L3", kind: Audio, describe: webmFramesOnly("A_MPEG/L3")},
+	"ac-3": {id: "A_AC3", kind: Audio, describe: webmFramesOnly("A_AC3")},
+	"ec-3": {id: "A_EAC3", kind: Audio, describe: webmFramesOnly("A_EAC3")},
 	"vp08": {id: "V_VP8", kind: Video, inWebM: true, describe: webmNoPrivate},
 	"vp09": {id: "V_VP9", kind: Video, inWebM: true, describe: webmNoPrivate},
 	"av01": {id: "V_AV1", kind: Video, inWebM: true, describe: webmAV1Private},

@@ -940,6 +940,9 @@ func TestMkvCodecNamesEveryMappingAndRefusesTheRest(t *testing.T) {
 		"A_AC3":            "ac-3",
 		"A_AC3/BSID9":      "ac-3",
 		"A_EAC3":           "ec-3",
+		"A_MPEG/L1":        "mp1",
+		"A_MPEG/L2":        "mp2",
+		"A_MPEG/L3":        "mp3",
 		// Every text mapping this reads arrives as WebVTT.
 		"S_TEXT/WEBVTT":         "wvtt",
 		"S_TEXT/UTF8":           "wvtt",
