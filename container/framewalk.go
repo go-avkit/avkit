@@ -90,6 +90,10 @@ type frameSyntax struct {
 	// a decoder locked to the first will not accept a frame that changes the
 	// layer or the sampling rate, and neither does a resynchronisation.
 	sameStream func(a, b []byte) bool
+	// sync is the first byte of every frame's sync word -- 0xFF for ADTS
+	// and MPEG audio, 0x0B for AC-3 -- which is all a resynchronisation
+	// stops to look at.
+	sync byte
 }
 
 // frameAt is the length of a frame at offset i of data[:end] that belongs to
@@ -165,11 +169,11 @@ func noFrames(format string, err error) error {
 }
 
 // resync is the first offset from i on where a chain of frames starts, or -1.
-// Zero bytes, which encoders pad with, are passed over without a look.
+// Bytes that cannot begin a sync word are passed over without a look.
 func (s frameSyntax) resync(data []byte, i, end int, first []byte) int {
 	for ; i < end; i++ {
-		if data[i] != 0xFF {
-			if k := bytes.IndexByte(data[i:end], 0xFF); k > 0 {
+		if data[i] != s.sync {
+			if k := bytes.IndexByte(data[i:end], s.sync); k > 0 {
 				i += k - 1
 			} else if k < 0 {
 				return -1

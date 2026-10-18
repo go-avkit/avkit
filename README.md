@@ -58,10 +58,11 @@ adding a codec to the dispatch without adding it here fails the suite.
 | native FLAC | ✓ | ✓ | — |
 | Ogg | ✓ | ✓ Opus, Vorbis and FLAC streams; Theora, Speex, VP8 and Kate named, not read | — |
 | WAV (RIFF, RF64, BW64) | ✓ | ✓ linear PCM; other format tags named, not read | — |
+| AVI (with OpenDML `AVIX` forms) | ✓ | ✓ H.264, MPEG-4 Part 2, Motion JPEG; PCM, MP3/MP2, AC-3, AAC; other FourCCs and tags named, not read | — |
 
-The last five are read whole, in one pass, by `Demux` and `NewReader` (not by
+The last six are read whole, in one pass, by `Demux` and `NewReader` (not by
 `NewFileReader`, which serves MP4 alone), and are never written. Nothing else: no
-AVI, no FLV, no MXF, and no HLS or DASH manifests.
+FLV, no MXF, and no HLS or DASH manifests.
 A file that is none of these sniffs as `FormatUnknown` rather than being guessed
 at.
 
@@ -88,6 +89,17 @@ at.
   is found by reading the setup header backwards, as FFmpeg does, and **checked
   against the granule positions**, which are normative. The last packet is cut to
   the last granule. Opus pre-skip is `TrackConfig.PreSkip`.
+- **AVI** (Microsoft AVI RIFF reference; OpenDML 1.02): the chunks of every
+  `movi` list are walked in file order, across the `AVIX` forms that continue a
+  file past 1 GiB; neither `idx1` nor the OpenDML indexes are read, because a
+  reader that walks every chunk has nothing to seek for, and keyframes are read
+  from the frames. An empty video chunk lengthens the frame before it. Audio is
+  read from its chunks joined, as its own elementary stream would be — PCM as
+  WAV, MP3 as MP3, AC-3 frame by frame — except raw AAC, a frame a chunk.
+  ⛔ AVI states no presentation time, only an order, so **H.264 with B-slices
+  and MPEG-4 Part 2 with B-VOPs are refused**, by name, rather than handed over
+  to play out of order. `mp4v` is read and described (its decoder-specific
+  information as `CodecConfig`) and no muxer writes it yet.
 - **Streams around frames**: an ID3v2 tag at the head or between frames, an
   ID3v1 or APEv2 tag at the tail, and resynchronisation over rubbish — but only
   onto a frame that is followed by another one.
@@ -127,6 +139,7 @@ before it existed still matches.
 | MPEG audio demux | — | `mp1`, `mp2`, `mp3` | — |
 | FLAC demux | — | `fLaC` | — |
 | Ogg demux | — | `Opus`, `vorb`, `fLaC` | — |
+| AVI demux | `avc1`, `mp4v`, `mjpg` | `ipcm`, `fpcm`, `raw `, `mp1`, `mp2`, `mp3`, `ac-3`, `mp4a` | — |
 | WAV demux | — | `ipcm` (signed integer), `fpcm` (float), `raw ` (unsigned 8-bit) | — |
 
 See [Subtitles](#subtitles) for what each conversion keeps.

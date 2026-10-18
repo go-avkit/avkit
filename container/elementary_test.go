@@ -323,6 +323,7 @@ func TestTheREADMEListsEveryFormatReadInOnePass(t *testing.T) {
 		"flac":      {"| native FLAC |", "| FLAC demux |", "`fLaC`"},
 		"ogg":       {"| Ogg |", "| Ogg demux |", "`Opus`", "`vorb`"},
 		"wav":       {"| WAV (RIFF, RF64, BW64) |", "| WAV demux |", "`ipcm`", "`fpcm`", "`raw `"},
+		"avi":       {"| AVI (with OpenDML `AVIX` forms) |", "| AVI demux |", "`mp4v`", "`mjpg`", "`ac-3`"},
 	}
 	for _, f := range elementaryFormats {
 		want, listed := rows[f.name]

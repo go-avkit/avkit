@@ -55,6 +55,7 @@ var adtsSyntax = frameSyntax{
 	name: "adts",
 	// Nine bytes, so the CRC of a protected header is there to be read.
 	headerSize: adtsHeaderSize + 2,
+	sync:       0xFF,
 	length: func(data []byte) int {
 		// A frame that is all header holds no raw data block, not even the
 		// ID_END that closes one, so it is not an AAC frame.

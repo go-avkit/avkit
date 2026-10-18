@@ -200,7 +200,7 @@ func TestAWAVFileThatBreaksItsFormIsRefused(t *testing.T) {
 func TestTheThreeRIFFFormsOfWAVESniffAsWAV(t *testing.T) {
 	for form, want := range map[string]Format{
 		"RIFF....WAVE": FormatWAV, "RF64....WAVE": FormatWAV, "BW64....WAVE": FormatWAV,
-		"RIFF....AVI ": FormatUnknown, "RIFX....WAVE": FormatUnknown, "RIFF": FormatUnknown,
+		"RIFF....AVI ": FormatAVI, "RIFX....WAVE": FormatUnknown, "RIFF": FormatUnknown,
 	} {
 		if got := Sniff([]byte(form)); got != want {
 			t.Errorf("%q sniffed as %d, want %d", form, got, want)
