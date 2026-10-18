@@ -689,7 +689,11 @@ func isAV1Stream(es *astits.PMTElementaryStream) bool {
 func (t *tsTrack) syncUnit(data []byte) bool {
 	switch {
 	case t.track.Kind == Audio:
-		return true // every AAC frame decodes on its own
+		// Every AAC, AC-3 and MPEG audio frame decodes on its own. (A Layer
+		// III frame may borrow bits from the one before through its bit
+		// reservoir, which a decoder joining there absorbs, as FFmpeg's
+		// marking of every MPEG audio packet as a key frame does too.)
+		return true
 	case t.av1:
 		return av1RandomAccess(data)
 	default:
@@ -734,6 +738,14 @@ func av1RandomAccess(data []byte) bool {
 // unknown is still worth handing over, and Muxer.AddTrack is the one that
 // decides whether what it was given is enough to write.
 func (t *tsTrack) deriveConfiguration() {
+	if t.audio == tsAC3 {
+		// The dac3 or dec3 record an MP4 sample entry needs is built from a
+		// sync frame, as it is for a Matroska track that states none.
+		if got, err := ac3TrackConfig(t.config.Codec, t.samples); err == nil {
+			t.config.CodecConfig = got.CodecConfig
+		}
+		return
+	}
 	if t.track.Kind != Video {
 		return
 	}
