@@ -10,8 +10,8 @@ import (
 	"sort"
 )
 
-// The formats in this file and the ones beside it -- ADTS, MPEG audio, native
-// FLAC, Ogg, WAV -- have no sample table and no index a reader could address
+// The formats this file registers readers for -- ADTS, native FLAC, Ogg, WAV --
+// have no sample table and no index a reader could address
 // into: a demuxer walks them from the first byte to the last, the way it walks
 // a transport stream or a Matroska file. Each is read whole, in one pass, into
 // the same per-track record the Matroska reader keeps, so Reader.Samples and

@@ -302,6 +302,42 @@ func TestDurationsAreRescaledWithoutOverflowOrFloats(t *testing.T) {
 	}
 }
 
+// TestTheREADMEListsEveryFormatReadInOnePass: the containers table is where a
+// reader looks for what a file can be, so a format registered without a row
+// there fails here, and so does one whose demux column leaves out a codec read.
+func TestTheREADMEListsEveryFormatReadInOnePass(t *testing.T) {
+	readme, err := os.ReadFile("../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	containers, ok := sectionOf(string(readme), "### Containers")
+	carried, ok2 := sectionOf(string(readme), "### Tracks a container can carry")
+	if !ok || !ok2 {
+		t.Fatal("the README has lost its containers or its tracks section")
+	}
+	rows := map[string][]string{
+		"adts": {"| ADTS (raw AAC) |", "| ADTS demux |", "`mp4a`"},
+		"flac": {"| native FLAC |", "| FLAC demux |", "`fLaC`"},
+		"ogg":  {"| Ogg |", "| Ogg demux |", "`Opus`", "`vorb`"},
+		"wav":  {"| WAV (RIFF, RF64, BW64) |", "| WAV demux |", "`ipcm`", "`fpcm`", "`raw `"},
+	}
+	for _, f := range elementaryFormats {
+		want, listed := rows[f.name]
+		if !listed {
+			t.Errorf("%s is registered and this test does not know its README rows", f.name)
+			continue
+		}
+		if !strings.Contains(containers, want[0]) {
+			t.Errorf("the containers table has no row %q", want[0])
+		}
+		for _, w := range want[1:] {
+			if !strings.Contains(carried, w) {
+				t.Errorf("the tracks table does not carry %q for %s", w, f.name)
+			}
+		}
+	}
+}
+
 // TestTheElementaryFormatsAreNamedWhereTheOthersAre: a format that cannot be
 // read from disk says which one it is, and a stream whose reader fails outright
 // is refused by Demux and NewReader alike.
