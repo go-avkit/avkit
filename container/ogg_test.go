@@ -356,12 +356,15 @@ func TestAnOggOpusOrFLACStreamThatBreaksItsMappingIsRefused(t *testing.T) {
 		data []byte
 		want error
 	}{
-		"an OpusHead of version 2": {oggPageOf(oggBOS|oggEOS, 0, 1, 0, append([]byte(opusHeadMagic), 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0)), ErrTrackConfig},
-		"no OpusTags":              {concat(oggPageOf(oggBOS, 0, 1, 0, head), oggPageOf(oggEOS, 0, 1, 1, celt20)), ErrMalformed},
-		"OpusHead alone":           {oggPageOf(oggBOS|oggEOS, 0, 1, 0, head), ErrMalformed},
-		"an empty Opus packet":     {concat(oggPageOf(oggBOS, 0, 1, 0, head), oggPageOf(oggEOS, 0, 1, 1, tags, nil)), ErrMalformed},
-		"a FLAC mapping version 2": {oggPageOf(oggBOS|oggEOS, 0, 1, 0, concat([]byte("\x7fFLAC\x02"), flacFirst[6:])), ErrMalformed},
-		"a FLAC sample rate of 0":  {oggPageOf(oggBOS|oggEOS, 0, 1, 0, badRate), ErrMalformed},
+		// Version 16 is major version 1, which RFC 7845 §5.1 says a reader
+		// of version 0 must refuse; 2 to 15 are minor versions of 0 and read
+		// (#65).
+		"an OpusHead of version 16": {oggPageOf(oggBOS|oggEOS, 0, 1, 0, append([]byte(opusHeadMagic), 16, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0)), ErrTrackConfig},
+		"no OpusTags":               {concat(oggPageOf(oggBOS, 0, 1, 0, head), oggPageOf(oggEOS, 0, 1, 1, celt20)), ErrMalformed},
+		"OpusHead alone":            {oggPageOf(oggBOS|oggEOS, 0, 1, 0, head), ErrMalformed},
+		"an empty Opus packet":      {concat(oggPageOf(oggBOS, 0, 1, 0, head), oggPageOf(oggEOS, 0, 1, 1, tags, nil)), ErrMalformed},
+		"a FLAC mapping version 2":  {oggPageOf(oggBOS|oggEOS, 0, 1, 0, concat([]byte("\x7fFLAC\x02"), flacFirst[6:])), ErrMalformed},
+		"a FLAC sample rate of 0":   {oggPageOf(oggBOS|oggEOS, 0, 1, 0, badRate), ErrMalformed},
 		"a FLAC packet that is not a frame": {concat(oggPageOf(oggBOS, 0, 1, 0, flacFirst),
 			oggPageOf(oggEOS, 0, 1, 1, []byte{0xFF, 0x00})), ErrMalformed},
 	} {
