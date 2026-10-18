@@ -227,9 +227,9 @@ there is no `CodecPrivate` to carry them. `vpcC` has no value for "unknown" —
 zero is a real profile but not a real level — so remuxing such a track used to
 fail with `vp09 needs a level; 0 is not one`.
 
-`Remux`, `Cut`, `Concat` and `Join` now read the configuration **out of the
-frames** when the container could not state it, through the same
-`ConfigFromSamples` a caller can use directly.
+`Remux`, `Cut`, `Concat`, `Join` and `JoinProgressive` now read the
+configuration **out of the frames** when the container could not state it,
+through the same `ConfigFromSamples` a caller can use directly.
 
 The reader is unchanged and still reports only what the container says. That is
 deliberate: a level could also be derived from the container's width, height and
