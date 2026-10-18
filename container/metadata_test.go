@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"os"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -651,11 +653,14 @@ func TestAHostileAttachmentSizeAllocatesNothing(t *testing.T) {
 	head := marshalDoc(t, &struct {
 		Header mkvHeader `ebml:"EBML"`
 	}{mkvHeader{DocType: "matroska"}})
-	data := append(head, 0x18, 0x53, 0x80, 0x67, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff) // Segment, unknown size
-	data = append(data, 0x19, 0x41, 0xa4, 0x69, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff) // Attachments, unknown size
-	data = append(data, 0x61, 0xa7, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff)             // AttachedFile, unknown size
-	data = append(data, 0x46, 0x5c, 0x01, 0x00, 0x00, 0x00, 0x05, 0xf5, 0xe1, 0x00, 1, 2, 3)  // FileData, 100 000 000 bytes
-	for _, read := range map[string]func([]byte) error{
+	unknown := []byte{0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	data := slices.Concat(head,
+		[]byte{0x18, 0x53, 0x80, 0x67}, unknown, // Segment
+		[]byte{0x19, 0x41, 0xa4, 0x69}, unknown, // Attachments
+		[]byte{0x61, 0xa7}, unknown, // AttachedFile
+		[]byte{0x46, 0x5c, 0x01, 0x00, 0x00, 0x00, 0x05, 0xf5, 0xe1, 0x00}, // FileData of 100 000 000 bytes
+		[]byte{1, 2, 3}) // of which three are there
+	for what, read := range map[string]func([]byte) error{
 		"Demux":     func(b []byte) error { _, err := Demux(b); return err },
 		"NewReader": func(b []byte) error { _, err := NewReader(b); return err },
 	} {
@@ -664,8 +669,8 @@ func TestAHostileAttachmentSizeAllocatesNothing(t *testing.T) {
 		runtime.ReadMemStats(&before)
 		err := read(data)
 		runtime.ReadMemStats(&after)
-		if !errors.Is(err, ebml.ErrTooLargeElement) && err == nil {
-			t.Fatalf("a hostile size was accepted")
+		if !errors.Is(err, ebml.ErrTooLargeElement) {
+			t.Fatalf("%s: %v, want the size refused as too large", what, err)
 		}
 		if grew := after.TotalAlloc - before.TotalAlloc; grew > 10<<20 {
 			t.Fatalf("reading %d bytes allocated %d", len(data), grew)
@@ -676,6 +681,34 @@ func TestAHostileAttachmentSizeAllocatesNothing(t *testing.T) {
 	for _, n := range []int{0, 1 << 30} {
 		if err := mkvLeafLimit(n)(&ebml.UnmarshalOptions{}); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+// TestTheMetadataTableIsWhatTheCodeWrites holds the README's field table to
+// the two mapping tables, in its own section, so that a name added to the code
+// and not to the table fails here.
+func TestTheMetadataTableIsWhatTheCodeWrites(t *testing.T) {
+	readme, err := os.ReadFile("../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The newline in front tells it from the "### File metadata" table above.
+	section, ok := sectionOf(string(readme), "\n## File metadata\n")
+	if !ok {
+		t.Fatal("the README has no File metadata section")
+	}
+	var names []string
+	for _, item := range ilstTextItems {
+		names = append(names, item.name)
+	}
+	for _, tag := range mkvTextTags {
+		names = append(names, tag.name)
+	}
+	names = append(names, "covr", mkvTagTitle, mkvTagDateFallback)
+	for _, name := range names {
+		if !strings.Contains(section, "`"+strings.ReplaceAll(name, "\xa9", "©")+"`") {
+			t.Errorf("the File metadata section does not name %q", name)
 		}
 	}
 }
