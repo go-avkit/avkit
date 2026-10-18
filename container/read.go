@@ -160,6 +160,9 @@ func NewReader(data []byte) (*Reader, error) {
 	case FormatMatroska:
 		return newMatroskaReader(data)
 	default:
+		if f, ok := elementaryFor(format); ok {
+			return newElementaryReader(f, data)
+		}
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedFormat, describeFormat(format))
 	}
 	// The same decode as NewFileReader's, because the two entry points must not
@@ -216,9 +219,11 @@ func describeFormat(format Format) string {
 		return "mp4"
 	case FormatMPEGTS:
 		return "mpegts"
-	default:
-		return "unknown format"
 	}
+	if f, ok := elementaryFor(format); ok {
+		return f.name
+	}
+	return "unknown format"
 }
 
 // movieBox is the moov of a file, wherever it sits: a fragmented file keeps it

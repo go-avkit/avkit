@@ -352,6 +352,12 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 		if err := describeMJPEG(trak, cfg); err != nil {
 			return err
 		}
+	case "mp1", "mp2", "mp3":
+		// What a transport stream's MPEG audio track is named when it is
+		// read. In an MP4 it is mp4a with object type indication 0x6B or
+		// 0x69 (MP4RA), which this muxer does not write yet.
+		return fmt.Errorf("%w: %s: MPEG audio in an MP4 is an mp4a sample entry with object type "+
+			"indication 0x6B or 0x69, which this muxer does not write yet", ErrUnsupportedCodec, codec)
 	case "mp4a":
 		if cfg.SampleRate <= 0 {
 			return fmt.Errorf("%w: mp4a needs a sample rate", ErrTrackConfig)
@@ -361,6 +367,12 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 			objType = aac.AAClc
 		}
 		trak.SetAACDescriptor(objType, cfg.SampleRate)
+	case "ipcm", "fpcm", "raw":
+		// ISO/IEC 23003-5 gives PCM its sample entries and a pcmC record,
+		// and mp4ff writes neither yet: refused by name rather than written
+		// as an entry a player would read as some other codec.
+		return fmt.Errorf("%w: %q: PCM sample entries (ISO/IEC 23003-5 ipcm/fpcm with pcmC) are not written yet",
+			ErrUnsupportedCodec, cfg.Codec)
 	default:
 		return fmt.Errorf("%w: %q", ErrUnsupportedCodec, cfg.Codec)
 	}

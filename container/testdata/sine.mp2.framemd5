@@ -1,0 +1,19 @@
+#format: frame checksums
+#version: 2
+#hash: MD5
+#software: Lavf63.1.102
+#tb 0: 1/14112000
+#media_type 0: audio
+#codec_id 0: mp2
+#sample_rate 0: 48000
+#channel_layout_name 0: mono
+#stream#, dts,        pts, duration,     size, hash
+0,          0,          0,   338688,      192, 939e38fb054e8db23db47036fd631def
+0,     338688,     338688,   338688,      192, 2593eff74073ba969477bde66e94eb64
+0,     677376,     677376,   338688,      192, eeb4a4a3442b62eb2342e726b89e332d
+0,    1016064,    1016064,   338688,      192, 0f78481f74d2cf11bf79bdb784db978f
+0,    1354752,    1354752,   338688,      192, c98bfcb15cb689835993cea82878b891
+0,    1693440,    1693440,   338688,      192, 4f0d46dc8ae0b43656dcef4446e7cee7
+0,    2032128,    2032128,   338688,      192, cb925acba250412ea20e9d71ee259ad5
+0,    2370816,    2370816,   338688,      192, 8c4c14902d85b8b7eb75eddcb9b0ed3f
+0,    2709504,    2709504,   338688,      192, 43ae383664781f710a6f1dfb2a3020b9
