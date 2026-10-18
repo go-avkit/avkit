@@ -275,9 +275,17 @@ func ilstItem(name string, typ uint32, value []byte) mp4.Box {
 // encodeInit writes the initialisation segment, with the metadata in its movie
 // box. The udta is added here, once every track has been, so that it follows
 // them.
+//
+// ⛔ The udta is in the movie box for this encoding only, and taken out again
+// after it: an initialisation segment that failed to go out is written again
+// on the next sample, with the metadata as it is then, and keeping the first
+// attempt's udta would put a second one beside it.
 func (m *Muxer) encodeInit() error {
+	children := len(m.init.Moov.Children)
 	if udta := mp4Udta(m.metadata); udta != nil {
 		m.init.Moov.AddChild(udta)
 	}
-	return m.init.Encode(m.w)
+	err := m.init.Encode(m.w)
+	m.init.Moov.Children = m.init.Moov.Children[:children]
+	return err
 }
