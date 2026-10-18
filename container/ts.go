@@ -381,11 +381,15 @@ func splitLengthPrefixed(data []byte) ([][]byte, bool) {
 	var nalus [][]byte
 	i := 0
 	for i+4 <= len(data) {
-		size := int(uint32(data[i])<<24 | uint32(data[i+1])<<16 |
-			uint32(data[i+2])<<8 | uint32(data[i+3]))
-		if size <= 0 || i+4+size > len(data) {
+		stated := uint32(data[i])<<24 | uint32(data[i+1])<<16 |
+			uint32(data[i+2])<<8 | uint32(data[i+3])
+		// ⛔ Compared as the unsigned value it is, before it becomes an int:
+		// where int is 32 bits wide, i+4+size wrapped negative for a length
+		// near 2^31, passed this check and sliced out of range.
+		if stated == 0 || uint64(stated) > uint64(len(data)-i-4) {
 			return nalus, false
 		}
+		size := int(stated)
 		nalus = append(nalus, data[i+4:i+4+size])
 		i += 4 + size
 	}
