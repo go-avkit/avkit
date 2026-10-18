@@ -226,13 +226,14 @@ func TestWebMMuxerRoundTripsThroughDemuxAndEBML(t *testing.T) {
 	if f.Segment.Info.Duration != 0 {
 		t.Errorf("duration = %v, want none in a streaming segment", f.Segment.Info.Duration)
 	}
-	// The file says where its clusters are; it still does not carry a
-	// SeekHead saying where that index itself is.
+	// The file says where its clusters are. Streamed to a writer that cannot
+	// seek, it carries no SeekHead: the Cues it would have to name are not
+	// known when the SeekHead would have to be written.
 	if f.Segment.Cues == nil || len(f.Segment.Cues.CuePoint) == 0 {
 		t.Error("the file names no cluster position")
 	}
 	if f.Segment.SeekHead != nil {
-		t.Errorf("this muxer writes no SeekHead, got %+v", f.Segment.SeekHead)
+		t.Errorf("a stream that cannot be seeked carries a SeekHead: %+v", f.Segment.SeekHead)
 	}
 	if len(f.Segment.Tracks.TrackEntry) != 2 {
 		t.Fatalf("track entries = %+v", f.Segment.Tracks.TrackEntry)

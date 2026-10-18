@@ -51,7 +51,7 @@ adding a codec to the dispatch without adding it here fails the suite.
 | | sniff | demux | mux |
 |---|---|---|---|
 | MP4 / ISO-BMFF | ✓ | ✓ one file, a sequence of segments, or fragmented | ✓ fragmented **and** progressive |
-| Matroska / WebM | ✓ | ✓ | ✓ |
+| Matroska / WebM | ✓ | ✓ | ✓ with Cues, and a SeekHead when buffered or the writer can seek |
 | MPEG-TS | ✓ | ✓ | ✓ |
 
 Nothing else: no AVI, no FLV, no Ogg, no WAV, no MXF, and no HLS or DASH
@@ -193,6 +193,49 @@ Only one shape of edit list is read: a single entry starting at a positive media
 time at rate 1, which is what priming looks like. Several entries, an empty edit
 or another rate describe a presentation this package does not reproduce, and
 reading a delay out of one would state something the output does not do.
+
+## A SeekHead in the WebM/Matroska muxer
+
+`WebMMuxer` writes Cues after the last cluster in every mode. When the file can
+carry a complete SeekHead (RFC 9559 §5.1.1, §6.3), the segment opens with one:
+it names Info, Tracks, every other Top-Level Element written before the first
+cluster, and the Cues. A Void follows it (§25.2), as ffmpeg's `matroskaenc`
+writes it.
+
+| mode | SeekHead |
+|---|---|
+| `BufferedSegment()` | written once, with every position known |
+| streamed to an `io.Seeker` (an `os.File`) | written first with room for the Cues entry, then rewritten in place at `Close`. The writer is seeked back once and returned to the end of the file |
+| streamed to anything else (a socket, an HTTP response, a pipe) | **none**, so the bytes are unchanged |
+
+The last row is deliberate. The Cues are not known when a SeekHead would have to
+go out, and §6.3 wants the SeekHead to name every Top-Level Element or not to
+exist at all. ffmpeg likewise writes no Cues to an unseekable output. A writer
+that claims to seek and then cannot, such as `os.Stdout` on a pipe, is treated
+the same way and still gets its stream.
+
+- **Entries come from what was encoded**, not from a list of names. Every
+  element written before the first cluster is named, so Tags or Attachments
+  added there are indexed without this code changing.
+- **The room is fixed** at seven entries, ffmpeg's `MAX_SEEKHEAD_ENTRIES`, or
+  more if needed. `SeekPosition` is always written in eight bytes, as ebml-go's
+  own `mkvcore` writes it, so the SeekHead can be rewritten without moving
+  anything after it.
+- Clusters are not named in the SeekHead. The Cues index them, as in ffmpeg's
+  output.
+
+Measured on a 7 s VP9 + Opus file:
+
+| | SeekHead | `ffmpeg -ss 4.5` I/O |
+|---|---|---|
+| streamed to a buffer (unchanged) | none | 262 144 bytes read, 0 seeks |
+| streamed to a file | Info, Tracks, Cues, each at its element | 131 185 bytes read, 3 seeks |
+| buffered | Info, Tracks, Cues, each at its element | 131 185 bytes read, 3 seeks |
+| buffered, before this change | none | 262 144 bytes read, 0 seeks |
+
+With a SeekHead, ffmpeg goes straight to the Cues. Without one, it reads the
+whole file to find them. The frames decoded after the seek match the source's
+`framemd5` in all four cases.
 
 ## AC-3 and Enhanced AC-3 out of Matroska
 
