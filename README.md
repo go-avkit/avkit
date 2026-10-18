@@ -54,13 +54,14 @@ adding a codec to the dispatch without adding it here fails the suite.
 | Matroska / WebM | ✓ | ✓ | ✓ |
 | MPEG-TS | ✓ | ✓ | ✓ |
 | ADTS (raw AAC) | ✓ | ✓ | — |
+| MPEG audio (MP3, MP2, MP1) | ✓ | ✓ the Xing/Info/VBRI frame dropped, the LAME encoder delay kept | — |
 | native FLAC | ✓ | ✓ | — |
 | Ogg | ✓ | ✓ Opus, Vorbis and FLAC streams; Theora, Speex, VP8 and Kate named, not read | — |
 | WAV (RIFF, RF64, BW64) | ✓ | ✓ linear PCM; other format tags named, not read | — |
 
-The last four are read whole, in one pass, by `Demux` and `NewReader` (not by
+The last five are read whole, in one pass, by `Demux` and `NewReader` (not by
 `NewFileReader`, which serves MP4 alone), and are never written. Nothing else: no
-AVI, no FLV, no MP3 elementary stream yet, no MXF, and no HLS or DASH manifests.
+AVI, no FLV, no MXF, and no HLS or DASH manifests.
 A file that is none of these sniffs as `FormatUnknown` rather than being guessed
 at.
 
@@ -71,6 +72,13 @@ at.
   is refused, because an MP4 sample is one block and only a decoder can find
   where they part. Channel configuration 0 reads, and its `TrackConfig` says why
   it cannot be written.
+- **MPEG audio** (ISO/IEC 11172-3 and 13818-3 §2.4.1.3): frames are cut by the
+  header `parseMPAFrame` reads, as the transport stream reader does. The first
+  frame is dropped when it is a Xing, Info or VBRI frame, which describes the
+  stream and holds no audio; the LAME extension's encoder delay, plus the
+  decoder's 529 samples, becomes `TrackConfig.StartDelay`, so a remux keeps the
+  priming out of what is presented. The unofficial "MPEG 2.5" rates and free
+  format are not read.
 - **FLAC** (RFC 9639): `CodecConfig` is the marker and STREAMINFO, Matroska's
   `A_FLAC` CodecPrivate. Frames are found where a header's CRC-8 holds, the frame
   before it closes with a CRC-16 of zero, and the frame or sample number follows on.
@@ -116,6 +124,7 @@ before it existed still matches.
 | WebM mux | AV1, VP8, VP9 | AAC, Opus, Vorbis | `wvtt`, as `D_WEBVTT/SUBTITLES` or `S_TEXT/WEBVTT` |
 | MPEG-TS | `avc1`, `hvc1`, `av01`, in and out | `mp4a`, `ac-3`, `ec-3`, `mp1`, `mp2`, `mp3`, in and out; **not** `opus` (see [MPEG-TS carriage](#mpeg-ts-carriage)) | none, in or out |
 | ADTS demux | — | `mp4a` | — |
+| MPEG audio demux | — | `mp1`, `mp2`, `mp3` | — |
 | FLAC demux | — | `fLaC` | — |
 | Ogg demux | — | `Opus`, `vorb`, `fLaC` | — |
 | WAV demux | — | `ipcm` (signed integer), `fpcm` (float), `raw ` (unsigned 8-bit) | — |

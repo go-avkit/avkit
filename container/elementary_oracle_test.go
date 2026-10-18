@@ -86,6 +86,8 @@ func TestElementaryStreamsReadAsFFmpegDemuxesThem(t *testing.T) {
 		lastDiffers bool
 	}{
 		{file: "sine.aac", format: "adts", codec: "mp4a", channels: 1, rate: 44100, adtsHeaders: true},
+		{file: "sine.mp3", format: "mpegaudio", codec: "mp3", channels: 1, rate: 44100},
+		{file: "sine.mp2", format: "mpegaudio", codec: "mp2", channels: 1, rate: 48000},
 		{file: "sine.flac", format: "flac", codec: "fLaC", channels: 1, rate: 8000},
 		{file: "sine.opus", format: "ogg", codec: "Opus", channels: 1, rate: 48000},
 		{file: "sine.ogg", format: "ogg", codec: "vorb", channels: 2, rate: 22050, lastDiffers: true},
@@ -273,9 +275,9 @@ func TestAnOggOpusTrackRemuxesIntoMP4AndWebM(t *testing.T) {
 }
 
 // TestTracksTheMuxersCannotWriteAreRefusedByName: PCM has ISO/IEC 23003-5
-// entries that mp4ff does not write, and FLAC is lot L2's.
+// entries that mp4ff does not write, and MP3 and FLAC are lot L2's.
 func TestTracksTheMuxersCannotWriteAreRefusedByName(t *testing.T) {
-	for _, file := range []string{"sine.wav", "sine_u8.wav", "sine_f32.wav", "sine.flac"} {
+	for _, file := range []string{"sine.wav", "sine_u8.wav", "sine_f32.wav", "sine.flac", "sine.mp3"} {
 		data, err := os.ReadFile("testdata/" + file)
 		if err != nil {
 			t.Fatal(err)
