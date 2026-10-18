@@ -582,6 +582,11 @@ func mkvCodecPrivate(cfg *TrackConfig, te mkvTrackEntry) error {
 		}
 		cfg.SPS, cfg.PPS = record.SPSnalus, record.PPSnalus
 	case "hvc1":
+		// Walked first: a record whose counts outrun its bytes costs the
+		// decoder milliseconds per track (see checkHEVCRecord).
+		if err := checkHEVCRecord(te.CodecPrivate); err != nil {
+			return fmt.Errorf("%w: %s %v", ErrTrackConfig, te.CodecID, err)
+		}
 		record, err := hevc.DecodeHEVCDecConfRec(te.CodecPrivate)
 		if err != nil {
 			return fmt.Errorf("%w: %s hvcC: %v", ErrTrackConfig, te.CodecID, err)
