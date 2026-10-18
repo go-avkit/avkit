@@ -735,6 +735,49 @@ func TestMuxerWritesVP8(t *testing.T) {
 	}
 }
 
+// TestAVP8TrackOutOfMatroskaIsWrittenWithLevelZero is VP8 out of Matroska,
+// which no operation could write to MP4: "vp08 needs a level; 0 is not one".
+// VP8 has no level, and the VP Codec ISO Media File Format Binding's level
+// table gives 0 as "Undefined", so 0 is what a vp08 record states.
+func TestAVP8TrackOutOfMatroskaIsWrittenWithLevelZero(t *testing.T) {
+	var mkv bytes.Buffer
+	w := NewWebMMuxer(&mkv)
+	id, err := w.AddTrack(TrackConfig{Kind: Video, Codec: "vp08", Timescale: 1000, Width: 320, Height: 240})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		if err := w.WriteSample(id, Sample{Data: []byte{byte(i), 1, 2}, Duration: 40, Sync: i == 0}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for name, op := range map[string]func(io.Writer, *Reader) error{
+		"Remux":           func(out io.Writer, r *Reader) error { return Remux(out, r) },
+		"JoinProgressive": func(out io.Writer, r *Reader) error { return JoinProgressive(out, []*Reader{r}) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, err := NewReader(mkv.Bytes())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			if err := op(&out, r); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			stsd := sampleEntryOf(t, out.Bytes())
+			if stsd.VpXX == nil || stsd.VpXX.Type() != "vp08" || stsd.VpXX.VppC == nil {
+				t.Fatalf("no vp08 sample entry with a vpcC: %v", stsd.Children)
+			}
+			if v := stsd.VpXX.VppC; v.Profile != 0 || v.Level != 0 || v.BitDepth != 8 {
+				t.Errorf("vpcC = %+v; want profile 0, level 0 (Undefined), 8 bits", v)
+			}
+		})
+	}
+}
+
 func TestMuxerRefusesVPxItCannotDescribe(t *testing.T) {
 	sound := VPxConfig{Profile: 0, Level: 10, BitDepth: 8}
 	with := func(f func(*VPxConfig)) *VPxConfig {
@@ -766,6 +809,10 @@ func TestMuxerRefusesVPxItCannotDescribe(t *testing.T) {
 		{"a chroma subsampling that does not exist",
 			TrackConfig{Codec: "vp09", Timescale: 90000, Width: 640, Height: 480,
 				VPx: with(func(v *VPxConfig) { v.ChromaSubsampling = 4 })}},
+		// "VP8 only supports a profile value of 0."
+		{"a VP8 profile other than 0",
+			TrackConfig{Codec: "vp08", Timescale: 90000, Width: 640, Height: 480,
+				VPx: with(func(v *VPxConfig) { v.Profile, v.Level = 1, 0 })}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
