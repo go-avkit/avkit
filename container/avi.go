@@ -263,13 +263,6 @@ func aviClock(s *aviStream) (uint32, uint32, error) {
 	return s.rate / g, s.scale / g, nil
 }
 
-func gcd(a, b uint32) uint32 {
-	for b != 0 {
-		a, b = b, a%b
-	}
-	return a
-}
-
 // aviVideo reads a video stream.
 func aviVideo(s *aviStream) *mkvReadTrack {
 	t := &mkvReadTrack{track: Track{Kind: Video, Language: "und"}, config: TrackConfig{Kind: Video}}

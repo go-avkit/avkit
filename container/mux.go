@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/bits"
 	"strings"
 	"time"
 
@@ -93,6 +94,18 @@ type TrackConfig struct {
 	Timescale uint32
 	// Width and Height are the frame size, for a video track.
 	Width, Height int
+	// SARWidth and SARHeight are the sample (pixel) aspect ratio of a video
+	// track: the shape of one pixel, width over height. Zero means it is not
+	// known, and then nothing is stated about it.
+	//
+	// The MP4 muxers write a known one as a pasp box (ISO/IEC 14496-12
+	// §12.1.4), and state the track header's width as the frame scaled by it,
+	// as ffmpeg's movenc does. That box matters most for VP8 and VP9, whose
+	// bitstreams have no aspect ratio of their own: without it a player is
+	// told nothing. Readers fill it in where the container states it: an MP4's
+	// pasp box, or a Matroska track's DisplayWidth and DisplayHeight, which
+	// default to the pixel size and so state square pixels when absent.
+	SARWidth, SARHeight int
 	// Channels and SampleRate describe an audio track.
 	Channels, SampleRate int
 	// Language is an ISO-639-2 code; "und" when empty.
@@ -516,10 +529,56 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 	// nothing at all when it cannot read them. Writing a file whose sample
 	// entry is empty would produce something no player can open, so say so
 	// here instead.
-	if _, err := trak.Mdia.Minf.Stbl.Stsd.GetSampleDescription(0); err != nil {
+	entry, err := trak.Mdia.Minf.Stbl.Stsd.GetSampleDescription(0)
+	if err != nil {
 		return fmt.Errorf("%w: %s parameter sets are not usable: %v", ErrTrackConfig, codec, err)
 	}
+	if visual, ok := entry.(*mp4.VisualSampleEntryBox); ok {
+		return writeAspect(trak, visual, cfg)
+	}
 	return nil
+}
+
+// writeAspect states a known sample aspect ratio as a pasp box, ISO/IEC
+// 14496-12 §12.1.4, and gives the track header the display width that ratio
+// makes of the frame, as §8.3.2 defines the track's width and as ffmpeg's movenc
+// writes both (mov_write_pasp_tag, and track_width_1616 in mov_write_tkhd_tag).
+//
+// The ratio is reduced first, as movenc reduces it: 2:2 and 1:1 are the same
+// pixel. An unknown ratio writes nothing, which is what a reader reads as "not
+// stated" -- and is not the same as square, which is why a 1:1 that IS known is
+// written, not skipped.
+func writeAspect(trak *mp4.TrakBox, entry *mp4.VisualSampleEntryBox, cfg TrackConfig) error {
+	h, v := cfg.SARWidth, cfg.SARHeight
+	if h <= 0 || v <= 0 {
+		return nil
+	}
+	if uint64(h) > maxUint32 || uint64(v) > maxUint32 {
+		return fmt.Errorf("%w: %s aspect ratio %d:%d does not fit a pasp box",
+			ErrTrackConfig, cfg.Codec, h, v)
+	}
+	d := gcd(uint64(h), uint64(v))
+	entry.AddChild(&mp4.PaspBox{HSpacing: uint32(uint64(h) / d), VSpacing: uint32(uint64(v) / d)})
+	// The track header holds the display width in 16.16 fixed point. One that
+	// does not fit keeps the frame width, as movenc keeps it.
+	hi, lo := bits.Mul64(uint64(cfg.Width)<<16, uint64(h)/d)
+	if width := lo / (uint64(v) / d); hi == 0 && width <= maxUint32 {
+		trak.Tkhd.Width = mp4.Fixed32(width)
+	}
+	return nil
+}
+
+// maxUint32 is the largest value a 32-bit box field holds.
+const maxUint32 = 1<<32 - 1
+
+// gcd is the greatest common divisor of two positive numbers. It is generic
+// because the AVI reader (#64) reduces 32-bit rates with it and the pasp
+// writer (#78) 64-bit ratios: both had declared their own gcd.
+func gcd[T uint32 | uint64](a, b T) T {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }
 
 // These two indirections exist so the failure they guard can be tested: both

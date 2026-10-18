@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 	"slices"
 	"strings"
 	"time"
@@ -554,6 +555,7 @@ func mkvTrackConfig(te mkvTrackEntry, timescale uint32) (TrackConfig, error) {
 	}
 	if te.Video != nil {
 		cfg.Width, cfg.Height = int(te.Video.PixelWidth), int(te.Video.PixelHeight)
+		cfg.SARWidth, cfg.SARHeight = mkvAspect(te.Video)
 	}
 	if te.Audio != nil {
 		cfg.Channels, cfg.SampleRate = int(te.Audio.Channels), int(te.Audio.SamplingFrequency)
@@ -568,6 +570,63 @@ func mkvTrackConfig(te mkvTrackEntry, timescale uint32) (TrackConfig, error) {
 		return TrackConfig{}, err
 	}
 	return cfg, nil
+}
+
+// mkvDisplayUnknown is the DisplayUnit that says the display size states no
+// shape at all (RFC 9559 §5.1.4.1.28.14, Table 10). 0 to 3 -- pixels, centimetres,
+// inches, a display aspect ratio -- all state one.
+const mkvDisplayUnknown = 4
+
+// maxAspectSide bounds each side of a reduced aspect ratio, as ffmpeg's
+// av_reduce(..., INT_MAX) bounds it, so the ratio fits a pasp box and an int on
+// every platform.
+const maxAspectSide = math.MaxInt32
+
+// mkvAspect is the sample aspect ratio a Matroska video track states, the way
+// RFC 9559 §5.1.4.1.28 defines its display size and the way ffmpeg's
+// matroskadec reads it (mkv_parse_video): the shown frame -- PixelWidth and
+// PixelHeight less the crops -- displayed at DisplayWidth by DisplayHeight, so
+// one pixel is (DisplayWidth x shown height) : (DisplayHeight x shown width).
+//
+// With DisplayUnit 0, the default, an absent DisplayWidth or DisplayHeight is the
+// shown size itself, so a track stating neither states square pixels; that is
+// what a WebM written by ffmpeg with a 1:1 ratio looks like. Under the other
+// units a display size has no default, so a missing one, like DisplayUnit 4
+// ("unknown"), leaves the ratio unknown: 0:0. The crops are §5.1.4.1.28.8 to
+// .11, the display sizes .12 and .13 (whose defaults Tables 8 and 9 give), the
+// unit .14 (Table 10).
+func mkvAspect(v *mkvVideo) (int, int) {
+	if v.DisplayUnit >= mkvDisplayUnknown ||
+		v.PixelCropLeft+v.PixelCropRight >= v.PixelWidth ||
+		v.PixelCropTop+v.PixelCropBottom >= v.PixelHeight {
+		return 0, 0
+	}
+	shownW := v.PixelWidth - v.PixelCropLeft - v.PixelCropRight
+	shownH := v.PixelHeight - v.PixelCropTop - v.PixelCropBottom
+	dw, dh := v.DisplayWidth, v.DisplayHeight
+	if v.DisplayUnit == 0 {
+		if dw == 0 {
+			dw = shownW
+		}
+		if dh == 0 {
+			dh = shownH
+		}
+	}
+	if dw == 0 || dh == 0 {
+		return 0, 0
+	}
+	// The products are taken in 128 bits: every factor is a 64-bit element.
+	nh, nl := bits.Mul64(dw, shownH)
+	dhh, dl := bits.Mul64(dh, shownW)
+	if nh != 0 || dhh != 0 {
+		return 0, 0
+	}
+	d := gcd(nl, dl)
+	num, den := nl/d, dl/d
+	if num > maxAspectSide || den > maxAspectSide {
+		return 0, 0
+	}
+	return int(num), int(den)
 }
 
 // mkvCodecPrivate decodes a track's CodecPrivate into the fields its codec is
