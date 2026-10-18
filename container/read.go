@@ -84,6 +84,14 @@ func newTSReader(data []byte) (*Reader, error) {
 	return r, nil
 }
 
+// sourceSize is how many bytes the file holds, wherever it is read from.
+func (r *Reader) sourceSize() uint64 {
+	if held := len(r.data); held > 0 {
+		return uint64(held)
+	}
+	return uint64(r.size)
+}
+
 // sampleBytes is one sample's data, sliced out of what is held in memory or
 // read from the file at the position the tables state.
 func (r *Reader) sampleBytes(offset, end uint64) ([]byte, error) {
@@ -628,6 +636,18 @@ func (r *Reader) progressiveSamples(trak *mp4.TrakBox) ([]Sample, error) {
 	count := stbl.Stsz.GetNrSamples()
 	if count == 0 {
 		return nil, fmt.Errorf("%w: track %d is empty", ErrNoSamples, trak.Tkhd.TrackID)
+	}
+	// ⛔ The count is a CLAIM, and everything below is sized from it. A table
+	// of sizes is bounded by the bytes that hold it, but a uniform size makes
+	// stsz twenty bytes whatever count it states: a 674-byte file stating
+	// 0xFFFFFFFF samples made this reserve 164 GiB. Every sample is the
+	// uniform size, so together they cannot outrun the file -- and a count
+	// that says they do is refused before anything is sized from it.
+	if uniform := uint64(stbl.Stsz.SampleUniformSize); uniform > 0 {
+		if need, held := uint64(count)*uniform, r.sourceSize(); need > held {
+			return nil, fmt.Errorf("%w: track %d states %d samples of %d bytes, and the file holds %d",
+				ErrSampleData, trak.Tkhd.TrackID, count, uniform, held)
+		}
 	}
 	// A chunk table with no entry cannot say where sample one lives, and
 	// asking anyway panics inside the box reader. A file off the network is
