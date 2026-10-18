@@ -16,8 +16,8 @@ import (
 // which only the frame's own header says.
 //
 // ⛔ A packetised unit need not hold whole frames. ISO/IEC 13818-1 2.4.3.7 has
-// a PTS refer to "the first access unit commencing in the PES packet", which
-// only means something because a unit may also hold the end of the one before.
+// a unit's PTS refer to the first access unit that begins in it, which only
+// means something because a unit may also hold the end of the one before.
 // FFmpeg aligns them, which is why a reader that assumed it would pass every
 // test made from FFmpeg's output; a frame that straddles two units is carried
 // over here instead, and timed from the unit it began in.
