@@ -124,10 +124,12 @@ type sourceTrack struct {
 // is the loop a caller otherwise writes by hand, and the foundation of Cut and
 // Concat.
 //
-// Nothing is re-encoded and no sample's bytes are touched. What the output
-// cannot carry over is timing the muxer does not express: each track's timeline
-// restarts at zero and advances by its own sample durations, so edit lists and
-// gaps in the input are not reproduced.
+// Nothing is re-encoded and no sample's bytes are touched. An MP4 input's edit
+// lists are carried as they stand (TrackConfig.EditList), so each track keeps
+// the presentation it had. What the output cannot carry over is other timing
+// the muxer does not express: each track's timeline restarts at zero and
+// advances by its own sample durations, so gaps between samples are not
+// reproduced.
 //
 // A track whose samples cannot be read fails the whole copy, because the reader
 // cannot tell a deliberately empty track from an unreadable sample table;
@@ -156,6 +158,10 @@ func Remux(w io.Writer, src *Reader, opts ...RemuxOption) error {
 // Samples are kept whole: end excludes the first sample that starts at or after
 // it rather than truncating one, and a range that selects nothing still writes
 // a file naming its tracks.
+//
+// An edit list cannot be copied into a cut, whose media starts elsewhere. One
+// that only says where the presentation starts is replaced by the muxer's own,
+// and one that says more is refused with ErrEditList (see dropEditList).
 func Cut(w io.Writer, src *Reader, start, end time.Duration, opts ...RemuxOption) error {
 	if start < 0 || (end > 0 && end <= start) {
 		return fmt.Errorf("%w: %v to %v", ErrTimeRange, start, end)
@@ -165,8 +171,21 @@ func Cut(w io.Writer, src *Reader, start, end time.Duration, opts ...RemuxOption
 	if err != nil {
 		return err
 	}
+	full := make([][]Sample, len(tracks))
+	for i, t := range tracks {
+		full[i] = t.samples
+	}
 	if err := trim(tracks, start, end, set.strictSync); err != nil {
 		return err
+	}
+	for i, t := range tracks {
+		// The kept samples are a slice of the full ones, so they reach the end
+		// of the track exactly when their last element is its last.
+		kept, all := t.samples, full[i]
+		keepsTail := len(kept) > 0 && &kept[len(kept)-1] == &all[len(all)-1]
+		if tracks[i].cfg, err = dropEditList(t, all, keepsTail, "a cut"); err != nil {
+			return err
+		}
 	}
 	return writeCopy(w, set, [][]sourceTrack{tracks})
 }
@@ -217,6 +236,24 @@ func Concat(w io.Writer, srcs []*Reader, opts ...RemuxOption) error {
 			doing := fmt.Sprintf("putting input %d after input %d", i+2, i+1)
 			if err := refuseTimedTextShift(t, t.samples, ErrTrackMismatch, doing); err != nil {
 				return err
+			}
+		}
+	}
+	// One input is a Remux, which carries its edit lists as they are. Several
+	// put each input's media after the one before, where no input's list
+	// applies any more; see dropEditList.
+	//
+	// ⛔ Before padTimedText, not after: the list's media times count in the
+	// samples the source holds, and the empty sample padding appends would
+	// make a list that covers the whole track look as if it ended early.
+	if len(inputs) > 1 {
+		for i, in := range inputs {
+			for j, t := range in {
+				cfg, err := dropEditList(t, t.samples, true, "a concatenation")
+				if err != nil {
+					return fmt.Errorf("input %d: %w", i+1, err)
+				}
+				in[j].cfg = cfg
 			}
 		}
 	}

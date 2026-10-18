@@ -142,7 +142,21 @@ type TrackConfig struct {
 	// codec configuration wherever the track goes. StartDelay is what the
 	// CONTAINER says, for any codec, and it has to be rewritten into the
 	// form the output container uses.
+	//
+	// When EditList is set, the MP4 muxers write that instead and this is not
+	// added to it: the list already says where the presentation starts.
 	StartDelay time.Duration
+	// EditList is the track's MP4 edit list, as the MP4 reader found it, or
+	// nil. Muxer and ProgressiveMuxer write it as it stands, in place of the
+	// one they would build from the first composition offset and StartDelay,
+	// so a track copied from one MP4 into another keeps its presentation edit
+	// for edit. A caller who wants the muxers' own edit list sets it to nil.
+	//
+	// Matroska has no edit lists: WebMMuxer takes the one shape it can state,
+	// an optional empty edit followed by one edit at the normal rate, as a
+	// shift of the track's times, and refuses any other. TSMuxer ignores it.
+	// Cut and Concat refuse a list they cannot carry; see ErrEditList.
+	EditList *EditList
 }
 
 // VPxConfig is what the vpcC record says about a VP8 or VP9 track. The colour
@@ -298,6 +312,11 @@ func (m *Muxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	case cfg.Timescale == 0:
 		return 0, fmt.Errorf("%w: %s track has no timescale", ErrTrackConfig, cfg.Codec)
 	}
+	if cfg.EditList != nil {
+		if err := fragmentedEditList(cfg.EditList); err != nil {
+			return 0, err
+		}
+	}
 	if m.init == nil {
 		m.init = mp4.CreateEmptyInit()
 		m.init.Moov.Mvhd.NextTrackID = 1
@@ -310,6 +329,12 @@ func (m *Muxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	trak := m.init.AddEmptyTrack(cfg.Timescale, trackHandler(cfg), lang)
 	if err := describe(trak, cfg); err != nil {
 		return 0, err
+	}
+	if cfg.EditList != nil {
+		// Known now, so written now: writeHeader leaves a track that already
+		// has its edit box alone.
+		edts, _ := cfg.EditList.mp4Edits(m.init.Moov.Mvhd.Timescale, cfg.Timescale, 0)
+		setEdits(trak, edts)
 	}
 	t := &muxTrack{id: trak.Tkhd.TrackID, timescale: cfg.Timescale, trak: trak,
 		priming: primingTicks(cfg.StartDelay, cfg.Timescale)}

@@ -228,8 +228,9 @@ mp4ff. go-avkit reads them, the same way through `Demux`, `NewReader`,
 Measured over 2375 MP4 files: 17 are refused. 16 of them `ffprobe` refuses too
 (no movie box), and the last one is an AVI file with a `.mp4` name.
 
-Edit lists (`elst`) are not applied: samples come back in decode order, once
-each, as the sample tables list them.
+Edit lists (`elst`) are read and carried (see "Edit lists, MP4 to MP4"), but not
+applied: samples come back in decode order, once each, as the sample tables
+list them.
 
 ## Encoder priming survives a remux
 
@@ -259,12 +260,12 @@ milliseconds by default and that timescale is carried over, so a 21.333 ms
 priming is stated as 21 — rounded to the nearest tick, not down. That is a third
 of a millisecond lost where a whole 21.333 ms frame was gained before.
 
-Only one shape of edit list is read: a single entry starting at a positive media
-time at rate 1, which is what priming looks like. Several entries, an empty edit
-or another rate describe a presentation this package does not reproduce, and
-reading a delay out of one would state something the output does not do. The
-media time is in composition time, so the first sample's composition offset is
-taken off it before it is read as a priming (see below).
+A priming is read out of one shape of edit list only: a single entry starting at
+a positive media time at rate 1, which is what priming looks like. The media
+time is in composition time, so the first sample's composition offset is taken
+off it before it is read as a priming (see below). Any other list is carried
+whole as `TrackConfig.EditList` instead (see "Edit lists, MP4 to MP4"). When
+that is set, the MP4 muxers write the list and do not add `StartDelay` to it.
 
 ## B-frames start at zero
 
@@ -319,6 +320,39 @@ where the edit list adds one box, and ffmpeg's own output that way
 The packets are untouched: ffmpeg's `framemd5` of the video, packets and
 decoded frames alike, is identical to the source's, at identical timestamps, in
 all six copies.
+
+## Edit lists, MP4 to MP4
+
+An edit list (ISO/IEC 14496-12 §8.6.5, §8.6.6) says which stretches of a
+track's media make up its presentation: an empty edit (`EmptyEdit`) delays the
+track, an edit at `NormalRate` plays media from a composition time onwards, a
+rate of zero holds one frame. The MP4 reader hands the whole list over as
+`TrackConfig.EditList`, every entry as the file states it. Durations stay in the
+source's movie timescale (`MovieTimescale`). Media times are rebased onto the
+samples `Samples` returns, for a fragmented file whose first fragment starts
+later on its media timeline (its `tfdt`). The list is not applied to the
+samples.
+
+What each operation does with it:
+
+| | |
+|---|---|
+| `Remux`, `Join`, `JoinProgressive`, a caller's own copy | written as it stands. Durations are restated in the output's movie timescale, rounded up. A progressive copy of a fragmented file's last edit of duration zero ("to the end", §8.6.6.1, only allowed in a fragmented file) states its length. The track header lasts what the edits do (§8.3.2.3). |
+| `Muxer` (fragmented) | takes an optional empty edit followed by one edit at the normal rate, and refuses more with `ErrTrackConfig`. ffmpeg turns its edit list support off for a fragmented file ("multiple edit list entries, not supported in fragmented MP4 files"): a two-edit list copied into one presented all 100 frames where the source presents 50. `ProgressiveMuxer` writes it. |
+| `Cut`, `Concat` of several inputs | both move the media the list counts in, so it cannot be copied. A list that only says where the presentation starts (one edit at the normal rate, reaching the end of the media) is dropped, and the muxer states that start itself. Anything else is refused with `ErrEditList`: an empty edit placing the track later than its siblings, several edits, a dwell or another rate. So is an edit ending before the media does (how a gapless AAC file trims its padding) when the output keeps the track's end. |
+| `WebMMuxer` | Matroska has presentation times and no edit lists. An optional empty edit and one edit at the normal rate become a shift of the track's times: the empty edit delays them by its length, and an edit starting before the first frame's composition time shows it that much later. Anything else is refused with `ErrTrackConfig`. A priming after the first frame is shown, as `WebMMuxer` shows any priming but Opus's. |
+| `TSMuxer` | ignores it. |
+
+Measured with ffmpeg 9.0.2 on 4 s files made the way the fixtures
+`bframes-delayed.mp4` and `bframes-twoedits.mp4` are:
+
+- The sound put 0.5 s late with `-itsoffset`, which ffmpeg writes as an empty
+  edit of 479 ms and then the media. The fragmented, progressive and Matroska
+  copies all start the sound at 0.479, as the source does. Their packet and
+  decoded-video `framemd5` are identical to the source's.
+- The picture's list rewritten into two edits of 1 s, the media's first and
+  third seconds. The progressive copy decodes the same 50 frames at the same
+  times as the source.
 
 ## AC-3 and Enhanced AC-3 out of Matroska
 

@@ -83,6 +83,33 @@ func TestElementaryAudioRemuxesToMP4AndMatroska(t *testing.T) {
 	}
 }
 
+// TestASubtitleTrackWithAnEditListConcatenates: subtitles (#56) pad a WebVTT
+// track to the end of its input before the next one follows, and general edit
+// lists (#62) drop a list that only says where the presentation starts, after
+// checking that it covers the whole media. The list is checked against the
+// samples the source holds, before padding: checked after, the padding would
+// look like media the list leaves out, and the concatenation would be refused.
+func TestASubtitleTrackWithAnEditListConcatenates(t *testing.T) {
+	hi := cueSample(t, vttc("", "", "hi"))
+	r := fixtureReader(t,
+		fixtureTrack{cfg: av1Track(1000, 64, 48), samples: marked('v', 10, 100, 5)},
+		fixtureTrack{cfg: TrackConfig{Kind: Subtitle, Codec: "wvtt", Timescale: 1000,
+			EditList: &EditList{MovieTimescale: 1000, Edits: []Edit{{SegmentDuration: 300, MediaTime: 0, Rate: NormalRate}}}},
+			samples: []Sample{{Data: hi, Duration: 300, Sync: true}}})
+	if cfg, _ := r.TrackConfig(2); cfg.EditList == nil {
+		t.Fatal("the fixture's subtitle track lost its edit list; the test would test nothing")
+	}
+	var buf bytes.Buffer
+	if err := Concat(&buf, []*Reader{r, r}); err != nil {
+		t.Fatalf("Concat: %v", err)
+	}
+	_, samples := readBack(t, buf.Bytes())
+	assertShown(t, "concat", shown(t, samples[1]), []shownSample{
+		{duration: 300, cues: []shownCue{{text: "hi"}}}, {duration: 700},
+		{duration: 300, cues: []shownCue{{text: "hi"}}},
+	})
+}
+
 // checkBack reads a written file back and compares its one track with the
 // source's.
 func checkBack(t *testing.T, what string, data []byte, cfg TrackConfig, in []Sample) {

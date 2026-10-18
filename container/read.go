@@ -266,6 +266,23 @@ func (r *Reader) firstCompositionOffset(trak *mp4.TrakBox) int32 {
 	return 0
 }
 
+// firstDecodeTime is when a track's first sample decodes on the timeline its
+// edit list counts in: zero in a progressive file, whose decoding times start
+// there by construction (§8.6.1.2), and the first track fragment's tfdt in a
+// fragmented one. A fragment stating none starts where the track does.
+func (r *Reader) firstDecodeTime(trak *mp4.TrakBox) uint64 {
+	if !r.mp4.IsFragmented() {
+		return 0
+	}
+	for _, traf := range r.trackFragments(trak.Tkhd.TrackID) {
+		if traf.Tfdt != nil {
+			return traf.Tfdt.BaseMediaDecodeTime()
+		}
+		break
+	}
+	return 0
+}
+
 // trackFragments yields, in file order, every track fragment of one track
 // together with where the movie fragment holding it starts, which is what its
 // data offsets count from. A fragment may carry several tracks, one track
@@ -414,6 +431,7 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 		SampleRate: track.SampleRate,
 		Language:   track.Language,
 		StartDelay: mp4StartDelay(trak, track.Timescale, r.firstCompositionOffset(trak)),
+		EditList:   mp4EditList(trak, movieBox(r.mp4).Mvhd.Timescale, r.firstDecodeTime(trak)),
 	}
 	stsd := trak.Mdia.Minf.Stbl.Stsd
 	switch {
