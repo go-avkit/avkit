@@ -78,6 +78,12 @@ func joinInto(m sampleWriter, srcs []*Reader, opts ...RemuxOption) error {
 			if err != nil {
 				continue // a track holding nothing
 			}
+			// What the container could not state -- a Matroska VP9 track's
+			// profile and level, an AC-3 track's configuration -- is read out
+			// of the frames, as Remux, Cut and Concat read it (readSource).
+			if cfg, err = describeFromSamples(cfg, samples); err != nil {
+				return fmt.Errorf("container: declare track %d: %w", id, err)
+			}
 			outID, err := m.AddTrack(cfg)
 			if err != nil {
 				return fmt.Errorf("container: declare track %d: %w", id, err)
