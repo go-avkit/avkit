@@ -439,10 +439,9 @@ func checkBack(t *testing.T, what string, data []byte, cfg TrackConfig, in []Sam
 		t.Errorf("%s: %s %d ch %d Hz, the source %s %d ch %d Hz", what,
 			got.Codec, got.Channels, got.SampleRate, cfg.Codec, cfg.Channels, cfg.SampleRate)
 	}
-	// FLAC's STREAMINFO, and AAC's AudioSpecificConfig in an MP4 (#68 writes
-	// it verbatim), travel as they are. (WebMMuxer rebuilds the AAC one from
-	// fields, a residual L10 noted on #54, so it is not compared there.)
-	if (cfg.Codec == "fLaC" || cfg.Codec == "mp4a" && strings.HasPrefix(what, "MP4")) && !bytes.Equal(got.CodecConfig, cfg.CodecConfig) {
+	// FLAC's STREAMINFO and AAC's AudioSpecificConfig travel as they are:
+	// #68 writes the AAC one verbatim into an MP4, #79 into Matroska.
+	if (cfg.Codec == "fLaC" || cfg.Codec == "mp4a") && !bytes.Equal(got.CodecConfig, cfg.CodecConfig) {
 		t.Errorf("%s: %s configuration % x, the source % x", what, cfg.Codec, got.CodecConfig, cfg.CodecConfig)
 	}
 	out, err := back.Samples(ids[0])

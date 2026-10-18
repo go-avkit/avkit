@@ -1040,6 +1040,23 @@ func TestWebMAddTrackRefusesWhatItCannotDescribe(t *testing.T) {
 				Channels: 9, SampleRate: 48000},
 			want: ErrTrackConfig,
 		},
+		// Configuration 7 is eight channels (ISO/IEC 14496-3 Table 1.19), so
+		// seven channels have no configuration at all.
+		"aac with seven channels and no record": {
+			cfg: TrackConfig{Kind: Audio, Codec: "A_AAC", Timescale: 48000,
+				Channels: 7, SampleRate: 48000},
+			want: ErrTrackConfig,
+		},
+		"aac whose record does not decode": {
+			cfg: TrackConfig{Kind: Audio, Codec: "A_AAC", Timescale: 48000,
+				Channels: 2, SampleRate: 48000, CodecConfig: []byte{0xff}},
+			want: ErrTrackConfig,
+		},
+		"aac whose record leaves the channels to a track that states none": {
+			cfg: TrackConfig{Kind: Audio, Codec: "A_AAC", Timescale: 48000,
+				SampleRate: 48000, CodecConfig: []byte{0x11, 0x80}},
+			want: ErrTrackConfig,
+		},
 		"aac of a profile nothing supports": {
 			cfg: TrackConfig{Kind: Audio, Codec: "A_AAC", Timescale: 48000,
 				Channels: 2, SampleRate: 48000, AudioObjectType: 3},

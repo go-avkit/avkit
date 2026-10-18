@@ -116,8 +116,9 @@ type TrackConfig struct {
 	// CodecConfig is the codec configuration record of a track whose
 	// parameters are not NAL units, such as the av1C payload of AV1. For AAC
 	// it is the AudioSpecificConfig (ISO/IEC 14496-3), which the MP4 muxers
-	// write verbatim and take the channel count from; without one they build a
-	// record from AudioObjectType, Channels and SampleRate. For FLAC it is the
+	// and the WebM muxer write verbatim and take the channel count from;
+	// without one they build a record from AudioObjectType, Channels and
+	// SampleRate. For FLAC it is the
 	// "fLaC" signature and every metadata block, STREAMINFO first, as
 	// Matroska's CodecPrivate holds them. For WebVTT it is the header of the
 	// WebVTT file, the text of the vttC box (left empty, the bare "WEBVTT"
