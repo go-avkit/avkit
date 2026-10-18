@@ -9,9 +9,10 @@
 // all three, handing back a track's samples and the configuration needed to
 // write it elsewhere — which is what turns an HLS segment, or a WebM, into an
 // MP4. Both also read, and never write, the formats that are a stream rather
-// than a container — ADTS, MPEG audio (MP3/MP2/MP1) and native FLAC — and two
-// legacy ones, Ogg (Opus, Vorbis, FLAC) and WAV (linear PCM), walking each
-// whole in one pass. Muxer writes a fragmented MP4 from tracks that arrive
+// than a container — ADTS, MPEG audio (MP3/MP2/MP1) and native FLAC — and
+// three legacy ones, Ogg (Opus, Vorbis, FLAC), WAV (linear PCM) and AVI
+// (H.264, MPEG-4 Part 2, Motion JPEG and their audio), walking each whole in
+// one pass. Muxer writes a fragmented MP4 from tracks that arrive
 // separately —
 // which is what a DASH presentation, keeping its video and audio apart,
 // requires — and never re-encodes: samples are written as handed over.
@@ -94,7 +95,7 @@ func (t Track) DurationSeconds() float64 {
 
 // File is a demuxed container's structure.
 type File struct {
-	Format    string // "mp4", "matroska", "webm", "mpegts", "adts", "mpegaudio", "flac", "ogg" or "wav"
+	Format    string // "mp4", "matroska", "webm", "mpegts", "adts", "mpegaudio", "flac", "ogg", "wav" or "avi"
 	Brand     string // MP4 major brand (e.g. "isom"); "" for Matroska
 	Timescale uint32 // movie/segment timescale (units per second)
 	Duration  uint64 // overall duration in Timescale units

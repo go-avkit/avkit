@@ -38,6 +38,7 @@ func init() {
 var mpegAudioSyntax = frameSyntax{
 	name:       "mpegaudio",
 	headerSize: mpaHeaderSize,
+	sync:       0xFF,
 	length: func(data []byte) int {
 		f, err := parseMPAFrame(data)
 		if err != nil {
