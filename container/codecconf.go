@@ -168,7 +168,14 @@ func ConfigFromSamples(codec string, samples []Sample, opts ...ConfigOption) (St
 	case "opus":
 		return refuse(name, "an Opus stream carries no identification header; only its container states one")
 	case "ac-3", "ec-3":
-		return refuse(name, "the bit stream information of an AC-3 sync frame is not read by this package")
+		cfg, err = ac3StreamConfig(name, samples)
+	case "mp1", "mp2", "mp3":
+		cfg, err = mpaStreamConfig(name, samples)
+	case "flac":
+		// RFC 9639 9.1.2 and 9.1.4: a frame header may leave its sample
+		// rate and bit depth to STREAMINFO, and the block and frame size
+		// bounds, the sample count and the MD5 are in STREAMINFO alone.
+		return refuse(name, "a FLAC frame may leave its rate and bit depth to STREAMINFO, which only the stream header holds")
 	default:
 		return StreamConfig{}, fmt.Errorf("%w: %q", ErrUnsupportedCodec, codec)
 	}

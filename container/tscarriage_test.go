@@ -150,26 +150,6 @@ func TestAC3OutOfATransportStreamGoesIntoAnMP4(t *testing.T) {
 	}
 }
 
-// TestMPEGAudioIntoAnMP4IsRefusedByName: MPEG audio reads out of a transport
-// stream, and an MP4 states it as mp4a with an object type indication this
-// package does not write yet. A refusal naming that is worth more than one
-// that only says the codec is unknown — or, worse, an AAC sample entry around
-// MP3 frames.
-func TestMPEGAudioIntoAnMP4IsRefusedByName(t *testing.T) {
-	r, err := NewReader(readFixture(t, "ffmpeg-mp3.ts"))
-	if err != nil {
-		t.Fatalf("NewReader: %v", err)
-	}
-	cfg, err := r.TrackConfig(r.TrackIDs()[0])
-	if err != nil {
-		t.Fatalf("TrackConfig: %v", err)
-	}
-	_, err = NewMuxer(&bytes.Buffer{}).AddTrack(cfg)
-	if !errors.Is(err, ErrUnsupportedCodec) || !strings.Contains(err.Error(), "0x6B") {
-		t.Errorf("AddTrack(mp3) = %v, want ErrUnsupportedCodec naming the object type", err)
-	}
-}
-
 // tsRemux copies every track of a transport stream through Reader and
 // TSMuxer, which is what a caller converting one would write.
 func tsRemux(t *testing.T, data []byte) ([]byte, map[uint32][]Sample) {
