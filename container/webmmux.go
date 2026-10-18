@@ -189,6 +189,12 @@ type webmTrack struct {
 	// last written, which is what keeps the rounding from accumulating.
 	nextTime uint64
 	end      uint64
+	// shift is the composition offset of the track's first sample, taken off
+	// every presentation time so that the first frame is shown at zero, and
+	// shifted says it has been taken: a first offset of zero is one too. See
+	// WriteSample.
+	shift   int64
+	shifted bool
 	// endTick is the same end in file ticks. Every frame's end was converted
 	// when it was written, and refused there if the scale could not state it,
 	// so the segment's duration is the largest of them rather than a
@@ -740,6 +746,14 @@ func webmAudioFields(cfg TrackConfig, id string) (*webmAudio, error) {
 // CompositionOffset is added to its time rather than written beside it. Samples
 // are written in the order handed over: a caller interleaving several tracks
 // keeps them in step, as it must for the fragmented MP4 muxer too.
+//
+// The first sample's composition offset is then taken off every one of the
+// track's times, so its first frame is shown at zero, as the MP4 muxers' edit
+// list shows it. Without that a track that reorders its frames -- H.264 with
+// B-frames -- started late by its reordering delay while its audio started at
+// zero. A frame shown before that first one, which only a group of pictures
+// begun before the stream can have and which a decoder starting here discards,
+// would fall before the start of the track and is refused.
 func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 	switch {
 	case m.closed:
@@ -755,7 +769,13 @@ func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 	if !ok {
 		return fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
 	}
-	presentation := int64(t.nextTime) + int64(s.CompositionOffset)
+	// Kept aside until the sample is accepted: a refused first sample must not
+	// decide where the next one is shown.
+	shift := t.shift
+	if !t.shifted {
+		shift = presentationStart(s.CompositionOffset, 0)
+	}
+	presentation := int64(t.nextTime) + int64(s.CompositionOffset) - shift
 	if presentation < 0 {
 		return fmt.Errorf("%w: a composition offset of %d puts the frame at %d, before the track starts",
 			ErrSample, s.CompositionOffset, presentation)
@@ -808,6 +828,7 @@ func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 		t.held = &heldFrame{data: s.Data, tick: tick, duration: duration, sync: s.Sync}
 	}
 	t.nextTime += uint64(s.Duration)
+	t.shift, t.shifted = shift, true
 	if end := uint64(presentation) + uint64(s.Duration); end > t.end {
 		t.end, t.endTick = end, endTick
 	}

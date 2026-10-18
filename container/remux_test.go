@@ -335,6 +335,12 @@ func TestRemuxReportsAWriteFailure(t *testing.T) {
 	if err := Remux(&failWriter{}, src); err == nil {
 		t.Fatal("a failing writer was ignored")
 	}
+	// The header goes out with the first fragment, so with fragments short
+	// enough to be closed while samples are still being copied the failure
+	// is met in the middle of the copy, not at its end.
+	if err := Remux(&failWriter{}, src, MuxOptions(FragmentDuration(time.Millisecond))); err == nil {
+		t.Fatal("a failing writer was ignored mid-copy")
+	}
 }
 
 func TestRemuxReportsAConfigurationItCannotRead(t *testing.T) {
