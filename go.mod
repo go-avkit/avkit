@@ -3,7 +3,7 @@ module github.com/go-avkit/avkit
 go 1.27.1
 
 require (
-	github.com/Eyevinn/mp4ff v0.60.0
+	github.com/Eyevinn/mp4ff v0.61.0
 	github.com/asticode/go-astits v1.16.0
 	github.com/at-wat/ebml-go v0.19.4
 )
