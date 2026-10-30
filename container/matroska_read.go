@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 	"slices"
 	"strings"
 	"time"
@@ -51,9 +52,11 @@ type mkvReadDoc struct {
 }
 
 type mkvReadSegment struct {
-	Info    mkvInfo      `ebml:"Info"`
-	Tracks  mkvTracks    `ebml:"Tracks"`
-	Cluster []mkvCluster `ebml:"Cluster"`
+	Info        mkvInfo          `ebml:"Info"`
+	Tracks      mkvTracks        `ebml:"Tracks"`
+	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
+	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
+	Cluster     []mkvCluster     `ebml:"Cluster"`
 }
 
 // mkvCluster is one cluster: the timestamp its blocks are counted from, then
@@ -71,9 +74,29 @@ type mkvCluster struct {
 // marks a sync sample: a plain integer could not tell a reference of zero — a
 // frame referring to one at the same timestamp — from no reference at all.
 type mkvBlockGroup struct {
-	BlockDuration  uint64     `ebml:"BlockDuration,omitempty"`
-	ReferenceBlock []int64    `ebml:"ReferenceBlock,omitempty"`
-	Block          ebml.Block `ebml:"Block"`
+	BlockDuration  uint64             `ebml:"BlockDuration,omitempty"`
+	ReferenceBlock []int64            `ebml:"ReferenceBlock,omitempty"`
+	Block          ebml.Block         `ebml:"Block"`
+	BlockAdditions *mkvBlockAdditions `ebml:"BlockAdditions,omitempty"`
+	// DiscardPadding is how much of what the block decodes to is not
+	// presented, in nanoseconds: at its end when positive, at its start when
+	// negative (RFC 9559 §5.1.3.5.7). See mkvEndTrim.
+	DiscardPadding int64 `ebml:"DiscardPadding,omitempty"`
+}
+
+// mkvBlockAdditions is data a block carries beside its frame. The only one read
+// is the addition of an S_TEXT/WEBVTT cue, which holds its settings, identifier
+// and comments.
+type mkvBlockAdditions struct {
+	BlockMore []mkvBlockMore `ebml:"BlockMore"`
+}
+
+// mkvBlockMore is one addition. Its BlockAddID defaults to 1 when the element
+// is absent, which is what zero stands for here: the specification gives the
+// element no zero value of its own.
+type mkvBlockMore struct {
+	BlockAddID      uint64 `ebml:"BlockAddID,omitempty"`
+	BlockAdditional []byte `ebml:"BlockAdditional"`
 }
 
 // mkvReadTrack is one Matroska track, read and converted.
@@ -105,6 +128,10 @@ type mkvBlock struct {
 	time   int64
 	stated int64
 	sync   bool
+	// additional is the block's addition of ID 1, nil when it has none.
+	additional []byte
+	// discard is the block group's DiscardPadding, in nanoseconds.
+	discard int64
 }
 
 // mkvFrame is one frame of a track, once a laced block has been taken apart.
@@ -156,7 +183,8 @@ func newMatroskaReader(data []byte) (*Reader, error) {
 		blocks[number] = append(blocks[number], mkvBlockOf(ref))
 	}
 	r := &Reader{data: data, mkv: map[uint32]*mkvReadTrack{}, truncated: truncated}
-	file := &File{Format: matroskaFormat(doc.Header.DocType), Timescale: timescale}
+	file := &File{Format: matroskaFormat(doc.Header.DocType), Timescale: timescale,
+		Metadata: mkvMetadata(doc.Segment.Info.Title, doc.Segment.Tags, doc.Segment.Attachments)}
 	segDuration := int64(doc.Segment.Info.Duration)
 	for _, te := range doc.Segment.Tracks.TrackEntry {
 		t := mkvReadTrackOf(te, timescale, scale, segDuration, blocks[te.TrackNumber])
@@ -187,17 +215,92 @@ func mkvReadTrackOf(te mkvTrackEntry, timescale uint32, scale uint64,
 		// track's own rate better than the Audio element does.
 		t.track.Codec = t.config.Codec
 		t.track.Channels, t.track.SampleRate = t.config.Channels, t.config.SampleRate
+		t.track.Kind = t.config.Kind
 	}
 	// DefaultDuration is stated in nanoseconds; every other duration of a
 	// Matroska file is counted in timestamp ticks, so it is converted here
 	// once. A frame shorter than a tick rounds to nothing and is treated as
 	// unstated rather than as a zero-length frame.
 	perFrame := int64((te.DefaultDuration + scale/2) / scale)
-	t.samples, t.samplesErr = mkvSamples(uint32(te.TrackNumber), blocks, perFrame, segDuration)
+	if codec, _ := mkvCodec(te.CodecID); codec == codecWebVTT {
+		t.samples, t.samplesErr = mkvCueSamples(te, blocks, perFrame, timescale)
+	} else {
+		t.samples, t.samplesErr = mkvSamples(uint32(te.TrackNumber), blocks, perFrame, segDuration)
+	}
 	for _, s := range t.samples {
 		t.track.Duration += uint64(s.Duration)
 	}
+	if t.configErr == nil && t.samplesErr == nil && t.config.Kind == Audio {
+		t.config.EditList = mkvEndTrim(t.config, blocks, t.samples, int64(scale))
+	}
 	return t
+}
+
+// mkvEndTrim is the edit list that ends an audio track's presentation where
+// the DiscardPadding of its last blocks says it ends, or nil when the samples
+// already end there.
+//
+// Matroska states the padding an encoder leaves after the last sample as the
+// DiscardPadding of the blocks it falls in (RFC 9559 §5.1.3.5.7), which
+// ffmpeg's matroskadec hands the decoder as samples to skip at the end of the
+// packet (AV_PKT_DATA_SKIP_SAMPLES). An MP4 has no such field: ffmpeg's movenc
+// turns it into the end of the edit list (elst_end_pts), the packet lasting
+// max(frame_size, duration) less the padding. That is what this states, for
+// the muxers to write: Muxer and ProgressiveMuxer as an edit ending before the
+// media, WebMMuxer as DiscardPadding again (webmEdit).
+//
+// What a block decodes to is its duration as the samples state it -- to the
+// next block, or BlockDuration, DefaultDuration and the rest for the last one
+// (mkvLastDuration) -- and, for the last block, at least the duration of the
+// one before, which stands for the frame size movenc takes from the codec: a
+// last block may state either its whole length or only what it presents,
+// ffmpeg writing both (a 1024-sample AAC frame as 16 ms beside a padding of
+// 5.33 ms; an MP3 frame with no duration beside a padding of 19.84 ms). The
+// padding is converted to the track's ticks rounded to the nearest, half
+// down, so a padding of half a tick trims nothing.
+//
+// Only the padding at the end of the track is an end: the run of blocks
+// carrying a positive padding that reaches the last one, whose earliest end is
+// where the presentation stops. A padding inside the track, followed by a
+// block that has none, would need the media cut and is left alone, and so is a
+// negative padding, which is at the start of a block and is what CodecDelay
+// already states as StartDelay.
+func mkvEndTrim(cfg TrackConfig, blocks []mkvBlock, samples []Sample, scale int64) *EditList {
+	// Where each sample starts being shown, and which sample is each block's
+	// last: a laced block is several samples, and its padding is at the end of
+	// the last of them.
+	starts := make([]int64, len(samples))
+	var dts int64
+	for i, s := range samples {
+		starts[i] = dts + int64(s.CompositionOffset)
+		dts += int64(s.Duration)
+	}
+	last := make([]int, len(blocks))
+	k := -1
+	for j, b := range blocks {
+		k += len(b.frames)
+		last[j] = k
+	}
+	end := int64(math.MaxInt64)
+	for j := len(blocks) - 1; j >= 0 && blocks[j].discard > 0; j-- {
+		k := last[j]
+		decoded := int64(samples[k].Duration)
+		if k == len(samples)-1 && k > 0 {
+			decoded = max(decoded, int64(samples[k-1].Duration))
+		}
+		padding := blocks[j].discard / scale
+		if 2*(blocks[j].discard%scale) > scale {
+			padding++
+		}
+		end = min(end, starts[k]+decoded-padding)
+	}
+	start := presentationStart(samples[0].CompositionOffset, primingTicks(cfg.StartDelay, cfg.Timescale))
+	if end >= presentedUntil(samples) || end <= start {
+		return nil
+	}
+	return &EditList{MovieTimescale: cfg.Timescale, Edits: []Edit{{
+		SegmentDuration: uint64(end - start), MediaTime: start, Rate: NormalRate,
+	}}}
 }
 
 // unmarshalMatroska reads the whole document with the reference ebml-go
@@ -220,7 +323,7 @@ func unmarshalMatroska(data []byte) (*mkvReadDoc, []bool, error) {
 			groups = append(groups, true)
 		}
 	}
-	if err := ebml.Unmarshal(bytes.NewReader(data), &doc, ebml.WithElementReadHooks(hook)); err != nil {
+	if err := ebml.Unmarshal(bytes.NewReader(data), &doc, ebml.WithElementReadHooks(hook), mkvLeafLimit(len(data))); err != nil {
 		return nil, nil, err
 	}
 	return &doc, groups, nil
@@ -291,6 +394,14 @@ func mkvBlockOf(ref mkvBlockRef) mkvBlock {
 	if ref.group != nil {
 		b.stated = int64(ref.group.BlockDuration)
 		b.sync = len(ref.group.ReferenceBlock) == 0
+		b.discard = ref.group.DiscardPadding
+		if adds := ref.group.BlockAdditions; adds != nil {
+			for _, more := range adds.BlockMore {
+				if more.BlockAddID == 0 || more.BlockAddID == mkvWebVTTAddition {
+					b.additional = more.BlockAdditional
+				}
+			}
+		}
 	}
 	return b
 }
@@ -454,11 +565,15 @@ func mkvLastDuration(trackID uint32, stated, perFrame, remaining int64, written 
 
 // mkvCodecs maps a Matroska CodecID onto the sample entry TrackConfig states.
 //
-// Vorbis and FLAC are named here because a caller is owed the name of what a
-// track holds even when this package cannot write it: the samples of such a
-// track still read, and it is Muxer.AddTrack that reports the sample entry it
-// cannot build.
+// Vorbis is named here because a caller is owed the name of what a track holds
+// even when an MP4 cannot carry it: the samples of such a track still read, and
+// it is Muxer.AddTrack that reports the sample entry no registry defines.
 var mkvCodecs = map[string]string{
+	// The layer is the codec, as FFmpeg's names for them have it.
+	"A_MPEG/L1": "mp1",
+	"A_MPEG/L2": "mp2",
+	"A_MPEG/L3": "mp3",
+
 	"V_MPEG4/ISO/AVC":  "avc1",
 	"V_MPEGH/ISO/HEVC": "hvc1",
 	"V_AV1":            "av01",
@@ -467,6 +582,11 @@ var mkvCodecs = map[string]string{
 	"A_OPUS":           "Opus",
 	"A_VORBIS":         "vorb",
 	"A_FLAC":           "fLaC",
+	// Both text mappings become WebVTT: SRT's cue text is a subset of
+	// WebVTT's, and ISO/IEC 14496-30 defines no SRT sample entry to carry it
+	// as it is.
+	mkvWebVTT: codecWebVTT,
+	mkvSRT:    codecWebVTT,
 }
 
 // mkvCodecFamilies maps the CodecIDs Matroska writes with a suffix: A_AAC and
@@ -477,6 +597,9 @@ var mkvCodecFamilies = []struct{ prefix, codec string }{
 	{"A_AAC", "mp4a"},
 	{"A_EAC3", "ec-3"},
 	{"A_AC3", "ac-3"},
+	// SUBTITLES, CAPTIONS, DESCRIPTIONS and METADATA: the same cues, which
+	// an MP4 has one sample entry for.
+	{webmWebVTTAll, codecWebVTT},
 }
 
 // mkvCodec is the sample entry a Matroska CodecID names.
@@ -509,14 +632,78 @@ func mkvTrackConfig(te mkvTrackEntry, timescale uint32) (TrackConfig, error) {
 	}
 	if te.Video != nil {
 		cfg.Width, cfg.Height = int(te.Video.PixelWidth), int(te.Video.PixelHeight)
+		cfg.SARWidth, cfg.SARHeight = mkvAspect(te.Video)
 	}
 	if te.Audio != nil {
-		cfg.Channels, cfg.SampleRate = int(te.Audio.Channels), int(te.Audio.SamplingFrequency)
+		cfg.Channels, cfg.SampleRate = int(te.Audio.Channels), te.Audio.rate()
+	}
+	if codec == codecWebVTT {
+		// The WebM mapping files descriptions and metadata under a track
+		// type of their own, 0x21; read as cues, they are subtitles all the
+		// same, which is the only kind an MP4 text track has.
+		cfg.Kind = Subtitle
 	}
 	if err := mkvCodecPrivate(&cfg, te); err != nil {
 		return TrackConfig{}, err
 	}
 	return cfg, nil
+}
+
+// mkvDisplayUnknown is the DisplayUnit that says the display size states no
+// shape at all (RFC 9559 §5.1.4.1.28.14, Table 10). 0 to 3 -- pixels, centimetres,
+// inches, a display aspect ratio -- all state one.
+const mkvDisplayUnknown = 4
+
+// maxAspectSide bounds each side of a reduced aspect ratio, as ffmpeg's
+// av_reduce(..., INT_MAX) bounds it, so the ratio fits a pasp box and an int on
+// every platform.
+const maxAspectSide = math.MaxInt32
+
+// mkvAspect is the sample aspect ratio a Matroska video track states, the way
+// RFC 9559 §5.1.4.1.28 defines its display size and the way ffmpeg's
+// matroskadec reads it (mkv_parse_video): the shown frame -- PixelWidth and
+// PixelHeight less the crops -- displayed at DisplayWidth by DisplayHeight, so
+// one pixel is (DisplayWidth x shown height) : (DisplayHeight x shown width).
+//
+// With DisplayUnit 0, the default, an absent DisplayWidth or DisplayHeight is the
+// shown size itself, so a track stating neither states square pixels; that is
+// what a WebM written by ffmpeg with a 1:1 ratio looks like. Under the other
+// units a display size has no default, so a missing one, like DisplayUnit 4
+// ("unknown"), leaves the ratio unknown: 0:0. The crops are §5.1.4.1.28.8 to
+// .11, the display sizes .12 and .13 (whose defaults Tables 8 and 9 give), the
+// unit .14 (Table 10).
+func mkvAspect(v *mkvVideo) (int, int) {
+	if v.DisplayUnit >= mkvDisplayUnknown ||
+		v.PixelCropLeft+v.PixelCropRight >= v.PixelWidth ||
+		v.PixelCropTop+v.PixelCropBottom >= v.PixelHeight {
+		return 0, 0
+	}
+	shownW := v.PixelWidth - v.PixelCropLeft - v.PixelCropRight
+	shownH := v.PixelHeight - v.PixelCropTop - v.PixelCropBottom
+	dw, dh := v.DisplayWidth, v.DisplayHeight
+	if v.DisplayUnit == 0 {
+		if dw == 0 {
+			dw = shownW
+		}
+		if dh == 0 {
+			dh = shownH
+		}
+	}
+	if dw == 0 || dh == 0 {
+		return 0, 0
+	}
+	// The products are taken in 128 bits: every factor is a 64-bit element.
+	nh, nl := bits.Mul64(dw, shownH)
+	dhh, dl := bits.Mul64(dh, shownW)
+	if nh != 0 || dhh != 0 {
+		return 0, 0
+	}
+	d := gcd(nl, dl)
+	num, den := nl/d, dl/d
+	if num > maxAspectSide || den > maxAspectSide {
+		return 0, 0
+	}
+	return int(num), int(den)
 }
 
 // mkvCodecPrivate decodes a track's CodecPrivate into the fields its codec is
@@ -531,6 +718,11 @@ func mkvCodecPrivate(cfg *TrackConfig, te mkvTrackEntry) error {
 		}
 		cfg.SPS, cfg.PPS = record.SPSnalus, record.PPSnalus
 	case "hvc1":
+		// Walked first: a record whose counts outrun its bytes costs the
+		// decoder milliseconds per track (see checkHEVCRecord).
+		if err := checkHEVCRecord(te.CodecPrivate); err != nil {
+			return fmt.Errorf("%w: %s %v", ErrTrackConfig, te.CodecID, err)
+		}
 		record, err := hevc.DecodeHEVCDecConfRec(te.CodecPrivate)
 		if err != nil {
 			return fmt.Errorf("%w: %s hvcC: %v", ErrTrackConfig, te.CodecID, err)
@@ -564,10 +756,31 @@ func mkvCodecPrivate(cfg *TrackConfig, te mkvTrackEntry) error {
 		}
 	case "vp08", "vp09":
 		cfg.VPx = mkvVPx(te.Video)
+	case codecWebVTT:
+		// Only S_TEXT/WEBVTT states a header, and only in CodecPrivate. The
+		// WebM mapping stores none and SRT has none, so both are the bare
+		// signature.
+		if te.CodecID == mkvWebVTT && len(te.CodecPrivate) > 0 {
+			if _, err := webvttConfig(TrackConfig{CodecConfig: te.CodecPrivate}); err != nil {
+				return fmt.Errorf("%w (%s CodecPrivate)", err, te.CodecID)
+			}
+			cfg.CodecConfig = te.CodecPrivate
+		}
+	case "fLaC":
+		// STREAMINFO is the normative statement of the format, and a
+		// private that does not hold one describes a track nothing can
+		// decode.
+		_, format, err := parseFLACConfig(te.CodecPrivate)
+		if err != nil {
+			return fmt.Errorf("%w (%s CodecPrivate)", err, te.CodecID)
+		}
+		cfg.CodecConfig = te.CodecPrivate
+		cfg.SampleRate, cfg.Channels = format.SampleRate, format.Channels
 	default:
-		// AC-3, Enhanced AC-3, Vorbis and FLAC state their configuration in
-		// their own form, which travels as it stands: AC-3 usually states
-		// none at all in Matroska, keeping it in the frames instead.
+		// AC-3, Enhanced AC-3 and Vorbis state their configuration in their
+		// own form, which travels as it stands: AC-3 usually states none at
+		// all in Matroska, keeping it in the frames instead, and MPEG audio
+		// never states one.
 		cfg.CodecConfig = te.CodecPrivate
 	}
 	return nil

@@ -226,13 +226,14 @@ func TestWebMMuxerRoundTripsThroughDemuxAndEBML(t *testing.T) {
 	if f.Segment.Info.Duration != 0 {
 		t.Errorf("duration = %v, want none in a streaming segment", f.Segment.Info.Duration)
 	}
-	// The file says where its clusters are; it still does not carry a
-	// SeekHead saying where that index itself is.
+	// The file says where its clusters are. Streamed to a writer that cannot
+	// seek, it carries no SeekHead: the Cues it would have to name are not
+	// known when the SeekHead would have to be written.
 	if f.Segment.Cues == nil || len(f.Segment.Cues.CuePoint) == 0 {
 		t.Error("the file names no cluster position")
 	}
 	if f.Segment.SeekHead != nil {
-		t.Errorf("this muxer writes no SeekHead, got %+v", f.Segment.SeekHead)
+		t.Errorf("a stream that cannot be seeked carries a SeekHead: %+v", f.Segment.SeekHead)
 	}
 	if len(f.Segment.Tracks.TrackEntry) != 2 {
 		t.Fatalf("track entries = %+v", f.Segment.Tracks.TrackEntry)
@@ -849,10 +850,16 @@ func TestWebMAcceptsBothSpellingsOfACodec(t *testing.T) {
 		"vorb":             "A_VORBIS",
 		"Opus":             "A_OPUS",
 		"A_OPUS":           "A_OPUS",
-		// Read by this package, written by nothing in it.
-		"A_FLAC":   "",
-		"A_AC3":    "",
-		"ec-3":     "",
+		"A_FLAC":           "A_FLAC",
+		"fLaC":             "A_FLAC",
+		"A_AC3":            "A_AC3",
+		"A_AC3/BSID9":      "A_AC3",
+		"ac-3":             "A_AC3",
+		"ec-3":             "A_EAC3",
+		"A_MPEG/L2":        "A_MPEG/L2",
+		"mp1":              "A_MPEG/L1",
+		"mp3":              "A_MPEG/L3",
+		// Neither read nor written by this package.
 		"V_THEORA": "",
 		"":         "",
 	}
@@ -915,9 +922,17 @@ func TestWebMAddTrackRefusesWhatItCannotDescribe(t *testing.T) {
 			cfg:  TrackConfig{Kind: Video, Codec: "V_THEORA", Timescale: 1000},
 			want: ErrUnsupportedCodec,
 		},
-		"a codec this package reads but cannot write": {
+		"flac without its metadata blocks": {
 			cfg:  TrackConfig{Kind: Audio, Codec: "A_FLAC", Timescale: 48000},
-			want: ErrUnsupportedCodec,
+			want: ErrTrackConfig,
+		},
+		"mpeg audio without a sample rate": {
+			cfg:  TrackConfig{Kind: Audio, Codec: "mp3", Timescale: 44100, Channels: 2},
+			want: ErrTrackConfig,
+		},
+		"ac-3 without a channel count": {
+			cfg:  TrackConfig{Kind: Audio, Codec: "ac-3", Timescale: 48000, SampleRate: 48000},
+			want: ErrTrackConfig,
 		},
 		"a kind that disagrees with the codec": {
 			cfg:  TrackConfig{Kind: Audio, Codec: "V_VP9", Timescale: 1000, Width: 16, Height: 16},
@@ -1023,6 +1038,23 @@ func TestWebMAddTrackRefusesWhatItCannotDescribe(t *testing.T) {
 		"aac with more channels than a configuration states": {
 			cfg: TrackConfig{Kind: Audio, Codec: "A_AAC", Timescale: 48000,
 				Channels: 9, SampleRate: 48000},
+			want: ErrTrackConfig,
+		},
+		// Configuration 7 is eight channels (ISO/IEC 14496-3 Table 1.19), so
+		// seven channels have no configuration at all.
+		"aac with seven channels and no record": {
+			cfg: TrackConfig{Kind: Audio, Codec: "A_AAC", Timescale: 48000,
+				Channels: 7, SampleRate: 48000},
+			want: ErrTrackConfig,
+		},
+		"aac whose record does not decode": {
+			cfg: TrackConfig{Kind: Audio, Codec: "A_AAC", Timescale: 48000,
+				Channels: 2, SampleRate: 48000, CodecConfig: []byte{0xff}},
+			want: ErrTrackConfig,
+		},
+		"aac whose record leaves the channels to a track that states none": {
+			cfg: TrackConfig{Kind: Audio, Codec: "A_AAC", Timescale: 48000,
+				SampleRate: 48000, CodecConfig: []byte{0x11, 0x80}},
 			want: ErrTrackConfig,
 		},
 		"aac of a profile nothing supports": {

@@ -175,8 +175,9 @@ func (f ac3Frame) BitRate() int {
 		return 0
 	}
 	// 8 bits a byte over the time the frame covers, which is 256 samples a
-	// block.
-	return 8 * f.FrameSize * f.SampleRate / (f.NumBlocks * 256) / 1000
+	// block. Worked in 64 bits: the product passes 2^31 for a frame of 5.6 kB
+	// at 48 kHz, and where int is 32 bits wide it wrapped to a small rate.
+	return int(8 * int64(f.FrameSize) * int64(f.SampleRate) / int64(f.NumBlocks*256) / 1000)
 }
 
 // ac3Bits reads fields in a straight line and keeps the first error, like the

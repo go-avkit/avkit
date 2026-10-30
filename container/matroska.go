@@ -33,13 +33,16 @@ type mkvHeader struct {
 }
 
 type mkvSegment struct {
-	Info   mkvInfo   `ebml:"Info"`
-	Tracks mkvTracks `ebml:"Tracks"`
+	Info        mkvInfo          `ebml:"Info"`
+	Tracks      mkvTracks        `ebml:"Tracks"`
+	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
+	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
 }
 
 type mkvInfo struct {
 	TimecodeScale uint64  `ebml:"TimecodeScale,omitempty"`
 	Duration      float64 `ebml:"Duration,omitempty"`
+	Title         string  `ebml:"Title,omitempty"`
 }
 
 type mkvTracks struct {
@@ -69,9 +72,21 @@ type mkvTrackEntry struct {
 }
 
 type mkvVideo struct {
-	PixelWidth  uint64     `ebml:"PixelWidth"`
-	PixelHeight uint64     `ebml:"PixelHeight"`
-	Colour      *mkvColour `ebml:"Colour"`
+	PixelWidth  uint64 `ebml:"PixelWidth"`
+	PixelHeight uint64 `ebml:"PixelHeight"`
+	// The crop and display elements state the shape of a pixel (RFC 9559
+	// §5.1.4.1.28): the frame shown is PixelWidth and PixelHeight less the
+	// crops, and it is displayed at DisplayWidth by DisplayHeight, in the unit
+	// DisplayUnit names. A crop defaults to zero, DisplayUnit to 0 (pixels),
+	// and a display size cannot be zero, so a zero there is its absence.
+	PixelCropBottom uint64     `ebml:"PixelCropBottom,omitempty"`
+	PixelCropTop    uint64     `ebml:"PixelCropTop,omitempty"`
+	PixelCropLeft   uint64     `ebml:"PixelCropLeft,omitempty"`
+	PixelCropRight  uint64     `ebml:"PixelCropRight,omitempty"`
+	DisplayWidth    uint64     `ebml:"DisplayWidth,omitempty"`
+	DisplayHeight   uint64     `ebml:"DisplayHeight,omitempty"`
+	DisplayUnit     uint64     `ebml:"DisplayUnit,omitempty"`
+	Colour          *mkvColour `ebml:"Colour"`
 }
 
 // mkvColour is what a video track states about its colour, which for VP8 and
@@ -94,7 +109,40 @@ type mkvColour struct {
 
 type mkvAudio struct {
 	SamplingFrequency float64 `ebml:"SamplingFrequency"`
-	Channels          uint64  `ebml:"Channels"`
+	// OutputSamplingFrequency is the rate a decoder outputs when spectral band
+	// replication doubles the coded one (RFC 9559 §5.1.4.1.29.2); absent, it
+	// is SamplingFrequency (Table 19).
+	OutputSamplingFrequency float64 `ebml:"OutputSamplingFrequency,omitempty"`
+	Channels                uint64  `ebml:"Channels"`
+}
+
+// rate is the rate the track decodes to: OutputSamplingFrequency where it is
+// stated, SamplingFrequency otherwise. It is the one ffmpeg's matroskadec gives
+// the stream (par->sample_rate = out_samplerate), and the one an MP4 sample entry
+// states: an HE-AAC track written by ffmpeg says 22050 and 44100 here, and the
+// track is 44100 Hz audio.
+func (a *mkvAudio) rate() int {
+	if a.OutputSamplingFrequency > 0 {
+		return int(a.OutputSamplingFrequency)
+	}
+	return int(a.SamplingFrequency)
+}
+
+// mkvLeafLimit caps the leaf elements ebml-go will read from a document of n
+// bytes at n.
+//
+// ⛔ ebml-go sizes a leaf's buffer from the size the element STATES and only
+// then finds out whether the bytes are there; its own cap is 128 MiB. A
+// 26-byte file stating a DocType of 128 MiB - 1 made each parse allocate 128
+// MiB. Every document parsed here is whole in memory, so no leaf in it can be
+// longer than it, and a stated size past that is refused before any buffer is
+// made. (Zero would turn the limit off, hence the floor of one byte.)
+func mkvLeafLimit(n int) ebml.UnmarshalOption {
+	limit := uint64(ebml.DefaultMaxLeafElementSize)
+	if uint64(n) < limit {
+		limit = uint64(n)
+	}
+	return ebml.WithMaxLeafElementSize(max(limit, 1))
 }
 
 // demuxMatroska reads an EBML/Matroska (MKV or WebM) file with the reference
@@ -104,7 +152,7 @@ type mkvAudio struct {
 // would look like an empty one — surfacing the error is the safer contract.
 func demuxMatroska(data []byte) (*File, error) {
 	var doc mkvDoc
-	if err := ebml.Unmarshal(bytes.NewReader(data), &doc); err != nil {
+	if err := ebml.Unmarshal(bytes.NewReader(data), &doc, mkvLeafLimit(len(data))); err != nil {
 		return nil, err
 	}
 	scale := doc.Segment.Info.TimecodeScale
@@ -117,6 +165,7 @@ func demuxMatroska(data []byte) (*File, error) {
 		// divisor of a second, so this division is exact.
 		Timescale: uint32(1_000_000_000 / scale),
 		Duration:  uint64(doc.Segment.Info.Duration),
+		Metadata:  mkvMetadata(doc.Segment.Info.Title, doc.Segment.Tags, doc.Segment.Attachments),
 	}
 	for _, te := range doc.Segment.Tracks.TrackEntry {
 		f.Tracks = append(f.Tracks, mkvTrack(te, f.Timescale, f.Duration))
@@ -150,7 +199,7 @@ func mkvTrack(te mkvTrackEntry, timescale uint32, duration uint64) Track {
 	}
 	if te.Audio != nil {
 		tr.Channels = int(te.Audio.Channels)
-		tr.SampleRate = int(te.Audio.SamplingFrequency)
+		tr.SampleRate = te.Audio.rate()
 	}
 	return tr
 }

@@ -9,7 +9,7 @@ on:
 permissions:
   contents: read
 
-# Track the latest stable Go (org convention). go.mod floor is 1.26.4.
+# CI pins the Go release below (Renovate moves it). The go.mod floor is 1.27.1.
 jobs:
   # Every file must be gofmt-clean.
   gofmt:
@@ -73,6 +73,23 @@ jobs:
         with:
           go-version: '1.27.2'
       - run: go env GOARCH && go test ./...
+
+  # The one 32-bit target. 386 runs natively on the amd64 runner, without qemu,
+  # and it is where int and uint are 32 bits wide: a length converted to int
+  # before it is compared, or a sum done in uint, wraps only here. The L8
+  # security audit (go-avkit/avkit#54) found five of its eight defects on 32-bit
+  # targets alone, none of which the 64-bit lanes could see. Coverage is gated
+  # on the 64-bit lanes; this one only vets and tests.
+  arch-386:
+    name: arch 386
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.2'
+      - run: GOARCH=386 go vet ./...
+      - run: GOARCH=386 go test ./...
 
   arch-qemu:
     name: arch ${{ matrix.goarch }} (qemu)

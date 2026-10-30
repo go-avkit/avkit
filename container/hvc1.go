@@ -112,15 +112,19 @@ func CheckHVC1(entry TrackConfig, samples []Sample) (HVC1Conformance, error) {
 // looks like -- and refusing the disagreement would leave the caller holding a
 // file nothing can repair.
 //
-// It composes with the other options, so a cut or a concatenation can be made
-// conformant in the same pass. A track that is not HEVC is left exactly as it
+// It composes with the other options, so a cut, a concatenation or a join
+// (Join and JoinProgressive alike) can be made conformant in the same pass. A track that is not HEVC is left exactly as it
 // is, which is what lets this be passed for a whole file without knowing what
 // is in it.
 //
-// The sample bytes DO change here, unlike every other remux: a parameter set
-// unit is removed from each sample that carries one. Nothing else in the sample
-// is touched, and a sample left with no units at all is an error rather than an
-// empty frame, because a frame is not a thing a track can be missing.
+// The sample bytes DO change here, unlike every other remux: every VPS, SPS
+// and PPS unit is removed from every sample of an HEVC track. Every other unit
+// keeps its bytes and its order, and each sample is written back as those units
+// behind four-byte lengths -- the form the sample entry it writes announces --
+// so a sample that held no set and was already in that form comes out byte for
+// byte the same, and one read in Annex B form comes out length-prefixed. A
+// sample left with no units at all is an error rather than an empty frame,
+// because a frame is not a thing a track can be missing.
 func ConformHVC1() RemuxOption {
 	return func(s *remuxSettings) { s.conformHVC1 = true }
 }
