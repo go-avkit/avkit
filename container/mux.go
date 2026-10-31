@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/bits"
 	"strings"
 	"time"
 
@@ -64,7 +65,11 @@ type Sample struct {
 	// Duration is how long the frame lasts, in the track's timescale.
 	Duration uint32
 	// CompositionOffset shifts presentation against decoding, for streams
-	// that reorder frames.
+	// that reorder frames. A track is presented from its FIRST sample's
+	// composition time: every muxer shows that frame at zero, the MP4 ones
+	// with an edit list and WebMMuxer by taking the offset off every block's
+	// time, so a reordering delay does not make the pictures late against
+	// their sound.
 	CompositionOffset int32
 	// Sync marks a frame a player can start decoding at.
 	Sync bool
@@ -75,12 +80,35 @@ type Sample struct {
 type TrackConfig struct {
 	Kind Kind
 	// Codec is the sample entry to write: "avc1", "avc3", "hvc1", "hev1",
-	// "av01", "vp08", "vp09", "mjpg", "mp4a", "Opus", "ac-3", "ec-3".
+	// "av01", "vp08", "vp09", "mjpg", "mp4a", "Opus", "ac-3", "ec-3", "fLaC",
+	// and "mp1", "mp2" or "mp3" for MPEG audio, which an MP4 writes as mp4a;
+	// and for timed text "wvtt" (WebVTT, ISO/IEC 14496-30) and "stpp" (TTML).
+	//
+	// A WebVTT track's samples are what ISO/IEC 14496-30 makes them, whatever
+	// container the track came from: each covers a stretch of time and holds
+	// the cues shown during it as vttc boxes, or one vtte box when none is, so
+	// the samples follow one another without a gap. Reader hands a Matroska
+	// WebVTT or SRT track back in that form, and WebMMuxer takes it.
 	Codec string
 	// Timescale is the unit of every duration of this track, per second.
 	Timescale uint32
 	// Width and Height are the frame size, for a video track.
 	Width, Height int
+	// SARWidth and SARHeight are the sample (pixel) aspect ratio of a video
+	// track: the shape of one pixel, width over height. Zero means it is not
+	// known, and then nothing is stated about it.
+	//
+	// The MP4 muxers write a known one as a pasp box (ISO/IEC 14496-12
+	// §12.1.4), and state the track header's width as the frame scaled by it,
+	// as ffmpeg's movenc does. That box matters most for VP8 and VP9, whose
+	// bitstreams have no aspect ratio of their own: without it a player is
+	// told nothing. WebMMuxer writes it as the track's display size: the
+	// display aspect ratio in a Matroska file, the width the frame is shown at
+	// in a WebM one, and DisplayUnit 4, "unknown", in a Matroska file when it
+	// is zero. Readers fill it in where the container states it: an MP4's
+	// pasp box, or a Matroska track's DisplayWidth and DisplayHeight, which
+	// default to the pixel size and so state square pixels when absent.
+	SARWidth, SARHeight int
 	// Channels and SampleRate describe an audio track.
 	Channels, SampleRate int
 	// Language is an ISO-639-2 code; "und" when empty.
@@ -89,9 +117,19 @@ type TrackConfig struct {
 	// raw NAL units without a start code.
 	SPS, PPS, VPS [][]byte
 	// CodecConfig is the codec configuration record of a track whose
-	// parameters are not NAL units, such as the av1C payload of AV1.
+	// parameters are not NAL units, such as the av1C payload of AV1. For AAC
+	// it is the AudioSpecificConfig (ISO/IEC 14496-3), which the MP4 muxers
+	// and the WebM muxer write verbatim and take the channel count from;
+	// without one they build a record from AudioObjectType, Channels and
+	// SampleRate. For FLAC it is the
+	// "fLaC" signature and every metadata block, STREAMINFO first, as
+	// Matroska's CodecPrivate holds them. For WebVTT it is the header of the
+	// WebVTT file, the text of the vttC box (left empty, the bare "WEBVTT"
+	// signature is written); for TTML it is the content of the stpp sample
+	// entry, which is carried as it stands.
 	CodecConfig []byte
-	// AudioObjectType selects the AAC profile; 0 means AAC-LC.
+	// AudioObjectType selects the AAC profile when no AudioSpecificConfig is
+	// given; 0 means AAC-LC.
 	AudioObjectType byte
 	// PreSkip is how many samples an Opus decoder discards at the start of
 	// the track, counted at 48 kHz whatever the input rate. A track written
@@ -111,15 +149,41 @@ type TrackConfig struct {
 	// MP4 as an edit list -- and a remux that dropped it would hand the
 	// output a frame the input never presented, so the two tracks would part
 	// company by that much. Readers fill it in from whichever form the source
-	// used, and Muxer.AddTrack writes an edit list for it; a caller that knows
-	// better can overwrite it.
+	// used, Muxer and ProgressiveMuxer write an edit list for it, and
+	// WebMMuxer the CodecDelay of an audio track whose codec states none of
+	// its own; a caller that knows better can overwrite it.
+	//
+	// It is counted from the track's first PRESENTED frame, not from its first
+	// decoded one: a track that reorders its frames starts its presentation
+	// at its first sample's CompositionOffset, which the muxers state on their
+	// own, and the priming comes after that. An MP4 edit list starting at that
+	// offset therefore reads back as no StartDelay at all.
 	//
 	// It is not PreSkip. PreSkip is Opus stating its own priming inside its
 	// identification header, in samples at 48 kHz, and it travels with the
 	// codec configuration wherever the track goes. StartDelay is what the
 	// CONTAINER says, for any codec, and it has to be rewritten into the
 	// form the output container uses.
+	//
+	// When EditList is set, the MP4 muxers write that instead and this is not
+	// added to it: the list already says where the presentation starts.
 	StartDelay time.Duration
+	// EditList is the track's MP4 edit list, as the MP4 reader found it, or
+	// nil. Two other readers state one, for an audio track whose end is
+	// padding: the MPEG audio reader, for an MP3 whose LAME tag says so, and
+	// the Matroska reader, for a track whose last blocks carry DiscardPadding
+	// the samples' own durations do not already leave out. It is one edit,
+	// from the priming to where the padding begins. Muxer and ProgressiveMuxer write it as it stands, in
+	// place of the one they would build from the first composition offset and
+	// StartDelay, so a track copied from one MP4 into another keeps its
+	// presentation edit for edit. A caller who wants the muxers' own edit list
+	// sets it to nil.
+	//
+	// Matroska has no edit lists: WebMMuxer takes the one shape it can state,
+	// an optional empty edit followed by one edit at the normal rate, as a
+	// shift of the track's times, and refuses any other. TSMuxer ignores it.
+	// Cut and Concat refuse a list they cannot carry; see ErrEditList.
+	EditList *EditList
 }
 
 // VPxConfig is what the vpcC record says about a VP8 or VP9 track. The colour
@@ -127,8 +191,13 @@ type TrackConfig struct {
 // that means "unspecified", is what a caller that does not know them should do.
 type VPxConfig struct {
 	// Profile is 0 to 3, and Level a value of the VP9 level table (10 for
-	// level 1, 11 for 1.1, and so on). Level 0 is not a level: a record that
-	// states it is refused rather than written as a guess.
+	// level 1, 11 for 1.1, and so on). A VP9 record stating level 0 is
+	// refused rather than written as a guess: the frames state the level.
+	//
+	// VP8 defines no level at all, and the VP Codec ISO Media File Format
+	// Binding's table gives 0 as "Undefined": a vp08 record states level 0,
+	// which is what a VP8 track read out of Matroska carries, and profile 0,
+	// the only one the binding allows for VP8.
 	Profile, Level byte
 	// BitDepth is 8, 10 or 12.
 	BitDepth byte
@@ -149,6 +218,8 @@ type MuxOption func(*muxSettings)
 type muxSettings struct {
 	fragmentDuration time.Duration
 	brand            string
+	index            bool
+	indexMemoryLimit uint64
 }
 
 // FragmentDuration sets how much media a fragment holds. A value of zero or
@@ -176,17 +247,25 @@ func Brand(b string) MuxOption {
 //
 // It is what joining separately delivered streams needs — a DASH presentation
 // keeps video and audio apart — and it never re-encodes: samples are written as
-// handed over.
+// handed over. Asked for a SegmentIndex, it also writes the sidx boxes that make
+// the file a DASH on-demand representation a client can fetch by byte range.
 type Muxer struct {
 	w        io.Writer
 	settings muxSettings
 
-	init     *mp4.InitSegment
-	tracks   []*muxTrack
-	byID     map[uint32]*muxTrack
-	started  bool
-	closed   bool
-	sequence uint32
+	init    *mp4.InitSegment
+	tracks  []*muxTrack
+	byID    map[uint32]*muxTrack
+	started bool
+	// headerOut is set once the initialisation segment is written, which is
+	// with the first fragment rather than the first sample: see writeHeader.
+	headerOut bool
+	closed    bool
+	sequence  uint32
+	// index is what a Muxer asked for a SegmentIndex keeps until Close;
+	// nil otherwise.
+	index    *segmentIndex
+	metadata *Metadata // what SetMetadata was given, nil for nothing
 }
 
 // muxTrack is one track's writing state.
@@ -196,54 +275,99 @@ type muxTrack struct {
 	nextTime  uint64
 	pending   []mp4.FullSample
 	buffered  uint64 // duration of pending samples, in timescale units
+
+	// trak is the track's box in the initialisation segment, which receives
+	// its edit list when the header is written.
+	trak *mp4.TrakBox
+	// priming is the track's StartDelay in its own timescale.
+	priming int64
+	// firstOffset is the composition offset of the track's first sample, and
+	// written says there was one.
+	firstOffset int32
+	written     bool
 }
 
-// writeStartDelay states a track's encoder priming as an edit list.
+// writeHeader writes the initialisation segment, once, stating in each track's
+// edit list where its presentation begins: at its first sample's composition
+// time, then past its priming (see presentationStart).
 //
-// An edit list says which media each stretch of the presentation comes from.
-// One entry whose media_time is the priming means "present from there on", so
-// the primed frames are decoded -- a decoder needs them -- and not shown. That
-// is the MP4 spelling of what Matroska writes as CodecDelay.
+// It is written with the FIRST FRAGMENT rather than the first sample, because
+// the composition offset it states is a sample's: a track that reorders its
+// frames is only known to once its first sample has arrived, and a header
+// written before then cannot say it. Holding it back costs nothing a reader can
+// see -- the first fragment is written in the same call -- and it is what
+// ffmpeg's movenc does under -movflags delay_moov for the same reason. A track
+// whose first sample arrives only after the first fragment has gone out cannot
+// be stated, and its edit list says its priming alone.
 //
-// segment_duration is left at zero, which this file format reads as "to the end
-// of the media". The alternative is the track's duration in the MOVIE
-// timescale, and a muxer writing fragments does not know it when the header
-// goes out: writing a wrong one would cut the track short, where zero cannot.
-func writeStartDelay(trak *mp4.TrakBox, cfg TrackConfig) {
-	if cfg.StartDelay <= 0 {
-		return
+// segment_duration is left at zero, which §8.6.6.1 allows in the initial movie
+// of a fragmented file and which reads as "to the end of the media". The
+// alternative is the track's duration in the MOVIE timescale, which a muxer
+// writing fragments does not know when the header goes out: writing a wrong
+// one would cut the track short, where zero cannot.
+func (m *Muxer) writeHeader() error {
+	if m.headerOut {
+		return nil
 	}
-	// The priming is counted in the track's own timescale, the same one its
-	// sample durations use, and rounded to the NEAREST tick. A timescale too
-	// coarse to hold it exactly is common -- Matroska counts in milliseconds by
-	// default, so a 21.333 ms AAC priming becomes 21 -- and rounding down would
-	// leave a sliver of the priming audible where rounding to nearest does not.
-	media := (int64(cfg.StartDelay)*int64(cfg.Timescale) + int64(time.Second)/2) / int64(time.Second)
-	if media <= 0 {
-		// A delay shorter than half a tick cannot be stated, and a whole tick
-		// would move the track by more than the delay it describes.
-		return
+	for _, t := range m.tracks {
+		// A header that failed to go out is written again on the next call,
+		// and must not gain a second edit box on the way.
+		if t.trak.Edts != nil {
+			continue
+		}
+		var first int32
+		if t.written {
+			first = t.firstOffset
+		}
+		if edts := presentationEdits(presentationStart(first, t.priming), 0); edts != nil {
+			setEdits(t.trak, edts)
+		}
 	}
-	elst := &mp4.ElstBox{Version: 1}
-	elst.Entries = append(elst.Entries, mp4.ElstEntry{
-		SegmentDuration: 0, MediaTime: media, MediaRateInteger: 1,
-	})
-	edts := &mp4.EdtsBox{}
-	// AddChild appends to Children, which is what the encoder writes; Elst is
-	// filled only when a file is DECODED. Setting both keeps the tree in memory
-	// saying the same thing as the bytes it will become.
-	edts.AddChild(elst)
-	edts.Elst = append(edts.Elst, elst)
-	trak.AddChild(edts)
+	if err := m.encodeInit(); err != nil {
+		return fmt.Errorf("container: write init segment: %w", err)
+	}
+	m.headerOut = true
+	// A segment index goes between the initialisation segment and the first
+	// fragment, so it notes where that is now that the header is out.
+	if m.index != nil {
+		return m.index.begin()
+	}
+	return nil
+}
+
+// setFtyp makes ftyp the file type box the initialisation segment is written
+// with.
+//
+// mp4ff's CreateEmptyInit already holds one -- major brand cmfc, compatible
+// cmfc and iso6 -- and an InitSegment is ENCODED from its Children, not from
+// its Ftyp field, which is filled only when a file is decoded. Setting the field
+// alone left that default in the bytes: every fragmented file claimed CMAF
+// (ISO/IEC 23000-19), which nothing here promises, and none carried the brand
+// the caller asked for. ISO/IEC 14496-12 §4.3 allows one ftyp, first in the
+// file, so the child is replaced where it stands.
+func setFtyp(init *mp4.InitSegment, ftyp *mp4.FtypBox) {
+	init.Ftyp = ftyp
+	for i, child := range init.Children {
+		if _, ok := child.(*mp4.FtypBox); ok {
+			init.Children[i] = ftyp
+		}
+	}
 }
 
 // NewMuxer returns a Muxer writing to w.
 func NewMuxer(w io.Writer, opts ...MuxOption) *Muxer {
-	settings := muxSettings{fragmentDuration: DefaultFragmentDuration, brand: DefaultBrand}
+	settings := muxSettings{
+		fragmentDuration: DefaultFragmentDuration, brand: DefaultBrand,
+		indexMemoryLimit: DefaultMediaMemoryLimit,
+	}
 	for _, opt := range opts {
 		opt(&settings)
 	}
-	return &Muxer{w: w, settings: settings, byID: map[uint32]*muxTrack{}}
+	m := &Muxer{w: w, settings: settings, byID: map[uint32]*muxTrack{}}
+	if settings.index {
+		m.index = newSegmentIndex(w, settings.indexMemoryLimit)
+	}
+	return m
 }
 
 // AddTrack declares a track and returns its identifier. Every track must be
@@ -258,24 +382,47 @@ func (m *Muxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	case cfg.Timescale == 0:
 		return 0, fmt.Errorf("%w: %s track has no timescale", ErrTrackConfig, cfg.Codec)
 	}
+	if cfg.EditList != nil {
+		if err := fragmentedEditList(cfg.EditList); err != nil {
+			return 0, err
+		}
+	}
 	if m.init == nil {
 		m.init = mp4.CreateEmptyInit()
 		m.init.Moov.Mvhd.NextTrackID = 1
-		m.init.Ftyp = mp4.NewFtyp(m.settings.brand, 0x200, []string{"isom", m.settings.brand, "dash"})
+		setFtyp(m.init, mp4.NewFtyp(m.settings.brand, 0x200, []string{"isom", m.settings.brand, "dash"}))
 	}
 	lang := cfg.Language
 	if lang == "" {
 		lang = "und"
 	}
-	trak := m.init.AddEmptyTrack(cfg.Timescale, handlerFor(cfg.Kind), lang)
+	trak := m.init.AddEmptyTrack(cfg.Timescale, trackHandler(cfg), lang)
 	if err := describe(trak, cfg); err != nil {
 		return 0, err
 	}
-	writeStartDelay(trak, cfg)
-	t := &muxTrack{id: trak.Tkhd.TrackID, timescale: cfg.Timescale}
+	if cfg.EditList != nil {
+		// Known now, so written now: writeHeader leaves a track that already
+		// has its edit box alone.
+		edts, _ := cfg.EditList.mp4Edits(m.init.Moov.Mvhd.Timescale, cfg.Timescale, 0)
+		setEdits(trak, edts)
+	}
+	t := &muxTrack{id: trak.Tkhd.TrackID, timescale: cfg.Timescale, trak: trak,
+		priming: primingTicks(cfg.StartDelay, cfg.Timescale)}
 	m.tracks = append(m.tracks, t)
 	m.byID[t.id] = t
 	return t.id, nil
+}
+
+// trackHandler is the handler a track is written with. Timed text is the one
+// case where the codec decides rather than the kind: ISO/IEC 14496-30 gives a
+// WebVTT track the 'text' handler and a null media header, and a TTML track the
+// 'subt' handler and a subtitle media header, and a player looking for one does
+// not find the other. mp4ff's handler table knows both by their sample entry.
+func trackHandler(cfg TrackConfig) string {
+	if codec := strings.ToLower(strings.TrimSpace(cfg.Codec)); isTimedText(codec) {
+		return codec
+	}
+	return handlerFor(cfg.Kind)
 }
 
 // handlerFor is the handler name an ISO-BMFF track of this kind carries.
@@ -352,15 +499,37 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 		if err := describeMJPEG(trak, cfg); err != nil {
 			return err
 		}
+	case "mp1", "mp2", "mp3":
+		// What an MPEG audio track is named when it is read. In an MP4 it
+		// is mp4a with object type indication 0x6B or 0x69 (MP4RA).
+		if err := describeMPEGAudio(trak, codec, cfg); err != nil {
+			return err
+		}
+	case "flac":
+		if err := describeFLAC(trak, cfg); err != nil {
+			return err
+		}
+	case "vorb":
+		return fmt.Errorf("%w: vorb: MP4RA registers no ISO-BMFF sample entry for Vorbis, so no player "+
+			"would know the track; Matroska carries it (WebMMuxer)", ErrUnsupportedCodec)
 	case "mp4a":
-		if cfg.SampleRate <= 0 {
-			return fmt.Errorf("%w: mp4a needs a sample rate", ErrTrackConfig)
+		if err := describeAAC(trak, cfg); err != nil {
+			return err
 		}
-		objType := cfg.AudioObjectType
-		if objType == 0 {
-			objType = aac.AAClc
+	case codecWebVTT:
+		if err := describeWebVTT(trak, cfg); err != nil {
+			return err
 		}
-		trak.SetAACDescriptor(objType, cfg.SampleRate)
+	case codecTTML:
+		if err := describeTTML(trak, cfg); err != nil {
+			return err
+		}
+	case "ipcm", "fpcm", "raw":
+		// ISO/IEC 23003-5 gives PCM its sample entries and a pcmC record,
+		// and mp4ff writes neither yet: refused by name rather than written
+		// as an entry a player would read as some other codec.
+		return fmt.Errorf("%w: %q: PCM sample entries (ISO/IEC 23003-5 ipcm/fpcm with pcmC) are not written yet",
+			ErrUnsupportedCodec, cfg.Codec)
 	default:
 		return fmt.Errorf("%w: %q", ErrUnsupportedCodec, cfg.Codec)
 	}
@@ -368,10 +537,56 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 	// nothing at all when it cannot read them. Writing a file whose sample
 	// entry is empty would produce something no player can open, so say so
 	// here instead.
-	if _, err := trak.Mdia.Minf.Stbl.Stsd.GetSampleDescription(0); err != nil {
+	entry, err := trak.Mdia.Minf.Stbl.Stsd.GetSampleDescription(0)
+	if err != nil {
 		return fmt.Errorf("%w: %s parameter sets are not usable: %v", ErrTrackConfig, codec, err)
 	}
+	if visual, ok := entry.(*mp4.VisualSampleEntryBox); ok {
+		return writeAspect(trak, visual, cfg)
+	}
 	return nil
+}
+
+// writeAspect states a known sample aspect ratio as a pasp box, ISO/IEC
+// 14496-12 §12.1.4, and gives the track header the display width that ratio
+// makes of the frame, as §8.3.2 defines the track's width and as ffmpeg's movenc
+// writes both (mov_write_pasp_tag, and track_width_1616 in mov_write_tkhd_tag).
+//
+// The ratio is reduced first, as movenc reduces it: 2:2 and 1:1 are the same
+// pixel. An unknown ratio writes nothing, which is what a reader reads as "not
+// stated" -- and is not the same as square, which is why a 1:1 that IS known is
+// written, not skipped.
+func writeAspect(trak *mp4.TrakBox, entry *mp4.VisualSampleEntryBox, cfg TrackConfig) error {
+	h, v := cfg.SARWidth, cfg.SARHeight
+	if h <= 0 || v <= 0 {
+		return nil
+	}
+	if uint64(h) > maxUint32 || uint64(v) > maxUint32 {
+		return fmt.Errorf("%w: %s aspect ratio %d:%d does not fit a pasp box",
+			ErrTrackConfig, cfg.Codec, h, v)
+	}
+	d := gcd(uint64(h), uint64(v))
+	entry.AddChild(&mp4.PaspBox{HSpacing: uint32(uint64(h) / d), VSpacing: uint32(uint64(v) / d)})
+	// The track header holds the display width in 16.16 fixed point. One that
+	// does not fit keeps the frame width, as movenc keeps it.
+	hi, lo := bits.Mul64(uint64(cfg.Width)<<16, uint64(h)/d)
+	if width := lo / (uint64(v) / d); hi == 0 && width <= maxUint32 {
+		trak.Tkhd.Width = mp4.Fixed32(width)
+	}
+	return nil
+}
+
+// maxUint32 is the largest value a 32-bit box field holds.
+const maxUint32 = 1<<32 - 1
+
+// gcd is the greatest common divisor of two positive numbers. It is generic
+// because the AVI reader (#64) reduces 32-bit rates with it and the pasp
+// writer (#78) 64-bit ratios: both had declared their own gcd.
+func gcd[T uint32 | uint64](a, b T) T {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }
 
 // These two indirections exist so the failure they guard can be tested: both
@@ -419,6 +634,10 @@ const opusHeadMagic = "OpusHead"
 // implicitly (mapping family 0).
 const opusHeadSize = 19
 
+// opusHeadMajor is the major version, the upper four bits of the version
+// octet, of the identification header RFC 7845 defines.
+const opusHeadMajor = 0
+
 // opusConfig builds the Opus configuration to write, from the identification
 // header when the caller has one and from the track's own fields otherwise.
 func opusConfig(cfg TrackConfig) (*mp4.DopsBox, error) {
@@ -448,9 +667,15 @@ func opusHead(head []byte) (*mp4.DopsBox, error) {
 	if len(head) < opusHeadSize || string(head[:len(opusHeadMagic)]) != opusHeadMagic {
 		return nil, fmt.Errorf("%w: Opus needs an %s identification header", ErrTrackConfig, opusHeadMagic)
 	}
-	if version := head[8]; version != 1 {
-		return nil, fmt.Errorf("%w: %s version %d is not one this can read",
-			ErrTrackConfig, opusHeadMagic, version)
+	// RFC 7845 §5.1 splits the version into a major nibble and a minor one: a
+	// change of the minor nibble is a compatible one, so a reader of version 1
+	// SHOULD accept anything up to 15 and SHOULD refuse 16 and above. A later
+	// minor version may append fields after the ones read here, and the RFC
+	// says those MUST NOT make the header invalid; they are ignored, and the
+	// header written back is a version 1 one, which is all this states.
+	if version := head[8]; version>>4 != opusHeadMajor {
+		return nil, fmt.Errorf("%w: %s version %d is major version %d, and only %d is defined",
+			ErrTrackConfig, opusHeadMagic, version, version>>4, opusHeadMajor)
 	}
 	channels := head[9]
 	if channels == 0 {
@@ -524,8 +749,16 @@ func vpxConfig(codec string, cfg TrackConfig) (*mp4.VppCBox, error) {
 			ErrTrackConfig, codec, cfg.Width, cfg.Height)
 	case v.Profile > 3:
 		return nil, fmt.Errorf("%w: %s profile %d is not one of 0 to 3", ErrTrackConfig, codec, v.Profile)
-	case v.Level == 0:
+	case v.Level == 0 && codec != "vp08":
+		// The binding's level table lists 0 as "Undefined", and a VP9 track
+		// has a level its frames state, which Remux reads when the container
+		// did not (describeFromSamples): a VP9 record stating none is refused
+		// rather than written as one.
 		return nil, fmt.Errorf("%w: %s needs a level; 0 is not one", ErrTrackConfig, codec)
+	case codec == "vp08" && v.Profile != 0:
+		// "VP8 only supports a profile value of 0." (VP Codec ISO Media File
+		// Format Binding v1.0, semantics of the VPCodecConfigurationRecord).
+		return nil, fmt.Errorf("%w: vp08 profile %d; VP8 only supports profile 0", ErrTrackConfig, v.Profile)
 	case v.BitDepth != 8 && v.BitDepth != 10 && v.BitDepth != 12:
 		return nil, fmt.Errorf("%w: %s bit depth %d is not 8, 10 or 12", ErrTrackConfig, codec, v.BitDepth)
 	case v.ChromaSubsampling > 3:
@@ -575,6 +808,91 @@ func describeMJPEG(trak *mp4.TrakBox, cfg TrackConfig) error {
 		return fmt.Errorf("%w: mjpg: %v", ErrTrackConfig, err)
 	}
 	return nil
+}
+
+// describeAAC writes the mp4a sample entry of an AAC track.
+//
+// Two fields say how many channels the track has, and they must agree: the
+// AudioSampleEntry's channelcount (ISO/IEC 14496-12 §12.2.3, "the number of
+// channels such as 1 (mono) or 2 (stereo)") and the channelConfiguration of the
+// AudioSpecificConfig (ISO/IEC 14496-3 §1.6.2.1, Table 1.19) that the esds
+// carries as its DecoderSpecificInfo. A decoder is set up from the second, so a
+// mono track whose record says stereo is decoded as stereo: ffprobe reports
+// channels=2 for it.
+//
+// When the caller has the track's AudioSpecificConfig -- every reader of this
+// package hands it over as CodecConfig -- it is written verbatim, as ffmpeg's
+// movenc.c writes the extradata it was given. Rebuilding it would lose what this
+// package does not model: the SBR and PS signalling of HE-AAC, a program
+// config element, the GASpecificConfig flags. The channel count of the sample
+// entry is then the one the record states, and the caller's only where the
+// record leaves it to the bitstream (configuration 0).
+//
+// Without one, the record is built from the track's fields; a channel count no
+// configuration of Table 1.19 states is refused rather than written as stereo.
+func describeAAC(trak *mp4.TrakBox, cfg TrackConfig) error {
+	if cfg.SampleRate <= 0 {
+		return fmt.Errorf("%w: mp4a needs a sample rate", ErrTrackConfig)
+	}
+	if len(cfg.CodecConfig) == 0 {
+		return buildAACEntry(trak, cfg)
+	}
+	asc, err := aac.DecodeAudioSpecificConfig(bytes.NewReader(cfg.CodecConfig))
+	if err != nil {
+		return fmt.Errorf("%w: mp4a AudioSpecificConfig: %v", ErrTrackConfig, err)
+	}
+	channels := aacChannels(asc.ChannelConfiguration)
+	if channels == 0 {
+		channels = cfg.Channels
+	}
+	if channels <= 0 || channels > 0xFFFF {
+		return fmt.Errorf("%w: mp4a AudioSpecificConfig leaves the channel count to the bitstream, and the track states none",
+			ErrTrackConfig)
+	}
+	esds := mp4.CreateEsdsBox(append([]byte(nil), cfg.CodecConfig...))
+	trak.Mdia.Minf.Stbl.Stsd.AddChild(mp4.CreateAudioSampleEntryBox("mp4a",
+		uint16(channels), 16, uint16(cfg.SampleRate), esds))
+	return nil
+}
+
+// buildAACEntry writes an mp4a sample entry whose AudioSpecificConfig is built
+// from the track's fields.
+func buildAACEntry(trak *mp4.TrakBox, cfg TrackConfig) error {
+	objType := cfg.AudioObjectType
+	if objType == 0 {
+		objType = aac.AAClc
+	}
+	var err error
+	switch {
+	case cfg.Channels == 0 || objType == aac.HEAACv2:
+		// Nothing stated, which has always meant stereo; and HE-AACv2 is a
+		// mono core that parametric stereo makes two of, so its record says 1
+		// whatever the output is.
+		err = trak.SetAACDescriptor(objType, cfg.SampleRate)
+	default:
+		configuration, ok := aacConfiguration(cfg.Channels)
+		if !ok {
+			return fmt.Errorf("%w: no AAC channel configuration states %d channels; pass the AudioSpecificConfig",
+				ErrTrackConfig, cfg.Channels)
+		}
+		err = trak.SetAACDescriptorWithChannelConfig(objType, configuration, cfg.SampleRate)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: mp4a: %v", ErrTrackConfig, err)
+	}
+	return nil
+}
+
+// aacConfiguration is the channelConfiguration of ISO/IEC 14496-3 Table 1.19
+// that states this many channels: the inverse of aacChannels.
+func aacConfiguration(channels int) (byte, bool) {
+	switch channels {
+	case 1, 2, 3, 4, 5, 6:
+		return byte(channels), true
+	case 8:
+		return 7, true
+	}
+	return 0, false
 }
 
 // maxFrameSide is the largest frame side a sample entry can state.
@@ -659,9 +977,10 @@ func decodeConfigBox(name string, payload []byte,
 	return box, nil
 }
 
-// WriteSample appends one frame to a track. The initialisation segment is
-// written before the first one, and a fragment is flushed once the first track
-// holds a fragment's worth of media and reaches a sync sample.
+// WriteSample appends one frame to a track. A fragment is flushed once the
+// first track holds a fragment's worth of media and reaches a sync sample, and
+// the initialisation segment is written just before the first fragment, when
+// every track's first sample says where its presentation begins.
 func (m *Muxer) WriteSample(trackID uint32, s Sample) error {
 	switch {
 	case m.closed:
@@ -677,11 +996,12 @@ func (m *Muxer) WriteSample(trackID uint32, s Sample) error {
 	if !ok {
 		return fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
 	}
-	if !m.started {
-		if err := m.init.Encode(m.w); err != nil {
-			return fmt.Errorf("container: write init segment: %w", err)
-		}
-		m.started = true
+	m.started = true
+	if !t.written {
+		// Recorded before a flush the sample may trigger, so a header written
+		// by that flush states it even though the sample lands in the next
+		// fragment.
+		t.firstOffset, t.written = s.CompositionOffset, true
 	}
 	if m.shouldFlush(t, s) {
 		if err := m.Flush(); err != nil {
@@ -726,6 +1046,9 @@ func (m *Muxer) Flush() error {
 	if !m.buffering() {
 		return nil
 	}
+	if err := m.writeHeader(); err != nil {
+		return err
+	}
 	// Only the tracks that have something to write. A track fragment declared
 	// for a track with no samples in it carries nothing, and readers in the wild
 	// -- including this package's own, until it was fixed -- refuse the file for
@@ -741,13 +1064,22 @@ func (m *Muxer) Flush() error {
 	if err != nil {
 		return fmt.Errorf("container: create fragment %d: %w", m.sequence, err)
 	}
+	var indexed []trackSpan
+	if m.index != nil {
+		indexed = spans(m.tracks)
+	}
 	for _, t := range m.tracks {
 		for _, s := range t.pending {
 			frag.AddFullSampleToTrack(s, t.id)
 		}
 		t.pending, t.buffered = nil, 0
 	}
-	if err := frag.Encode(m.w); err != nil {
+	if m.index != nil {
+		err = m.index.write(m.w, frag, indexed)
+	} else {
+		err = frag.Encode(m.w)
+	}
+	if err != nil {
 		return fmt.Errorf("container: write fragment %d: %w", m.sequence, err)
 	}
 	return nil
@@ -773,14 +1105,16 @@ func (m *Muxer) Close() error {
 		m.closed = true
 		return ErrNoTracks
 	}
-	if !m.started {
-		if err := m.init.Encode(m.w); err != nil {
-			m.closed = true
-			return fmt.Errorf("container: write init segment: %w", err)
-		}
-		m.started = true
+	if err := m.writeHeader(); err != nil {
+		m.closed = true
+		return err
 	}
 	err := m.Flush()
 	m.closed = true
+	if err == nil && m.index != nil {
+		// The index states every fragment, so it is written once the last
+		// one is.
+		err = m.index.finish(m.w, m.tracks)
+	}
 	return err
 }

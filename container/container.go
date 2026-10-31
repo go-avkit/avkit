@@ -8,25 +8,59 @@
 // stream's metadata (kind, codec, dimensions, timing). Reader goes further on
 // all three, handing back a track's samples and the configuration needed to
 // write it elsewhere — which is what turns an HLS segment, or a WebM, into an
-// MP4. Muxer writes a fragmented MP4 from tracks that arrive separately —
+// MP4. Both also read, and never write, the formats that are a stream rather
+// than a container — ADTS, MPEG audio (MP3/MP2/MP1) and native FLAC — and
+// three legacy ones, Ogg (Opus, Vorbis, FLAC), WAV (linear PCM) and AVI
+// (H.264, MPEG-4 Part 2, Motion JPEG and their audio), walking each whole in
+// one pass. Muxer writes a fragmented MP4 from tracks that arrive
+// separately —
 // which is what a DASH presentation, keeping its video and audio apart,
-// requires — and never re-encodes: samples are written as handed over.
+// requires — and never re-encodes: samples are written as handed over; with
+// SegmentIndex it puts a sidx in front of the fragments, so that one file
+// serves as a DASH on-demand representation.
 // ProgressiveMuxer writes those same tracks as an ordinary MP4 instead — one
 // mdat and the sample tables that address it — which is what a player with no
 // streaming stack, a hardware decoder, or a tool that seeks by sample table
 // expects. TSMuxer writes them as an MPEG-TS, which is what an HLS segment
 // is, so remuxing runs in both directions, and WebMMuxer writes them as a
 // Matroska/WebM file — the container a browser plays with no plugin — leaving
-// the segment's size unstated when the caller cannot seek.
+// the segment's size unstated unless asked to buffer it, indexing its clusters
+// in Cues, and opening the segment with a SeekHead that names the Cues whenever
+// the file is buffered or the writer can seek.
 //
 // Reader and the muxers are counterparts: what one hands back, the others
 // take, so a track can be copied from one file into another without the caller
 // reading a single box.
 //
+// A transport stream carries AVC, HEVC and AV1 video and AAC, AC-3, Enhanced
+// AC-3 and MPEG audio (Layers I to III, named "mp1", "mp2" and "mp3") in both
+// directions, each as its own standard defines it; Opus is refused, no
+// published specification carrying it. The README's "MPEG-TS carriage"
+// section cites the texts.
+//
+// Both MP4 muxers write FLAC as a fLaC sample entry with its dfLa, and MPEG
+// audio as mp4a with object type indication 0x6B or 0x69; the Matroska muxer
+// writes FLAC, MPEG audio, AC-3 and Enhanced AC-3 under their Matroska codec
+// IDs, in a file whose DocType is "matroska". Vorbis is refused in an MP4,
+// which has no registered sample entry for it.
+//
+// Subtitles travel the same way, in one form: a WebVTT or SRT track of a
+// Matroska file, and a WebVTT track of an MP4, read as the samples of an
+// ISO/IEC 14496-30 wvtt track, which Muxer, ProgressiveMuxer and WebMMuxer all
+// write. A TTML (stpp) track goes from MP4 to MP4 as it stands. TSMuxer writes
+// no subtitles.
+//
 // Remux, Cut and Concat stand on those two and offer the whole-file operations
 // a caller would otherwise reach for ffmpeg to perform — copy a file, keep the
 // stretch between two time offsets, join files that match, leave a track out —
 // none of which touches a sample's bytes.
+//
+// File.Metadata is what a file says about itself as a whole — title, artist,
+// album, date, comment, description, genre, encoder and a cover picture — read
+// from an MP4's moov/udta/meta ilst and from Matroska's Info/Title, Tags and
+// Attachments. Muxer, ProgressiveMuxer and WebMMuxer write it with SetMetadata,
+// and Remux, Cut, Concat and Join carry their first input's unless
+// ReplaceMetadata says otherwise. A transport stream has none.
 //
 // Every MP4 entry point decodes the same way, so a file one of them accepts the
 // others accept too. That includes two shapes mp4ff refuses on its own: media
@@ -84,11 +118,15 @@ func (t Track) DurationSeconds() float64 {
 
 // File is a demuxed container's structure.
 type File struct {
-	Format    string // "mp4" or "matroska" or "webm"
+	Format    string // "mp4", "matroska", "webm", "mpegts", "adts", "mpegaudio", "flac", "ogg", "wav" or "avi"
 	Brand     string // MP4 major brand (e.g. "isom"); "" for Matroska
 	Timescale uint32 // movie/segment timescale (units per second)
 	Duration  uint64 // overall duration in Timescale units
 	Tracks    []Track
+	// Metadata is what the file says about itself as a whole: its title,
+	// artist and cover. It is empty for an MPEG transport stream, which has no
+	// place for any of it.
+	Metadata Metadata
 }
 
 // DurationSeconds returns the overall duration in seconds (0 if unknown).
@@ -118,16 +156,26 @@ func (f *File) tracksOfKind(k Kind) []Track {
 // Demux sniffs data's container format and returns its demuxed structure. It
 // returns an error for an unrecognised or malformed container.
 func Demux(data []byte) (*File, error) {
-	switch Sniff(data) {
+	format := Sniff(data)
+	switch format {
 	case FormatMP4:
 		return demuxMP4(data)
 	case FormatMatroska:
 		return demuxMatroska(data)
 	case FormatMPEGTS:
 		return demuxTS(data)
-	default:
-		return nil, fmt.Errorf("container: unrecognised format")
 	}
+	if f, ok := elementaryFor(format); ok {
+		// Read whole, samples and all: these formats have no header that
+		// describes the stream, only the frames do. A stream cut short is
+		// described as far as it goes, and the cut is reported beside it.
+		r, err := newElementaryReader(f, data)
+		if r == nil {
+			return nil, err
+		}
+		return r.file, err
+	}
+	return nil, fmt.Errorf("container: unrecognised format")
 }
 
 // Format identifies a container format.
@@ -154,5 +202,7 @@ func Sniff(data []byte) Format {
 	if sniffTS(data) {
 		return FormatMPEGTS
 	}
-	return FormatUnknown
+	// The elementary streams and legacy containers, each registered by the
+	// file that reads it.
+	return sniffElementary(data)
 }

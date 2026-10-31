@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
+	"math"
 	"time"
 
 	"github.com/Eyevinn/mp4ff/aac"
@@ -84,6 +86,14 @@ func newTSReader(data []byte) (*Reader, error) {
 	return r, nil
 }
 
+// sourceSize is how many bytes the file holds, wherever it is read from.
+func (r *Reader) sourceSize() uint64 {
+	if held := len(r.data); held > 0 {
+		return uint64(held)
+	}
+	return uint64(r.size)
+}
+
 // sampleBytes is one sample's data, sliced out of what is held in memory or
 // read from the file at the position the tables state.
 func (r *Reader) sampleBytes(offset, end uint64) ([]byte, error) {
@@ -140,13 +150,30 @@ func NewFileReader(src FileSource, size int64) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &Reader{at: src, size: size, file: file, mp4: parsed, traks: map[uint32]*mp4.TrakBox{}}
+	return &Reader{at: src, size: size, file: file, mp4: parsed, traks: readableTraks(parsed)}, nil
+}
+
+// readableTraks indexes the tracks of a movie by ID.
+//
+// ⛔ A trak lacking any box this reader dereferences is left out. mp4ff parses
+// a trak whatever children it has and leaves the field of a missing one nil;
+// indexing, describing and reading a track went through tkhd, mdia, minf, stbl
+// and stsd without asking, so a downloaded file missing one of them -- one
+// flipped byte in a box type is enough -- panicked the caller. A track left out
+// is ErrUnknownTrack to TrackConfig and Samples: there is nothing in it to
+// describe or to read.
+func readableTraks(parsed *mp4.File) map[uint32]*mp4.TrakBox {
+	traks := map[uint32]*mp4.TrakBox{}
 	if moov := movieBox(parsed); moov != nil {
 		for _, trak := range moov.Traks {
-			r.traks[trak.Tkhd.TrackID] = trak
+			if trak.Tkhd == nil || trak.Mdia == nil || trak.Mdia.Minf == nil ||
+				trak.Mdia.Minf.Stbl == nil || trak.Mdia.Minf.Stbl.Stsd == nil {
+				continue
+			}
+			traks[trak.Tkhd.TrackID] = trak
 		}
 	}
-	return r, nil
+	return traks
 }
 
 // NewReader reads the structure of a container and prepares its samples: an
@@ -160,6 +187,9 @@ func NewReader(data []byte) (*Reader, error) {
 	case FormatMatroska:
 		return newMatroskaReader(data)
 	default:
+		if f, ok := elementaryFor(format); ok {
+			return newElementaryReader(f, data)
+		}
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedFormat, describeFormat(format))
 	}
 	// The same decode as NewFileReader's, because the two entry points must not
@@ -175,13 +205,7 @@ func NewReader(data []byte) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &Reader{data: data, file: file, mp4: parsed, traks: map[uint32]*mp4.TrakBox{}}
-	if moov := movieBox(parsed); moov != nil {
-		for _, trak := range moov.Traks {
-			r.traks[trak.Tkhd.TrackID] = trak
-		}
-	}
-	return r, nil
+	return &Reader{data: data, file: file, mp4: parsed, traks: readableTraks(parsed)}, nil
 }
 
 // mp4StartDelay reads a track's encoder priming out of its edit list.
@@ -192,7 +216,16 @@ func NewReader(data []byte) (*Reader, error) {
 // entries, an empty edit, a rate other than 1 -- describes a presentation this
 // package does not reproduce, and reading a delay out of it would state
 // something the output does not do.
-func mp4StartDelay(trak *mp4.TrakBox, timescale uint32) time.Duration {
+//
+// ⛔ The media time is NOT all priming. It is in composition time (ISO/IEC
+// 14496-12 §8.6.6.3), and a track that reorders its frames presents its first
+// sample at that sample's composition offset: ffmpeg writes a media time of two
+// frames for x264's default of two B-frames, and none of it is priming. So the
+// first sample's composition time is taken off, which is what the muxers add
+// back (see presentationStart); read whole, it came back as a StartDelay the
+// muxers then stacked on top of the composition offset, and a video track read
+// out of an ffmpeg MP4 claimed an 80 ms priming it does not have.
+func mp4StartDelay(trak *mp4.TrakBox, timescale uint32, firstOffset int32) time.Duration {
 	if trak == nil || trak.Edts == nil || trak.Edts.Elst == nil || timescale == 0 {
 		return 0
 	}
@@ -204,7 +237,75 @@ func mp4StartDelay(trak *mp4.TrakBox, timescale uint32) time.Duration {
 	if e.MediaTime <= 0 || e.MediaRateInteger != 1 || e.MediaRateFraction != 0 {
 		return 0
 	}
-	return time.Duration(e.MediaTime) * time.Second / time.Duration(timescale)
+	priming := e.MediaTime - presentationStart(firstOffset, 0)
+	if priming <= 0 {
+		return 0
+	}
+	return time.Duration(priming) * time.Second / time.Duration(timescale)
+}
+
+// firstCompositionOffset is the composition offset of a track's first sample,
+// read from the tables without reading the sample: the ctts of a progressive
+// file, or the first sample run of a fragmented one. A track that states none
+// presents its first sample when it decodes, which is an offset of zero.
+func (r *Reader) firstCompositionOffset(trak *mp4.TrakBox) int32 {
+	if !r.mp4.IsFragmented() {
+		if ctts := trak.Mdia.Minf.Stbl.Ctts; ctts != nil {
+			return ctts.GetCompositionTimeOffset(1)
+		}
+		return 0
+	}
+	// A composition offset has no default in the track fragment header or the
+	// track extends box (§8.8.8.1): a run states one per sample or none.
+	for _, traf := range r.trackFragments(trak.Tkhd.TrackID) {
+		for _, trun := range traf.Truns {
+			if len(trun.Samples) > 0 {
+				return trun.Samples[0].CompositionTimeOffset
+			}
+		}
+	}
+	return 0
+}
+
+// firstDecodeTime is when a track's first sample decodes on the timeline its
+// edit list counts in: zero in a progressive file, whose decoding times start
+// there by construction (§8.6.1.2), and the first track fragment's tfdt in a
+// fragmented one. A fragment stating none starts where the track does.
+func (r *Reader) firstDecodeTime(trak *mp4.TrakBox) uint64 {
+	if !r.mp4.IsFragmented() {
+		return 0
+	}
+	for _, traf := range r.trackFragments(trak.Tkhd.TrackID) {
+		if traf.Tfdt != nil {
+			return traf.Tfdt.BaseMediaDecodeTime()
+		}
+		break
+	}
+	return 0
+}
+
+// trackFragments yields, in file order, every track fragment of one track
+// together with where the movie fragment holding it starts, which is what its
+// data offsets count from. A fragment may carry several tracks, one track
+// fragment each, and only the track asked about is wanted.
+func (r *Reader) trackFragments(trackID uint32) iter.Seq2[uint64, *mp4.TrafBox] {
+	return func(yield func(uint64, *mp4.TrafBox) bool) {
+		for _, seg := range r.mp4.Segments {
+			for _, frag := range seg.Fragments {
+				if frag.Moof == nil {
+					continue
+				}
+				for _, traf := range frag.Moof.Trafs {
+					if traf.Tfhd == nil || traf.Tfhd.TrackID != trackID {
+						continue
+					}
+					if !yield(frag.Moof.StartPos, traf) {
+						return
+					}
+				}
+			}
+		}
+	}
 }
 
 // describeFormat names a format for an error message.
@@ -216,9 +317,11 @@ func describeFormat(format Format) string {
 		return "mp4"
 	case FormatMPEGTS:
 		return "mpegts"
-	default:
-		return "unknown format"
 	}
+	if f, ok := elementaryFor(format); ok {
+		return f.name
+	}
+	return "unknown format"
 }
 
 // movieBox is the moov of a file, wherever it sits: a fragmented file keeps it
@@ -328,7 +431,8 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 		Channels:   track.Channels,
 		SampleRate: track.SampleRate,
 		Language:   track.Language,
-		StartDelay: mp4StartDelay(trak, track.Timescale),
+		StartDelay: mp4StartDelay(trak, track.Timescale, r.firstCompositionOffset(trak)),
+		EditList:   mp4EditList(trak, movieBox(r.mp4).Mvhd.Timescale, r.firstDecodeTime(trak)),
 	}
 	stsd := trak.Mdia.Minf.Stbl.Stsd
 	switch {
@@ -342,6 +446,17 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 		if payload, err := boxPayload(stsd.Av01.Av1C); err == nil {
 			cfg.CodecConfig = payload
 		}
+	case stsd.Mp4a != nil && stsd.Mp4a.Esds != nil && isMPEGAudioEsds(stsd.Mp4a.Esds):
+		// Read as AAC, MP3 frames would be written back out under an AAC
+		// configuration that describes nothing they hold. The first frame
+		// names it, and only that one is read: the whole track was, and from
+		// disk that is the whole file.
+		samples, err := r.mp4Samples(trak, 1)
+		if err := mpegAudioTrackConfig(&cfg, samples, err); err != nil {
+			return TrackConfig{}, err
+		}
+	case flacSampleEntry(stsd) != nil:
+		flacTrackConfig(&cfg, flacSampleEntry(stsd).DfLa)
 	case stsd.Mp4a != nil && stsd.Mp4a.Esds != nil:
 		// A record this cannot read leaves the track described as the sample
 		// entry described it, which is what this did before the record was
@@ -366,8 +481,43 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 		if payload, err := boxPayload(stsd.EC3.Dec3); err == nil {
 			cfg.CodecConfig = payload
 		}
+	case stsd.Wvtt != nil:
+		// The header of the WebVTT file: the signature, and any STYLE or
+		// REGION block. A track without a vttC leaves it empty, which the
+		// muxers write as the bare signature.
+		if stsd.Wvtt.VttC != nil {
+			cfg.CodecConfig = []byte(stsd.Wvtt.VttC.Config)
+		}
+	case stsd.Stpp != nil:
+		// The whole sample entry travels, because it is the whole
+		// description: the TTML namespace, the schema location and the MIME
+		// types of what the documents refer to.
+		if payload, err := boxPayload(stsd.Stpp); err == nil {
+			cfg.CodecConfig = payload
+		}
 	}
+	cfg.SARWidth, cfg.SARHeight = paspRatio(stsd)
 	return cfg, nil
+}
+
+// paspRatio is the sample aspect ratio a visual sample entry states in its pasp
+// box (ISO/IEC 14496-12 §12.1.4), or 0:0 -- not known -- when it has none or
+// states one with a zero side, which describes no pixel. A spacing too large
+// for an int on the platform is not known either, rather than wrapped negative.
+func paspRatio(stsd *mp4.StsdBox) (int, int) {
+	entry, err := stsd.GetSampleDescription(0)
+	if err != nil {
+		return 0, 0
+	}
+	visual, ok := entry.(*mp4.VisualSampleEntryBox)
+	if !ok || visual.Pasp == nil {
+		return 0, 0
+	}
+	h, v := uint64(visual.Pasp.HSpacing), uint64(visual.Pasp.VSpacing)
+	if h == 0 || v == 0 || h > math.MaxInt || v > math.MaxInt {
+		return 0, 0
+	}
+	return int(h), int(v)
 }
 
 // vpxFromBox is what a vpcC record says, as a caller states it.
@@ -510,36 +660,37 @@ func (r *Reader) Samples(trackID uint32) ([]Sample, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
 	}
-	if r.mp4.IsFragmented() {
-		return r.fragmentedSamples(trackID)
-	}
-	return r.progressiveSamples(trak)
+	return r.mp4Samples(trak, 0)
 }
 
-// fragmentedSamples walks the fragments of every segment.
-func (r *Reader) fragmentedSamples(trackID uint32) ([]Sample, error) {
+// mp4Samples reads an MP4 track's samples in decoding order: all of them, or
+// the first limit when limit is positive, without fetching the rest. A reader
+// left on disk fetches every sample it reads (NewFileReader), so a caller that
+// needs only the first one -- TrackConfig naming an MPEG audio track -- must
+// not pay for the track.
+func (r *Reader) mp4Samples(trak *mp4.TrakBox, limit int) ([]Sample, error) {
+	if r.mp4.IsFragmented() {
+		return r.fragmentedSamples(trak.Tkhd.TrackID, limit)
+	}
+	return r.progressiveSamples(trak, limit)
+}
+
+// fragmentedSamples walks the fragments of every segment, stopping once it
+// holds limit samples when limit is positive.
+func (r *Reader) fragmentedSamples(trackID uint32, limit int) ([]Sample, error) {
 	// The track extends box only supplies defaults for what a fragment does
 	// not state; a file that declares none still reads.
 	trex := r.trackExtends(trackID)
 	var out []Sample
-	for _, seg := range r.mp4.Segments {
-		for _, frag := range seg.Fragments {
-			if frag.Moof == nil {
-				continue
-			}
-			// A fragment may carry several tracks, one track fragment each,
-			// and only the track asked about is wanted.
-			for _, traf := range frag.Moof.Trafs {
-				if traf.Tfhd == nil || traf.Tfhd.TrackID != trackID {
-					continue
-				}
-				samples, err := r.trafSamples(frag.Moof.StartPos, traf, trex)
-				if err != nil {
-					return nil, err
-				}
-				out = append(out, samples...)
-			}
+	for moofStart, traf := range r.trackFragments(trackID) {
+		if limit > 0 && len(out) == limit {
+			break
 		}
+		samples, err := r.trafSamples(moofStart, traf, trex, limit-len(out))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, samples...)
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("%w: track %d", ErrNoSamples, trackID)
@@ -552,8 +703,9 @@ func (r *Reader) fragmentedSamples(trackID uint32) ([]Sample, error) {
 // pictures — and reading only the first is how most of a file goes missing
 // without a word. Each run states where its data sits relative to the fragment
 // header, and a run that states nothing continues where the one before it
-// ended; what a run leaves out, the track defaults supply.
-func (r *Reader) trafSamples(moofStart uint64, traf *mp4.TrafBox, trex *mp4.TrexBox) ([]Sample, error) {
+// ended; what a run leaves out, the track defaults supply. A positive need
+// stops it once it holds that many samples.
+func (r *Reader) trafSamples(moofStart uint64, traf *mp4.TrafBox, trex *mp4.TrexBox, need int) ([]Sample, error) {
 	// ⛔ A track fragment with no sample run is legal and means what it says:
 	// this track has no samples in this fragment. ISO/IEC 14496-12 puts zero or
 	// more trun boxes in a traf, and a stream whose tracks do not divide evenly
@@ -584,6 +736,9 @@ func (r *Reader) trafSamples(moofStart uint64, traf *mp4.TrafBox, trex *mp4.Trex
 			offset = uint64(int64(base) + int64(trun.DataOffset))
 		}
 		for i, s := range trun.Samples {
+			if need > 0 && len(out) == need {
+				return out, nil
+			}
 			end := offset + uint64(s.Size)
 			data, err := r.sampleBytes(offset, end)
 			if err != nil {
@@ -619,8 +774,9 @@ func (r *Reader) trackExtends(trackID uint32) *mp4.TrexBox {
 
 // progressiveSamples walks the sample tables of a plain MP4: the chunks say
 // where the data is, the other tables say how long each sample lasts and
-// whether a player may start at it.
-func (r *Reader) progressiveSamples(trak *mp4.TrakBox) ([]Sample, error) {
+// whether a player may start at it. A positive limit reads the first that many
+// samples and no more.
+func (r *Reader) progressiveSamples(trak *mp4.TrakBox, limit int) ([]Sample, error) {
 	stbl := trak.Mdia.Minf.Stbl
 	if stbl == nil || stbl.Stsz == nil || stbl.Stts == nil || stbl.Stsc == nil {
 		return nil, fmt.Errorf("%w: track %d has no sample table", ErrNoSamples, trak.Tkhd.TrackID)
@@ -629,12 +785,29 @@ func (r *Reader) progressiveSamples(trak *mp4.TrakBox) ([]Sample, error) {
 	if count == 0 {
 		return nil, fmt.Errorf("%w: track %d is empty", ErrNoSamples, trak.Tkhd.TrackID)
 	}
+	// ⛔ The count is a CLAIM, and everything below is sized from it. A table
+	// of sizes is bounded by the bytes that hold it, but a uniform size makes
+	// stsz twenty bytes whatever count it states: a 674-byte file stating
+	// 0xFFFFFFFF samples made this reserve 164 GiB. Every sample is the
+	// uniform size, so together they cannot outrun the file -- and a count
+	// that says they do is refused before anything is sized from it.
+	if uniform := uint64(stbl.Stsz.SampleUniformSize); uniform > 0 {
+		if need, held := uint64(count)*uniform, r.sourceSize(); need > held {
+			return nil, fmt.Errorf("%w: track %d states %d samples of %d bytes, and the file holds %d",
+				ErrSampleData, trak.Tkhd.TrackID, count, uniform, held)
+		}
+	}
 	// A chunk table with no entry cannot say where sample one lives, and
 	// asking anyway panics inside the box reader. A file off the network is
 	// not to be trusted with that.
 	if len(stbl.Stsc.Entries) == 0 {
 		return nil, fmt.Errorf("%w: track %d has an empty chunk table",
 			ErrNoSamples, trak.Tkhd.TrackID)
+	}
+	// Checked against the whole table above, and only then cut short: a table
+	// that lies is refused whatever part of it is asked for.
+	if limit > 0 && uint64(limit) < uint64(count) {
+		count = uint32(limit)
 	}
 	chunks, err := containingChunks(stbl.Stsc, 1, count)
 	if err != nil {
@@ -742,6 +915,7 @@ func NewSegmentedReader(parts [][]byte) (*Reader, error) {
 		}
 		if file.Format == "" {
 			file.Format, file.Timescale, file.Brand = r.file.Format, r.file.Timescale, r.file.Brand
+			file.Metadata = r.file.Metadata // the first segment's, as with the rest
 		}
 		for _, track := range r.file.Tracks {
 			id := track.ID

@@ -40,6 +40,7 @@ func mp4File(mf *mp4.File) (*File, error) {
 	for _, trak := range mf.Moov.Traks {
 		f.Tracks = append(f.Tracks, mp4Track(trak))
 	}
+	f.Metadata = mp4Metadata(mf.Moov)
 	return f, nil
 }
 

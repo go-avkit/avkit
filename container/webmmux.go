@@ -57,11 +57,6 @@ const vorbisSetupPackets = 3
 // vorbisIdentificationPacket is the type byte of the first of those packets.
 const vorbisIdentificationPacket = 0x01
 
-// aacMaxChannelConfiguration is the largest channel configuration of ISO/IEC
-// 14496-3 table 1.19; 8 to 15 are reserved, and the field is four bits wide, so
-// a larger value would be written as something else entirely.
-const aacMaxChannelConfiguration = 7
-
 // WebMOption configures a WebMMuxer.
 type WebMOption func(*webmSettings)
 
@@ -112,30 +107,6 @@ func BufferedSegment() WebMOption {
 	return func(s *webmSettings) { s.buffered = true }
 }
 
-// WebMMuxer writes a Matroska file: the EBML header, a segment naming every
-// track, then one cluster after another.
-//
-// It is the counterpart of Muxer — the same tracks, the same samples, the same
-// refusals — for the container a browser plays without a plugin, and like Muxer
-// it never re-encodes: samples are written as handed over.
-//
-// By default nothing is buffered and nothing is seeked: the segment and every
-// cluster are written with their size left unknown, so the file is playable as
-// it is produced and can be streamed straight into an HTTP response. A player
-// reading such a file loses three things, and a caller who can hold the file in
-// memory gets them back with BufferedSegment:
-//
-//   - the duration, which Info cannot state before the last sample is known, so
-//     a player shows no total time and no seek bar until it has read the file;
-//   - the segment's size, which a player has to reach the end of the file to
-//     learn;
-//   - a cue point index, which this muxer never writes in either mode, so
-//     seeking means scanning cluster by cluster.
-//
-// The document type follows the tracks: "webm" while every track holds a codec
-// WebM allows, "matroska" as soon as one does not, because a file declaring
-// itself WebM while carrying AVC or AAC is one a strict player is right to
-// refuse.
 // measureEBML encodes into memory, to learn how long something will be rather
 // than to write it. Nothing there can fail on a full disk or a broken pipe, so
 // it is a seam: the guards below are real — a document the encoder refuses
@@ -156,6 +127,43 @@ func (c *webmCounter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// WebMMuxer writes a Matroska file: the EBML header, a segment naming every
+// track, then one cluster after another, then the Cues that index them.
+//
+// It is the counterpart of Muxer — the same tracks, the same samples, the same
+// refusals — for the container a browser plays without a plugin, and like Muxer
+// it never re-encodes: samples are written as handed over.
+//
+// By default nothing is buffered: the segment and every cluster are written
+// with their size left unknown, so the file is playable as it is produced and
+// can be streamed straight into an HTTP response. A player reading such a file
+// loses two things:
+//
+//   - the duration, which Info cannot state before the last sample is known, so
+//     a player shows no total time and no seek bar until it has read the file;
+//   - the segment's size, which a player has to reach the end of the file to
+//     learn.
+//
+// A writer that is an [io.Seeker] gets both back at Close, as ffmpeg's
+// matroskaenc writes them at its trailer: Info is sent with a Void holding the
+// Duration's place, and the Duration, the segment's size and every cluster's
+// size are written over what held their place. A caller writing elsewhere who
+// can hold the file in memory gets them with BufferedSegment.
+//
+// Cues are written in every mode, after the last cluster. A SeekHead saying
+// where they are, and where Info, Tracks and every other Top-Level Element
+// before the first cluster are (RFC 9559 §6.3), opens the segment when the file
+// can carry a complete one: always in the buffered mode, and in the streaming
+// mode when the writer is an [io.Seeker], which is sent the SeekHead with room
+// to spare and seeked back to at Close to add the Cues to it, as ffmpeg does. A
+// streamed segment to a writer that cannot seek has no SeekHead: the Cues are
+// not known when it would have to be written, and §6.3 wants a SeekHead that
+// names every Top-Level Element or none.
+//
+// The document type follows the tracks: "webm" while every track holds a codec
+// WebM allows, "matroska" as soon as one does not, because a file declaring
+// itself WebM while carrying AVC or AAC is one a strict player is right to
+// refuse.
 type WebMMuxer struct {
 	w        *webmCounter
 	settings webmSettings
@@ -164,8 +172,9 @@ type WebMMuxer struct {
 	tracks  []*webmTrack
 	byID    map[uint32]*webmTrack
 
-	started bool
-	closed  bool
+	started  bool
+	closed   bool
+	metadata *Metadata // what SetMetadata was given, nil for nothing
 
 	clusterOpen  bool
 	clusterStart uint64
@@ -177,6 +186,16 @@ type WebMMuxer struct {
 	// segmentStart is how many bytes precede the segment's content, known
 	// once the header is out. The buffered mode learns it at Close instead.
 	segmentStart uint64
+
+	// seeker is the writer of a streamed segment when it can seek, which is
+	// what lets it carry a SeekHead; nil otherwise. origin is where the
+	// writer was when the muxer started on it.
+	seeker io.Seeker
+	origin int64
+	// seeks are the entries of that SeekHead before the Cues are known, and
+	// seekReserve the room it and its Void take at the head of the segment.
+	seeks       []webmSeek
+	seekReserve int
 }
 
 // webmTrack is one track's writing state.
@@ -189,6 +208,15 @@ type webmTrack struct {
 	// last written, which is what keeps the rounding from accumulating.
 	nextTime uint64
 	end      uint64
+	// shift is the composition offset of the track's first sample, taken off
+	// every presentation time so that the first frame is shown at zero, and
+	// shifted says it has been taken: a first offset of zero is one too. See
+	// WriteSample.
+	shift   int64
+	shifted bool
+	// edit is what the track's MP4 edit list says, when it has one: see
+	// webmEdit.
+	edit *webmShift
 	// endTick is the same end in file ticks. Every frame's end was converted
 	// when it was written, and refused there if the scale could not state it,
 	// so the segment's duration is the largest of them rather than a
@@ -196,6 +224,16 @@ type webmTrack struct {
 	endTick uint64
 	// webmCodec is what the codec this track carries is allowed in.
 	inWebM bool
+	// aspect is a video track's sample aspect ratio: see webmAspect.
+	aspect webmAspect
+	// fixedFrames says the codec decodes every frame to the same length, as
+	// AAC does (1024 samples, or 960; ISO/IEC 14496-3 §4.5.1.1), and
+	// prevUnits is the duration of the frame before the held one. A last
+	// frame an MP4 states shorter than that is trimmed, and ffmpeg's mov.c
+	// reads it so: it discards what the last packet decodes past its duration
+	// (first_discard_sample, in mov_read_packet).
+	fixedFrames bool
+	prevUnits   int64
 	// held is the last frame handed over and not yet written. One frame per
 	// track is kept back so that the frame which turns out to be the last of
 	// its track can be written as a block group stating how long it lasts:
@@ -207,6 +245,12 @@ type webmTrack struct {
 	// the frame before it on the same track is that reference.
 	lastTick uint64
 	hasLast  bool
+	// cues, for a WebVTT track, puts back together the cues its samples
+	// split, and cueForm is the CodecID saying which of the two Matroska
+	// mappings they are written in. A cue track holds nothing in held: each
+	// cue is a block group of its own, written once its end is known.
+	cues    *cueAssembler
+	cueForm string
 }
 
 // heldFrame is one frame waiting to be written, with what it takes to place it.
@@ -215,6 +259,12 @@ type heldFrame struct {
 	tick     uint64 // presentation time, in file ticks
 	duration uint64 // in file ticks
 	sync     bool
+	// start and units are the frame's composition time, before any shift, and
+	// its duration, both in the track's timescale; decoded is how much a
+	// decoder makes of it, which is more than units for the last frame of a
+	// track whose codec decodes every frame to the same length. They are what
+	// the frame's DiscardPadding is worked out from: see webmDiscard.
+	start, units, decoded int64
 }
 
 // The EBML tree this muxer writes. The elements come from ebml-go's own table
@@ -225,18 +275,12 @@ type webmSizedDoc struct {
 	Segment webmSegment     `ebml:"Segment"`
 }
 
-// webmStreamDoc is the same file with the segment's size left unknown, so the
-// clusters that follow can be written one at a time to a writer that cannot
-// seek. webm.SegmentStream would say the same, but it holds its clusters in a
-// slice, and a slice is what a streaming muxer does not have.
-type webmStreamDoc struct {
-	Header  webm.EBMLHeader `ebml:"EBML"`
-	Segment webmOpenSegment `ebml:"Segment,size=unknown"`
-}
-
 // webmHeaderDoc is the EBML header alone, and webmOpenSegmentDoc the segment
-// that follows it. Written apart, they leave the position of the segment's
-// first byte known, which is what every cue is counted from.
+// that follows it with its size left unknown, so the clusters that follow can
+// be written one at a time to a writer that cannot seek. webm.SegmentStream
+// would say the same, but it holds its clusters in a slice, and a slice is what
+// a streaming muxer does not have. Written apart, the two leave the position of
+// the segment's first byte known, which is what every cue is counted from.
 type webmHeaderDoc struct {
 	Header webm.EBMLHeader `ebml:"EBML"`
 }
@@ -246,10 +290,14 @@ type webmOpenSegmentDoc struct {
 }
 
 type webmSegment struct {
-	Info    webmInfo      `ebml:"Info"`
-	Tracks  webmTracks    `ebml:"Tracks"`
-	Cluster []webmCluster `ebml:"Cluster"`
-	Cues    *webm.Cues    `ebml:"Cues,omitempty"`
+	SeekHead    *webmSeekHead    `ebml:"SeekHead,omitempty"`
+	Void        []byte           `ebml:"Void,omitempty"`
+	Info        webmInfo         `ebml:"Info"`
+	Tracks      webmTracks       `ebml:"Tracks"`
+	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
+	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
+	Cluster     []webmCluster    `ebml:"Cluster"`
+	Cues        *webm.Cues       `ebml:"Cues,omitempty"`
 }
 
 // webmHeadDoc is what precedes the clusters inside a segment. It is marshalled
@@ -257,8 +305,10 @@ type webmSegment struct {
 // segment, so the length of what comes before the first cluster is part of
 // every position.
 type webmHeadDoc struct {
-	Info   webmInfo   `ebml:"Info"`
-	Tracks webmTracks `ebml:"Tracks"`
+	Info        webmInfo         `ebml:"Info"`
+	Tracks      webmTracks       `ebml:"Tracks"`
+	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
+	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
 }
 
 // webmClusterDoc is one cluster, marshalled on its own to be measured.
@@ -272,8 +322,18 @@ type webmCuesDoc struct {
 }
 
 type webmOpenSegment struct {
-	Info   webmInfo   `ebml:"Info"`
-	Tracks webmTracks `ebml:"Tracks"`
+	SeekHead    *webmSeekHead    `ebml:"SeekHead,omitempty"`
+	Void        []byte           `ebml:"Void,omitempty"`
+	Info        webmInfo         `ebml:"Info"`
+	Tracks      webmTracks       `ebml:"Tracks"`
+	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
+	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
+}
+
+// open is the segment's opening with no SeekHead yet: what head holds,
+// unchanged.
+func (head webmHeadDoc) open() webmOpenSegment {
+	return webmOpenSegment{Info: head.Info, Tracks: head.Tracks, Attachments: head.Attachments, Tags: head.Tags}
 }
 
 type webmInfo struct {
@@ -281,6 +341,23 @@ type webmInfo struct {
 	MuxingApp     string  `ebml:"MuxingApp"`
 	WritingApp    string  `ebml:"WritingApp"`
 	Duration      float64 `ebml:"Duration,omitempty"`
+	Title         string  `ebml:"Title,omitempty"`
+	// DurationRoom is a Void standing where Duration will be, in a segment
+	// streamed to a writer that can seek: Close writes the Duration over it.
+	DurationRoom []byte `ebml:"Void,omitempty"`
+}
+
+// webmDurationRoom is the payload of the Void that holds a Duration's place:
+// a Duration element is its two-byte identifier, a one-byte size and an
+// eight-byte float, eleven bytes, and a Void of nine bytes is eleven bytes
+// with its one-byte identifier and size. ffmpeg's matroskaenc reserves the
+// same eleven bytes (put_ebml_void(pb, 11)).
+const webmDurationRoom = 9
+
+// webmInfoDoc is the Info element marshalled on its own, to be written over
+// the one a seekable writer was given at the start.
+type webmInfoDoc struct {
+	Info webmInfo `ebml:"Info"`
 }
 
 type webmTracks struct {
@@ -305,11 +382,110 @@ type webmTrackEntry struct {
 type webmVideo struct {
 	PixelWidth  uint64 `ebml:"PixelWidth"`
 	PixelHeight uint64 `ebml:"PixelHeight"`
+	// The display size states the shape of a pixel (RFC 9559 §5.1.4.1.28.12
+	// to .14): see webmAspect. Zero is its absence, as a display size cannot be
+	// zero and DisplayUnit's default is 0.
+	DisplayWidth  uint64 `ebml:"DisplayWidth,omitempty"`
+	DisplayHeight uint64 `ebml:"DisplayHeight,omitempty"`
+	DisplayUnit   uint64 `ebml:"DisplayUnit,omitempty"`
+}
+
+// mkvDisplayAspectRatio is the DisplayUnit saying the display size is a display
+// aspect ratio rather than a size in pixels (RFC 9559 Table 10).
+const mkvDisplayAspectRatio = 3
+
+// webmAspect is a video track's sample aspect ratio, in the two forms a
+// Matroska track can state it, worked out when the track is added and written
+// once the document type is known (see trackEntries).
+//
+// It follows ffmpeg's matroskaenc (mkv_write_video_track). A WebM file states
+// the size the frame is shown at in pixels -- DisplayWidth the frame's width
+// scaled by the ratio and rounded to the nearest pixel, as av_rescale rounds
+// it, and DisplayHeight the frame's height -- because that is the form the WebM
+// guidelines give a browser; it is left out when the rounded width is the
+// frame's own. Any other Matroska file states the display aspect ratio itself,
+// DisplayUnit 3, which is exact: here it is reduced exactly, where matroskaenc
+// approximates it within 2^20 (av_reduce), and it is written for every ratio
+// that is not square, where matroskaenc skips it when the rounded pixel width
+// happens to equal the frame's. A ratio nobody knows is DisplayUnit 4,
+// "unknown", in a Matroska file, as matroskaenc writes it, and nothing in a
+// WebM one; without either, the display size defaults to the pixel size and
+// would state square pixels the source never claimed.
+type webmAspect struct {
+	known, square bool
+	// webmWidth is the WebM display width; darW and darH the reduced display
+	// aspect ratio.
+	webmWidth, darW, darH uint64
+}
+
+// webmAspectOf works out a video track's display size, refusing a ratio whose
+// display size Matroska cannot hold: matroskaenc refuses a display width past
+// INT_MAX ("Overflow in display width"), and a display width that rounds to
+// nothing, or a ratio whose products overflow 64 bits, describes no frame
+// either.
+func webmAspectOf(cfg TrackConfig) (webmAspect, error) {
+	h, v := cfg.SARWidth, cfg.SARHeight
+	if h <= 0 || v <= 0 {
+		return webmAspect{}, nil
+	}
+	nh, nl := bits.Mul64(uint64(cfg.Width), uint64(h))
+	dh, dl := bits.Mul64(uint64(cfg.Height), uint64(v))
+	if nh != 0 || dh != 0 {
+		return webmAspect{}, fmt.Errorf("%w: %s aspect ratio %d:%d of a %dx%d frame does not fit a display size",
+			ErrTrackConfig, cfg.Codec, h, v, cfg.Width, cfg.Height)
+	}
+	// Rounded to the nearest, half up: the frame's width is positive, so this
+	// is av_rescale's AV_ROUND_NEAR_INF. Half the divisor cannot carry past 64
+	// bits into a quotient that does not fit, since the sum stays below twice
+	// the product, which fitted.
+	lo, carry := bits.Add64(nl, uint64(v)/2, 0)
+	width, _ := bits.Div64(carry, lo, uint64(v))
+	if width == 0 || width > math.MaxInt32 {
+		return webmAspect{}, fmt.Errorf("%w: %s aspect ratio %d:%d makes the %d-pixel frame %d pixels wide",
+			ErrTrackConfig, cfg.Codec, h, v, cfg.Width, width)
+	}
+	d := gcd(nl, dl)
+	return webmAspect{known: true, square: h == v, webmWidth: width, darW: nl / d, darH: dl / d}, nil
+}
+
+// video is the Video element stating the ratio in the form the document type
+// calls for.
+func (a webmAspect) video(v webmVideo, webm bool) *webmVideo {
+	switch {
+	case !a.known && !webm:
+		v.DisplayUnit = mkvDisplayUnknown
+	case !a.known:
+	case webm:
+		if a.webmWidth != v.PixelWidth {
+			v.DisplayWidth, v.DisplayHeight = a.webmWidth, v.PixelHeight
+		}
+	case !a.square:
+		v.DisplayWidth, v.DisplayHeight, v.DisplayUnit = a.darW, a.darH, mkvDisplayAspectRatio
+	}
+	return &v
+}
+
+// trackEntries are the track entries to write, each video track's stating its
+// aspect ratio in the form the document type calls for, which only the whole
+// set of tracks decides.
+func (m *WebMMuxer) trackEntries() []webmTrackEntry {
+	webm := m.ebmlHeader().DocType == "webm"
+	entries := make([]webmTrackEntry, len(m.entries))
+	for i, e := range m.entries {
+		if e.Video != nil {
+			e.Video = m.tracks[i].aspect.video(*e.Video, webm)
+		}
+		entries[i] = e
+	}
+	return entries
 }
 
 type webmAudio struct {
 	SamplingFrequency float64 `ebml:"SamplingFrequency"`
-	Channels          uint64  `ebml:"Channels"`
+	// OutputSamplingFrequency is written for an AAC track whose configuration
+	// signals spectral band replication: see webmAACRates.
+	OutputSamplingFrequency float64 `ebml:"OutputSamplingFrequency,omitempty"`
+	Channels                uint64  `ebml:"Channels"`
 }
 
 type webmCluster struct {
@@ -339,22 +515,51 @@ type webmBlockGroupElement struct {
 }
 
 type webmBlockGroup struct {
-	Block         ebml.Block `ebml:"Block"`
-	BlockDuration uint64     `ebml:"BlockDuration"`
+	Block ebml.Block `ebml:"Block"`
+	// BlockAdditions is what an S_TEXT/WEBVTT cue states beside its text:
+	// its settings, identifier and comments. Every other block has none.
+	BlockAdditions *webmBlockAdditions `ebml:"BlockAdditions,omitempty"`
+	// BlockDuration is stated for the last frame of a track, which is the
+	// one whose length nothing else in the file says, and for every cue,
+	// whose length is never zero.
+	BlockDuration uint64 `ebml:"BlockDuration,omitempty"`
+	// DiscardPadding is how much of the frame's end is not presented, in
+	// nanoseconds (RFC 9559 §5.1.3.5.7); left out when all of it is.
+	//
+	// ⛔ Written in eight bytes, always. ebml-go encodes a signed integer in
+	// the fewest bytes its UNSIGNED value fits, so 10 ms -- 0x989680, whose
+	// top bit is set in three bytes -- was written as three bytes and read
+	// back, by ebml-go and by ffmpeg alike, as -6777216: a padding at the
+	// START of the block. Eight bytes have room for the sign.
+	DiscardPadding int64 `ebml:"DiscardPadding,omitempty,size=8"`
 	// ReferenceBlock, when present, says this frame is not a keyframe: a
 	// block group has no flag for it. It is a time relative to this block,
 	// so it is negative, and it is left out entirely for a keyframe.
 	ReferenceBlock int64 `ebml:"ReferenceBlock,omitempty"`
 }
 
+type webmBlockAdditions struct {
+	BlockMore []webmBlockMore `ebml:"BlockMore"`
+}
+
+type webmBlockMore struct {
+	BlockAddID      uint64 `ebml:"BlockAddID"`
+	BlockAdditional []byte `ebml:"BlockAdditional"`
+}
+
 // NewWebMMuxer returns a WebMMuxer writing to w. It writes to w as samples
-// arrive and never closes it.
+// arrive and never closes it; a w that is also an [io.Seeker] is seeked back
+// once, at Close, to name the Cues in the SeekHead.
 func NewWebMMuxer(w io.Writer, opts ...WebMOption) *WebMMuxer {
 	settings := webmSettings{clusterDuration: DefaultClusterDuration, tick: DefaultTimestampScale}
 	for _, opt := range opts {
 		opt(&settings)
 	}
-	return &WebMMuxer{w: &webmCounter{w: w}, settings: settings, byID: map[uint32]*webmTrack{}}
+	m := &WebMMuxer{w: &webmCounter{w: w}, settings: settings, byID: map[uint32]*webmTrack{}}
+	if s, ok := w.(io.Seeker); ok && !settings.buffered {
+		m.seeker = s
+	}
+	return m
 }
 
 // AddTrack declares a track and returns its identifier, which is the Matroska
@@ -372,12 +577,26 @@ func (m *WebMMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	case cfg.Timescale == 0:
 		return 0, fmt.Errorf("%w: %s track has no timescale", ErrTrackConfig, cfg.Codec)
 	}
+	edit, err := webmEdit(cfg)
+	if err != nil {
+		return 0, err
+	}
 	number := uint64(len(m.tracks)) + 1
 	entry, codec, err := describeWebMTrack(cfg, number)
 	if err != nil {
 		return 0, err
 	}
-	t := &webmTrack{id: uint32(number), timescale: cfg.Timescale, inWebM: codec.inWebM}
+	var aspect webmAspect
+	if codec.kind == Video {
+		if aspect, err = webmAspectOf(cfg); err != nil {
+			return 0, err
+		}
+	}
+	t := &webmTrack{id: uint32(number), timescale: cfg.Timescale, inWebM: codec.inWebM, edit: edit,
+		fixedFrames: codec.id == "A_AAC", aspect: aspect}
+	if codec.kind == Subtitle {
+		t.cues, t.cueForm = &cueAssembler{}, codec.id
+	}
 	m.entries = append(m.entries, entry)
 	m.tracks = append(m.tracks, t)
 	m.byID[t.id] = t
@@ -400,6 +619,9 @@ type webmCodecPrivate struct {
 	codecDelay  uint64 // in nanoseconds
 	seekPreRoll uint64 // in nanoseconds
 	audio       *webmAudio
+	// matroskaID replaces the codec's WebM id when what the track states
+	// needs a mapping WebM does not have, and then the file is not WebM.
+	matroskaID string
 }
 
 // webmCodecs maps the ISO-BMFF sample entry name of a codec — "vp09", "avc1",
@@ -410,6 +632,12 @@ type webmCodecPrivate struct {
 // read out of a Matroska file and the same track read out of an MP4 are one
 // thing here and Muxer and WebMMuxer can be swapped for one another.
 var webmCodecs = map[string]webmCodec{
+	"flac": {id: "A_FLAC", kind: Audio, describe: webmFLACPrivate},
+	"mp1":  {id: "A_MPEG/L1", kind: Audio, describe: webmFramesOnly("A_MPEG/L1")},
+	"mp2":  {id: "A_MPEG/L2", kind: Audio, describe: webmFramesOnly("A_MPEG/L2")},
+	"mp3":  {id: "A_MPEG/L3", kind: Audio, describe: webmFramesOnly("A_MPEG/L3")},
+	"ac-3": {id: "A_AC3", kind: Audio, describe: webmFramesOnly("A_AC3")},
+	"ec-3": {id: "A_EAC3", kind: Audio, describe: webmFramesOnly("A_EAC3")},
 	"vp08": {id: "V_VP8", kind: Video, inWebM: true, describe: webmNoPrivate},
 	"vp09": {id: "V_VP9", kind: Video, inWebM: true, describe: webmNoPrivate},
 	"av01": {id: "V_AV1", kind: Video, inWebM: true, describe: webmAV1Private},
@@ -420,6 +648,7 @@ var webmCodecs = map[string]webmCodec{
 	"opus": {id: "A_OPUS", kind: Audio, inWebM: true, describe: webmOpusPrivate},
 	"vorb": {id: "A_VORBIS", kind: Audio, inWebM: true, describe: webmVorbisPrivate},
 	"mp4a": {id: "A_AAC", kind: Audio, describe: webmAACPrivate},
+	"wvtt": {id: webmWebVTT, kind: Subtitle, inWebM: true, describe: webmWebVTTPrivate},
 }
 
 // webmCodecFor is the codec a caller's spelling names, whether it spells the
@@ -451,6 +680,22 @@ func describeWebMTrack(cfg TrackConfig, number uint64) (webmTrackEntry, webmCode
 	if err != nil {
 		return webmTrackEntry{}, codec, err
 	}
+	if desc.matroskaID != "" {
+		codec.id, codec.inWebM = desc.matroskaID, false
+	}
+	if codec.kind == Audio && desc.codecDelay == 0 && cfg.StartDelay > 0 {
+		// The priming the source container stated -- an MP4 edit list, a
+		// Matroska CodecDelay -- is Matroska's CodecDelay, whatever the codec:
+		// RFC 9559 §5.1.4.1.25 defines it as the codec samples the decoder
+		// discards, in nanoseconds, to be subtracted from every frame
+		// timestamp. The blocks keep their timestamps, so the priming frame
+		// sits at 0 and is presented from -StartDelay, i.e. not at all. That is
+		// what ffmpeg's matroskaenc.c does with any audio track's
+		// initial_padding: it writes CodecDelay and shifts the packets by the
+		// same amount. Opus states its own pre-skip, which wins: the WebM Opus
+		// mapping says CodecDelay is that pre-skip.
+		desc.codecDelay = uint64(cfg.StartDelay / time.Nanosecond)
+	}
 	lang := cfg.Language
 	if lang == "" {
 		lang = "und"
@@ -467,10 +712,9 @@ func describeWebMTrack(cfg TrackConfig, number uint64) (webmTrackEntry, webmCode
 		Language:     lang,
 		Audio:        desc.audio,
 	}
-	// Every codec in the table is a video or an audio one: subtitles are a
-	// boundary this muxer does not cross yet, and are refused above as a codec
-	// it has no id for.
 	switch codec.kind {
+	case Subtitle:
+		entry.TrackType = mkvTrackSubtitle
 	case Video:
 		entry.TrackType = mkvTrackVideo
 		if cfg.Width <= 0 || cfg.Height <= 0 {
@@ -630,15 +874,36 @@ var unlaceVorbisHeaders = func(r io.Reader, size int64) (ebml.Unlacer, error) {
 
 // webmAACPrivate states the AudioSpecificConfig, which is what Matroska carries
 // as the private data of an AAC track and what the esds of an MP4 holds.
+//
+// A track that brings its own record -- every reader of this package hands it
+// over as CodecConfig -- has it written verbatim, as ffmpeg's matroskaenc
+// writes the extradata of an AAC track (mkv_write_native_codecprivate), and as
+// the MP4 muxers write it into the esds. Rebuilding it from the track's fields
+// loses what those fields do not hold: ffmpeg's own encoder writes the five
+// bytes 11 88 56 e5 00, whose last three are the explicit SBR signalling, and
+// the rebuilt record was two. The record is decoded first, only to be checked,
+// and the Audio element's channel count is the one its channelConfiguration
+// states (ISO/IEC 14496-3 Table 1.19), the track's only where it leaves that
+// to the bitstream. Its rates are the record's too, as matroskaenc states them:
+// see webmAACRates.
+//
+// Without a record, one is built from the fields, and the channel count goes
+// through Table 1.19 rather than into the four-bit field as it stands: 7 is
+// not a configuration of seven channels but of eight, so seven channels, and
+// anything else the table does not state, are refused.
 func webmAACPrivate(cfg TrackConfig) (webmCodecPrivate, error) {
+	if len(cfg.CodecConfig) > 0 {
+		return webmAACRecord(cfg)
+	}
 	audio, err := webmAudioFields(cfg, "A_AAC")
 	if err != nil {
 		return webmCodecPrivate{}, err
 	}
-	if cfg.Channels > aacMaxChannelConfiguration {
+	configuration, ok := aacConfiguration(cfg.Channels)
+	if !ok {
 		return webmCodecPrivate{}, fmt.Errorf(
-			"%w: A_AAC cannot state %d channels; %d is the largest configuration",
-			ErrTrackConfig, cfg.Channels, aacMaxChannelConfiguration)
+			"%w: no A_AAC channel configuration states %d channels; pass the AudioSpecificConfig",
+			ErrTrackConfig, cfg.Channels)
 	}
 	objectType := cfg.AudioObjectType
 	if objectType == 0 {
@@ -646,7 +911,7 @@ func webmAACPrivate(cfg TrackConfig) (webmCodecPrivate, error) {
 	}
 	asc := aac.AudioSpecificConfig{
 		ObjectType:           objectType,
-		ChannelConfiguration: byte(cfg.Channels),
+		ChannelConfiguration: configuration,
 		SamplingFrequency:    cfg.SampleRate,
 		ExtensionFrequency:   cfg.SampleRate,
 	}
@@ -654,7 +919,49 @@ func webmAACPrivate(cfg TrackConfig) (webmCodecPrivate, error) {
 	if err := asc.Encode(&buf); err != nil {
 		return webmCodecPrivate{}, fmt.Errorf("%w: A_AAC configuration: %v", ErrTrackConfig, err)
 	}
+	webmAACRates(audio, buf.Bytes())
 	return webmCodecPrivate{private: buf.Bytes(), audio: audio}, nil
+}
+
+// webmWebVTTPrivate chooses which of the two Matroska mappings of WebVTT a track
+// is written in.
+//
+// ⛔ They are not interchangeable, and neither is enough on its own. The WebM
+// mapping, D_WEBVTT/SUBTITLES, is the only one ffmpeg reads -- it has no entry
+// for S_TEXT/WEBVTT at all, measured on 9.0.2 and in its source -- and the only
+// one a WebM file may hold. But it has nowhere for the file header: no
+// CodecPrivate, so a STYLE or a REGION block would be dropped without a word,
+// and with it the look of every cue. The Matroska mapping, S_TEXT/WEBVTT,
+// carries the header and the comments, and makes the file Matroska.
+//
+// So the WebM mapping is used while it loses nothing, which is when the header
+// is the bare signature, and the Matroska one as soon as the header says more.
+func webmWebVTTPrivate(cfg TrackConfig) (webmCodecPrivate, error) {
+	config, err := webvttConfig(cfg)
+	if err != nil {
+		return webmCodecPrivate{}, err
+	}
+	if strings.TrimRight(config, " \t\r\n") == webvttSignature {
+		return webmCodecPrivate{}, nil
+	}
+	return webmCodecPrivate{private: []byte(config), matroskaID: mkvWebVTT}, nil
+}
+
+// webmAACRecord states a track's own AudioSpecificConfig, byte for byte.
+func webmAACRecord(cfg TrackConfig) (webmCodecPrivate, error) {
+	asc, err := aac.DecodeAudioSpecificConfig(bytes.NewReader(cfg.CodecConfig))
+	if err != nil {
+		return webmCodecPrivate{}, fmt.Errorf("%w: A_AAC AudioSpecificConfig: %v", ErrTrackConfig, err)
+	}
+	if n := aacChannels(asc.ChannelConfiguration); n > 0 {
+		cfg.Channels = n
+	}
+	audio, err := webmAudioFields(cfg, "A_AAC")
+	if err != nil {
+		return webmCodecPrivate{}, err
+	}
+	webmAACRates(audio, cfg.CodecConfig)
+	return webmCodecPrivate{private: bytes.Clone(cfg.CodecConfig), audio: audio}, nil
 }
 
 // webmAudioFields is the Audio element of a track whose rate and channel count
@@ -682,6 +989,14 @@ func webmAudioFields(cfg TrackConfig, id string) (*webmAudio, error) {
 // CompositionOffset is added to its time rather than written beside it. Samples
 // are written in the order handed over: a caller interleaving several tracks
 // keeps them in step, as it must for the fragmented MP4 muxer too.
+//
+// The first sample's composition offset is then taken off every one of the
+// track's times, so its first frame is shown at zero, as the MP4 muxers' edit
+// list shows it. Without that a track that reorders its frames -- H.264 with
+// B-frames -- started late by its reordering delay while its audio started at
+// zero. A frame shown before that first one, which only a group of pictures
+// begun before the stream can have and which a decoder starting here discards,
+// would fall before the start of the track and is refused.
 func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 	switch {
 	case m.closed:
@@ -697,7 +1012,13 @@ func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 	if !ok {
 		return fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
 	}
-	presentation := int64(t.nextTime) + int64(s.CompositionOffset)
+	// Kept aside until the sample is accepted: a refused first sample must not
+	// decide where the next one is shown.
+	shift := t.shift
+	if !t.shifted {
+		shift = t.edit.shift(presentationStart(s.CompositionOffset, 0))
+	}
+	presentation := int64(t.nextTime) + int64(s.CompositionOffset) - shift
 	if presentation < 0 {
 		return fmt.Errorf("%w: a composition offset of %d puts the frame at %d, before the track starts",
 			ErrSample, s.CompositionOffset, presentation)
@@ -705,6 +1026,14 @@ func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 	tick, err := m.ticksFor(uint64(presentation), t.timescale)
 	if err != nil {
 		return err
+	}
+	var cues []webvttCue
+	if t.cues != nil {
+		// Read before anything is written: a sample that is not what
+		// ISO/IEC 14496-30 says a WebVTT sample is leaves the file as it was.
+		if cues, err = readWebVTTSample(s.Data); err != nil {
+			return err
+		}
 	}
 	if !m.started {
 		if err := m.begin(); err != nil {
@@ -727,13 +1056,32 @@ func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 		// smallest length the file can express is stated instead of nothing.
 		duration = 1
 	}
-	// The frame handed over last is written now, and this one takes its place:
-	// whichever turns out to be last must still be able to state its length.
-	if err := m.flushHeld(t, false); err != nil {
-		return err
+	if t.cues != nil {
+		start := uint64(presentation)
+		if err := m.writeCueBlocks(t, t.cues.add(start, start+uint64(s.Duration), cues)); err != nil {
+			return err
+		}
+	} else {
+		// The frame handed over last is written now, and this one takes its
+		// place: whichever turns out to be last must still be able to state
+		// its length.
+		if err := m.flushHeld(t, false); err != nil {
+			return err
+		}
+		// A frame decodes to at least the length of the one before it when
+		// the codec decodes every frame to the same length: a last frame
+		// stated shorter is one whose end the source does not present. See
+		// webmDiscard.
+		decoded := int64(s.Duration)
+		if t.fixedFrames {
+			decoded = max(decoded, t.prevUnits)
+		}
+		t.prevUnits = int64(s.Duration)
+		t.held = &heldFrame{data: s.Data, tick: tick, duration: duration, sync: s.Sync,
+			start: int64(t.nextTime) + int64(s.CompositionOffset), units: int64(s.Duration), decoded: decoded}
 	}
-	t.held = &heldFrame{data: s.Data, tick: tick, duration: duration, sync: s.Sync}
 	t.nextTime += uint64(s.Duration)
+	t.shift, t.shifted = shift, true
 	if end := uint64(presentation) + uint64(s.Duration); end > t.end {
 		t.end, t.endTick = end, endTick
 	}
@@ -760,11 +1108,17 @@ func (m *WebMMuxer) flushHeld(t *webmTrack, last bool) error {
 		Keyframe:    h.sync,
 		Data:        [][]byte{h.data},
 	}
-	if !last {
+	discard := webmDiscard(t, h, last)
+	if !last && discard == 0 {
 		t.lastTick, t.hasLast = h.tick, true
 		return m.writeBlock(block)
 	}
-	group := webmBlockGroup{Block: block, BlockDuration: h.duration}
+	// A simple block has no room for a duration or a padding: the last frame,
+	// and any frame whose end is not presented, are block groups.
+	group := webmBlockGroup{Block: block, DiscardPadding: discard}
+	if last {
+		group.BlockDuration = h.duration
+	}
 	if !h.sync {
 		// A block group states no keyframe flag, so a frame that is not one
 		// names the frame before it. Two frames landing on the same tick
@@ -776,7 +1130,78 @@ func (m *WebMMuxer) flushHeld(t *webmTrack, last bool) error {
 		}
 		group.ReferenceBlock = reference
 	}
+	t.lastTick, t.hasLast = h.tick, true
 	return m.writeBlockGroup(group)
+}
+
+// writeCueBlocks writes finished cues, each as a block group stating how long it
+// is shown -- which both mappings require, a simple block having no room for
+// it -- in the form the track's CodecID names.
+//
+// A cue is written when its end is known, which is when the sample after it
+// arrives, so it lands behind blocks of other tracks that start later. Its
+// timestamp is still its own: a block states it relative to its cluster, and a
+// negative one is what a cue that began before the cluster did is written as.
+func (m *WebMMuxer) writeCueBlocks(t *webmTrack, cues []webvttCue) error {
+	for _, c := range cues {
+		// Both ends were converted when the samples holding them arrived, and
+		// refused there if the segment's resolution could not state them.
+		tick, _ := m.ticksFor(c.start, t.timescale)
+		end, _ := m.ticksFor(c.end, t.timescale)
+		group := webmBlockGroup{BlockDuration: max(end-tick, 1)}
+		data := webmCueBlock(c)
+		if t.cueForm == mkvWebVTT {
+			// The Matroska mapping counts the timestamps inside the text
+			// from the block, and keeps the rest of the cue beside it.
+			text, err := shiftCueTimestamps(c.text, -unitsToDuration(c.start, t.timescale))
+			if err != nil {
+				return err
+			}
+			data = []byte(text)
+			if addition := matroskaCueAddition(c); addition != nil {
+				group.BlockAdditions = &webmBlockAdditions{BlockMore: []webmBlockMore{{
+					BlockAddID: mkvWebVTTAddition, BlockAdditional: addition,
+				}}}
+			}
+		}
+		if m.needNewCluster(tick, t, true) {
+			if err := m.openCluster(tick); err != nil {
+				return err
+			}
+		}
+		group.Block = ebml.Block{
+			TrackNumber: uint64(t.id),
+			Timecode:    int16(int64(tick) - int64(m.clusterStart)),
+			Keyframe:    true,
+			Data:        [][]byte{data},
+		}
+		if err := m.writeBlockGroup(group); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// webmDiscard is the DiscardPadding of a frame (RFC 9559 §5.1.3.5.7): how much
+// of what it decodes to is not presented, in nanoseconds, rounded to the
+// nearest as ffmpeg's matroskaenc rescales its skip samples.
+//
+// Two things end a track's presentation before its media does, and both are
+// how ffmpeg's MP4s state the padding its AAC encoder leaves after the last
+// sample: an edit whose segment_duration stops short of the media (webmShift),
+// and a last sample whose stated duration is shorter than what it decodes to
+// (heldFrame.decoded). Matroska has neither -- a block's time and duration say
+// nothing a decoder acts on -- and states the trim as the padding of the frames
+// it cuts into, which is what a demuxer hands the decoder as samples to drop.
+// Without it a copy decodes and plays sound the source never presented.
+func webmDiscard(t *webmTrack, h *heldFrame, last bool) int64 {
+	decoded := h.units
+	if last {
+		decoded = h.decoded
+	}
+	presented := h.units - t.edit.trim(h.start, h.units)
+	padding := decoded - presented
+	return (padding*int64(time.Second) + int64(t.timescale)/2) / int64(t.timescale)
 }
 
 // flushTails writes every held frame, in the order they are meant to be read.
@@ -812,21 +1237,28 @@ func (m *WebMMuxer) begin() error {
 		if err := ebml.Marshal(&webmHeaderDoc{Header: m.ebmlHeader()}, m.w); err != nil {
 			return fmt.Errorf("container: write webm header: %w", err)
 		}
-		info, tracks := m.info(0), webmTracks{TrackEntry: m.entries}
+		head := m.segmentHead(0)
+		if m.seeker != nil && m.locateOrigin() {
+			// Close knows the duration, and will write it here.
+			head.Info.DurationRoom = make([]byte, webmDurationRoom)
+		}
 		// The segment element costs its identifier plus the length of the
 		// size it states, and how many bytes that takes is the encoder's
 		// choice, not a constant worth guessing: encoding the segment and its
 		// content apart is what says where the content begins.
-		var segment, content bytes.Buffer
-		if err := measureEBML(&webmOpenSegmentDoc{
-			Segment: webmOpenSegment{Info: info, Tracks: tracks},
-		}, &segment); err != nil {
+		content, seeks, err := measureHead(&head)
+		if err != nil {
 			return fmt.Errorf("container: write webm header: %w", err)
 		}
-		if err := measureEBML(&webmHeadDoc{Info: info, Tracks: tracks}, &content); err != nil {
+		open := head.open()
+		if m.seeker != nil {
+			m.openSeekHead(&open, seeks)
+		}
+		var segment bytes.Buffer
+		if err := measureEBML(&webmOpenSegmentDoc{Segment: open}, &segment); err != nil {
 			return fmt.Errorf("container: write webm header: %w", err)
 		}
-		m.segmentStart = m.w.n + uint64(segment.Len()-content.Len())
+		m.segmentStart = m.w.n + uint64(segment.Len()-content.Len()-m.seekReserve)
 		if _, err := m.w.Write(segment.Bytes()); err != nil {
 			return fmt.Errorf("container: write webm header: %w", err)
 		}
@@ -921,6 +1353,16 @@ func (m *WebMMuxer) Close() error {
 		m.closed = true
 		return ErrNoTracks
 	}
+	// The cues still on screen when their track ended end with it.
+	for _, t := range m.tracks {
+		if t.cues == nil {
+			continue
+		}
+		if err := m.writeCueBlocks(t, t.cues.drain()); err != nil {
+			m.closed = true
+			return err
+		}
+	}
 	// The frame each track is still holding is written now, stating its
 	// duration: it is the last of its track, and nothing else in the file
 	// would say how long it lasts.
@@ -931,34 +1373,51 @@ func (m *WebMMuxer) Close() error {
 	m.closed = true
 	if !m.settings.buffered {
 		// Every cluster is already out; a track declared and never fed still
-		// deserves the header that names it.
-		if m.started {
-			return m.writeCues()
+		// deserves the header that names it, and a seekable writer its size.
+		if !m.started {
+			if err := m.begin(); err != nil {
+				return err
+			}
 		}
-		doc := webmStreamDoc{
-			Header: m.ebmlHeader(),
-			Segment: webmOpenSegment{
-				Info:   m.info(0),
-				Tracks: webmTracks{TrackEntry: m.entries},
-			},
+		// Where the Cues begin is read before they are written, as a
+		// cluster's is.
+		cuesAt := m.w.n - m.segmentStart
+		if err := m.writeCues(); err != nil {
+			return err
 		}
-		if err := ebml.Marshal(&doc, m.w); err != nil {
-			return fmt.Errorf("container: write webm header: %w", err)
+		if m.seeker != nil {
+			return m.finishSeekable(cuesAt)
 		}
 		return nil
 	}
-	info := m.info(m.duration())
-	tracks := webmTracks{TrackEntry: m.entries}
-	if err := m.placeCues(info, tracks); err != nil {
+	segmentHead := m.segmentHead(m.duration())
+	head, seeks, err := measureHead(&segmentHead)
+	if err != nil {
+		return fmt.Errorf("container: measure the segment head: %w", err)
+	}
+	// Everything after the SeekHead is placed past the room it takes, which
+	// is fixed by how many entries it can hold and not by what they say.
+	reserve := webmSeekReserve(len(seeks) + 1)
+	placeSeeks(seeks, uint64(reserve))
+	cuesAt, err := m.placeCues(uint64(reserve + head.Len()))
+	if err != nil {
 		return err
 	}
+	if len(m.cues) > 0 {
+		seeks = append(seeks, cuesSeek(cuesAt))
+	}
+	seekHead, void := webmSeekRegion(seeks, reserve)
 	doc := webmSizedDoc{
 		Header: m.ebmlHeader(),
 		Segment: webmSegment{
-			Info:    info,
-			Tracks:  tracks,
-			Cluster: m.clusters,
-			Cues:    m.cueIndex(),
+			SeekHead:    seekHead,
+			Void:        void,
+			Info:        segmentHead.Info,
+			Tracks:      segmentHead.Tracks,
+			Attachments: segmentHead.Attachments,
+			Tags:        segmentHead.Tags,
+			Cluster:     m.clusters,
+			Cues:        m.cueIndex(),
 		},
 	}
 	if err := ebml.Marshal(&doc, m.w); err != nil {
@@ -995,26 +1454,52 @@ func (m *WebMMuxer) cueIndex() *webm.Cues {
 // Close; they are measured instead, by encoding what precedes the clusters and
 // then each cluster in turn. The encoder is deterministic, which is what makes
 // a measured length the length it will have.
-func (m *WebMMuxer) placeCues(info webmInfo, tracks webmTracks) error {
+//
+// The first cluster begins at at, past the SeekHead and the head of the
+// segment; what is returned is where the clusters end, which is where the Cues
+// begin.
+func (m *WebMMuxer) placeCues(at uint64) (uint64, error) {
 	if len(m.cues) == 0 {
-		return nil
+		return at, nil
 	}
-	var head bytes.Buffer
-	if err := measureEBML(&webmHeadDoc{Info: info, Tracks: tracks}, &head); err != nil {
-		return fmt.Errorf("container: measure the segment head: %w", err)
-	}
-	at := uint64(head.Len())
 	for i := range m.clusters {
 		if i < len(m.cues) {
 			m.cues[i].CueTrackPositions[0].CueClusterPosition = at
 		}
 		var one bytes.Buffer
 		if err := measureEBML(&webmClusterDoc{Cluster: m.clusters[i]}, &one); err != nil {
-			return fmt.Errorf("container: measure cluster %d: %w", i, err)
+			return 0, fmt.Errorf("container: measure cluster %d: %w", i, err)
 		}
 		at += uint64(one.Len())
 	}
-	return nil
+	return at, nil
+}
+
+// openSeekHead puts a SeekHead at the head of a streamed segment, naming what
+// precedes the first cluster, with room left for the Cues entry Close will add.
+// It is called only for a writer locateOrigin found it can seek in.
+func (m *WebMMuxer) openSeekHead(open *webmOpenSegment, seeks []webmSeek) {
+	m.seekReserve = webmSeekReserve(len(seeks) + 1)
+	placeSeeks(seeks, uint64(m.seekReserve))
+	m.seeks = seeks
+	open.SeekHead, open.Void = webmSeekRegion(seeks, m.seekReserve)
+}
+
+// locateOrigin asks the writer where it is, which is what every rewrite at
+// Close is counted from. A writer that says it can seek and then cannot --
+// os.Stdout on a pipe is an io.Seeker whose Seek fails -- is written to as one
+// that cannot: a stream is still worth writing, and room nothing will ever fill
+// is not.
+func (m *WebMMuxer) locateOrigin() bool {
+	pos, err := m.seeker.Seek(0, io.SeekCurrent)
+	if err != nil {
+		m.seeker = nil
+		return false
+	}
+	// The header just written is what the counter holds, so the writer was
+	// that much earlier when the muxer started.
+	m.origin = pos - int64(m.w.n)
+	return true
 }
 
 // duration is how long the longest track lasts, in segment ticks.
@@ -1050,6 +1535,7 @@ func (m *WebMMuxer) info(duration float64) webmInfo {
 		MuxingApp:     webmMuxingApp,
 		WritingApp:    webmMuxingApp,
 		Duration:      duration,
+		Title:         mkvTitleOf(m.metadata),
 	}
 }
 

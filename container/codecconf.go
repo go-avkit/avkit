@@ -50,9 +50,12 @@ var (
 // StreamConfig is what a track's own samples say about it.
 //
 // The embedded TrackConfig is what Muxer.AddTrack and TSMuxer.AddTrack take, so
-// deriving a configuration and writing the track is two calls. The remaining
-// fields are what a manifest states and a sample entry does not: the coded frame
-// size before cropping, the pixel aspect ratio, and the profile, tier and level.
+// deriving a configuration and writing the track is two calls. Its SARWidth and
+// SARHeight are the sample (pixel) aspect ratio, 1:1 unless the bitstream states
+// otherwise: display size is the visible size scaled by it, which is how
+// anamorphic video ends up wider than it is coded. The remaining fields are what
+// a manifest states and a sample entry does not: the coded frame size before
+// cropping, and the profile, tier and level.
 type StreamConfig struct {
 	TrackConfig
 
@@ -62,11 +65,6 @@ type StreamConfig struct {
 	// 1088 and cropped. TrackConfig.Width and Height hold the visible size,
 	// the one a player displays and a sample entry states.
 	CodedWidth, CodedHeight int
-	// SARWidth and SARHeight are the sample (pixel) aspect ratio, 1:1 unless
-	// the bitstream states otherwise. Display size is the visible size scaled
-	// by this ratio, which is how anamorphic video ends up wider than it is
-	// coded.
-	SARWidth, SARHeight int
 	// Profile, Tier and Level are the bitstream's own, as its headers code
 	// them: profile_idc and level_idc for AVC, general_profile_idc,
 	// general_tier_flag and general_level_idc for HEVC, seq_profile,
@@ -161,14 +159,25 @@ func ConfigFromSamples(codec string, samples []Sample, opts ...ConfigOption) (St
 	case "mp4a":
 		cfg, err = aacStreamConfig(name, samples)
 	case "vp08":
-		// A VP8 key frame states its size, but VP8 defines no level at all,
-		// and a vpcC record whose level is zero states nothing a player can
-		// use — which is why the muxer refuses one.
-		return refuse(name, "VP8 states no level, and a vpcC record without one describes nothing")
+		// A VP8 key frame states its size, but VP8 defines no level at all:
+		// its vpcC states level 0, "Undefined", and the rest of the record
+		// (bit depth, colour) is the container's to say.
+		return refuse(name, "VP8 states no level, and its colour description is the container's")
 	case "opus":
 		return refuse(name, "an Opus stream carries no identification header; only its container states one")
 	case "ac-3", "ec-3":
-		return refuse(name, "the bit stream information of an AC-3 sync frame is not read by this package")
+		cfg, err = ac3StreamConfig(name, samples)
+	case codecWebVTT:
+		return refuse(name, "the WebVTT file header is stated once, by the sample entry's vttC, and never by a cue")
+	case codecTTML:
+		return refuse(name, "the TTML namespace and schema are stated by the stpp sample entry, not by its documents")
+	case "mp1", "mp2", "mp3":
+		cfg, err = mpaStreamConfig(name, samples)
+	case "flac":
+		// RFC 9639 9.1.2 and 9.1.4: a frame header may leave its sample
+		// rate and bit depth to STREAMINFO, and the block and frame size
+		// bounds, the sample count and the MD5 are in STREAMINFO alone.
+		return refuse(name, "a FLAC frame may leave its rate and bit depth to STREAMINFO, which only the stream header holds")
 	default:
 		return StreamConfig{}, fmt.Errorf("%w: %q", ErrUnsupportedCodec, codec)
 	}
@@ -541,9 +550,9 @@ func av1StreamConfig(codec string, samples []Sample) (StreamConfig, error) {
 				TrackConfig: TrackConfig{
 					Kind: Video, Width: int(seq.Width()), Height: int(seq.Height()),
 					CodecConfig: payload.Bytes(),
+					SARWidth:    1, SARHeight: 1,
 				},
 				CodedWidth: int(seq.Width()), CodedHeight: int(seq.Height()),
-				SARWidth: 1, SARHeight: 1,
 				Profile: seq.SeqProfile, Tier: seq.SeqTier0, Level: seq.SeqLevelIdx0,
 				CodecString: seq.CodecString(codec),
 			}, nil
@@ -588,9 +597,9 @@ func vp9StreamConfig(codec string, samples []Sample, timescale uint32) (StreamCo
 					ColourPrimaries: primaries, TransferCharacteristics: transfer,
 					MatrixCoefficients: matrix,
 				},
+				SARWidth: 1, SARHeight: 1,
 			},
 			CodedWidth: int(header.Width), CodedHeight: int(header.Height),
-			SARWidth: 1, SARHeight: 1,
 			Profile: header.Profile, Level: level,
 			CodecString: fmt.Sprintf("%s.%02d.%02d.%02d", codec, header.Profile, level, header.BitDepth),
 		}, nil
@@ -688,7 +697,11 @@ func isAV1Stream(es *astits.PMTElementaryStream) bool {
 func (t *tsTrack) syncUnit(data []byte) bool {
 	switch {
 	case t.track.Kind == Audio:
-		return true // every AAC frame decodes on its own
+		// Every AAC, AC-3 and MPEG audio frame decodes on its own. (A Layer
+		// III frame may borrow bits from the one before through its bit
+		// reservoir, which a decoder joining there absorbs, as FFmpeg's
+		// marking of every MPEG audio packet as a key frame does too.)
+		return true
 	case t.av1:
 		return av1RandomAccess(data)
 	default:
@@ -733,6 +746,14 @@ func av1RandomAccess(data []byte) bool {
 // unknown is still worth handing over, and Muxer.AddTrack is the one that
 // decides whether what it was given is enough to write.
 func (t *tsTrack) deriveConfiguration() {
+	if t.audio == tsAC3 {
+		// The dac3 or dec3 record an MP4 sample entry needs is built from a
+		// sync frame, as it is for a Matroska track that states none.
+		if got, err := ac3TrackConfig(t.config.Codec, t.samples); err == nil {
+			t.config.CodecConfig = got.CodecConfig
+		}
+		return
+	}
 	if t.track.Kind != Video {
 		return
 	}
