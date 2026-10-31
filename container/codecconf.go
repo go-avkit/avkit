@@ -462,7 +462,6 @@ func hevcStreamConfig(codec string, scan naluScan) (StreamConfig, error) {
 	// ImageSize applies the conformance window, which is HEVC's cropping: the
 	// coded size is a whole number of coding units, the window says what of it
 	// is shown.
-	fixHEVCConstraints(&first.ProfileTierLevel, scan.sets.sps[0])
 	width, height := first.ImageSize()
 	ptl := first.ProfileTierLevel
 	cfg := StreamConfig{

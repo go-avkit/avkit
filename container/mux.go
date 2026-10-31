@@ -454,7 +454,6 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 			return fmt.Errorf("%w: %s needs VPS, SPS and PPS", ErrTrackConfig, codec)
 		}
 		trak.SetHEVCDescriptor(codec, cfg.VPS, cfg.SPS, cfg.PPS, nil, true)
-		fixHvcCConstraints(trak, cfg.SPS)
 	case "av01":
 		av1C, err := decodeAv1C(cfg.CodecConfig)
 		if err != nil {

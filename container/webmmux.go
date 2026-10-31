@@ -787,7 +787,6 @@ func webmHEVCPrivate(cfg TrackConfig) (webmCodecPrivate, error) {
 		return webmCodecPrivate{}, fmt.Errorf("%w: HEVC parameter sets are not usable: %v",
 			ErrTrackConfig, err)
 	}
-	fixRecordConstraints(&record, cfg.SPS)
 	var buf bytes.Buffer
 	if err := encodeHEVCRecord(&record, &buf); err != nil {
 		return webmCodecPrivate{}, fmt.Errorf("%w: HEVC configuration record: %v", ErrTrackConfig, err)
