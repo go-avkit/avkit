@@ -19,7 +19,7 @@ model, and converts the payloads each container spells differently.
 
 | Package     | What it does |
 |-------------|--------------|
-| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS — and, demux only, ADTS, native FLAC, Ogg and WAV — into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of an MP4 or a transport stream, one file or a sequence of segments; mux a fragmented or a progressive MP4, or an MPEG-TS, from tracks delivered separately; carry WebVTT, SRT and TTML subtitle tracks between MP4 and Matroska/WebM; copy, cut, join, concatenate and drop tracks with `Remux`, `Cut`, `Join` and `Concat`; read and write file metadata and cover art; and rewrite an HEVC track's sample entry to `hvc1` with `ConformHVC1`. No re-encoding anywhere. |
+| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS — and, demux only, ADTS, MPEG audio, native FLAC, Ogg, WAV and AVI — into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of any of them, one file or (MP4, MPEG-TS) a sequence of segments; mux a fragmented or a progressive MP4, a Matroska/WebM file, or an MPEG-TS, from tracks delivered separately; carry WebVTT, SRT and TTML subtitle tracks between MP4 and Matroska/WebM; copy, cut, join, concatenate and drop tracks with `Remux`, `Cut`, `Join` and `Concat`; read and write file metadata and cover art; and rewrite an HEVC track's sample entry to `hvc1` with `ConformHVC1`. No re-encoding anywhere. |
 
 ### Why `ConformHVC1` is there
 
