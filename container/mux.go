@@ -281,6 +281,9 @@ type muxTrack struct {
 	trak *mp4.TrakBox
 	// priming is the track's StartDelay in its own timescale.
 	priming int64
+	// clock converts the samples of an audio track whose timescale was too
+	// coarse to count samples in (see withAudioClock); nil for any other.
+	clock *audioClock
 	// firstOffset is the composition offset of the track's first sample, and
 	// written says there was one.
 	firstOffset int32
@@ -387,6 +390,7 @@ func (m *Muxer) AddTrack(cfg TrackConfig) (uint32, error) {
 			return 0, err
 		}
 	}
+	cfg, clock := withAudioClock(cfg)
 	if m.init == nil {
 		m.init = mp4.CreateEmptyInit()
 		m.init.Moov.Mvhd.NextTrackID = 1
@@ -407,7 +411,7 @@ func (m *Muxer) AddTrack(cfg TrackConfig) (uint32, error) {
 		setEdits(trak, edts)
 	}
 	t := &muxTrack{id: trak.Tkhd.TrackID, timescale: cfg.Timescale, trak: trak,
-		priming: primingTicks(cfg.StartDelay, cfg.Timescale)}
+		priming: primingTicks(cfg.StartDelay, cfg.Timescale), clock: clock}
 	m.tracks = append(m.tracks, t)
 	m.byID[t.id] = t
 	return t.id, nil
@@ -995,6 +999,10 @@ func (m *Muxer) WriteSample(trackID uint32, s Sample) error {
 	t, ok := m.byID[trackID]
 	if !ok {
 		return fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
+	}
+	s, err := t.clock.sample(s)
+	if err != nil {
+		return err
 	}
 	m.started = true
 	if !t.written {

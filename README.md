@@ -283,10 +283,24 @@ Both directions are covered, since a fix for only one of them would be half a
 fix: a Matroska `CodecDelay` becomes an `elst` on the way out, an MP4's `elst`
 is read back on the way in, and becomes a `CodecDelay` again in Matroska.
 
-**The precision is the output track's timescale.** Matroska counts in
-milliseconds by default and that timescale is carried over, so a 21.333 ms
-priming is stated as 21 — rounded to the nearest tick, not down. That is a third
-of a millisecond lost where a whole 21.333 ms frame was gained before.
+**An audio track is written to an MP4 in samples.** Matroska counts in
+milliseconds by default, and a track copied from it used to keep that
+timescale. ffmpeg reads an edit's `media_time` for audio as a number of
+*samples* to skip (`mov.c`, `mov_fix_index`), so at 1000 Hz an MP3's 25 ms edit
+skipped 25 samples of the 1105 it meant, and the decoder presented the priming:
+45 168 samples decoded for a 44 100-sample presentation, measured with ffmpeg
+9.0.2. `Muxer` and `ProgressiveMuxer` now write an audio track whose timescale
+is coarser than its sample rate with the sample rate as media timescale — what
+ffmpeg's `movenc` does for every audio track (48 kHz for Opus) — converting
+sample durations, composition offsets and the media times of an edit list when
+the track is added and its samples written. A priming is stated whole: 1105
+samples, 1024 for AAC, not rounded to a millisecond. The conversion is
+invisible to a caller, who keeps counting in the timescale the track came in.
+The length of the track is kept to the sample; what Matroska rounded to the
+millisecond at the end of the media stays rounded. A *fragmented* MP4 is read by
+ffmpeg without its edit list, whatever timescale it counts in (its own
+fragmented MP3 decodes the priming too), so only `ProgressiveMuxer` output
+loses it under ffmpeg; the edit list is written to both.
 
 A priming is read out of one shape of edit list only: a single entry starting at
 a positive media time at rate 1, which is what priming looks like. The media
