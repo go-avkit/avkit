@@ -842,7 +842,7 @@ func describeAAC(trak *mp4.TrakBox, cfg TrackConfig) error {
 	if _, err := aac.DecodeAudioSpecificConfig(bytes.NewReader(cfg.CodecConfig)); err != nil {
 		return fmt.Errorf("%w: mp4a AudioSpecificConfig: %v", ErrTrackConfig, err)
 	}
-	channels := aacOutputChannels(cfg.CodecConfig)
+	channels := aacTrackChannels(cfg.CodecConfig, cfg.Channels)
 	if channels == 0 {
 		channels = cfg.Channels
 	}

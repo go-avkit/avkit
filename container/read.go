@@ -583,7 +583,7 @@ func aacTrackConfig(cfg *TrackConfig, asc []byte) error {
 	cfg.AudioObjectType = decoded.ObjectType
 	// The count the stream plays as: a mono core with parametric stereo is two
 	// channels, as ffmpeg and Apple state it, and the sample entry's 2 is right.
-	if n := aacOutputChannels(asc); n > 0 {
+	if n := aacTrackChannels(asc, cfg.Channels); n > 0 {
 		cfg.Channels = n
 	}
 	if cfg.SampleRate == 0 {

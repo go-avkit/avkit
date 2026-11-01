@@ -128,6 +128,27 @@ func TestASCSignalling(t *testing.T) {
 	}
 }
 
+// A mono core with SBR and no PS signalled, in a file whose sample entry says 2,
+// is HE-AACv2 signalled implicitly (two real files of the library are); the same
+// record under an entry saying 1, or a mono record with no SBR under an entry
+// saying 2 (afconvert's template field), stays mono.
+func TestImplicitPSIsTakenFromTheContainersTwo(t *testing.T) {
+	sbrMono := bitsToBytes("00010 0111 0001 000" + "01010110111" + "00101 1 0100")
+	for name, tc := range map[string]struct {
+		asc    []byte
+		stated int
+		want   int
+	}{
+		"SBR over a mono core, entry 2": {sbrMono, 2, 2},
+		"SBR over a mono core, entry 1": {sbrMono, 1, 1},
+		"mono AAC-LC, entry 2":          {monoASC, 2, 1},
+	} {
+		if got := aacTrackChannels(tc.asc, tc.stated); got != tc.want {
+			t.Errorf("%s: %d channels; want %d", name, got, tc.want)
+		}
+	}
+}
+
 // heaacv2Sources are the same HE-AACv2 stream as a caller meets it: read from
 // the fixture, whose record is the backward-compatible one, and with the record
 // rewritten into the hierarchical form (the samples are the same bytes: a

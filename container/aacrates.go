@@ -174,9 +174,19 @@ func readASC(asc []byte) ascSignalling {
 // element of a Matroska file, and so does Apple's encoder. Zero means the
 // bitstream states the layout.
 func aacOutputChannels(asc []byte) int {
+	return aacTrackChannels(asc, 0)
+}
+
+// aacTrackChannels is aacOutputChannels for a track whose container stated a
+// count of its own. A mono core with SBR but no PS signalled, in a container
+// that says 2, is an HE-AACv2 stream signalled implicitly: PS exists only on
+// top of SBR, and ffmpeg's decoder takes it as possible ("ps = -1"). Without
+// SBR the container's 2 is the template field that afconvert writes for a mono
+// track, and the record wins.
+func aacTrackChannels(asc []byte, stated int) int {
 	s := readASC(asc)
 	n := aacChannels(byte(s.config))
-	if n == 1 && s.ps {
+	if n == 1 && (s.ps || s.output > 0 && stated == 2) {
 		return 2
 	}
 	return n

@@ -954,7 +954,7 @@ func webmAACRecord(cfg TrackConfig) (webmCodecPrivate, error) {
 	}
 	// Channels is what the stream plays as, 2 for parametric stereo, as
 	// matroskaenc writes it.
-	if n := aacOutputChannels(cfg.CodecConfig); n > 0 {
+	if n := aacTrackChannels(cfg.CodecConfig, cfg.Channels); n > 0 {
 		cfg.Channels = n
 	}
 	audio, err := webmAudioFields(cfg, "A_AAC")
