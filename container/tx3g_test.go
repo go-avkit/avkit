@@ -69,7 +69,9 @@ func ffmpegCues(t *testing.T) []vttCue {
 		t.Fatal(err)
 	}
 	var cues []vttCue
-	for _, block := range strings.Split(strings.TrimSpace(string(data)), "\n\n")[1:] {
+	// A checkout that converts line endings (Windows) must read the same file.
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	for _, block := range strings.Split(strings.TrimSpace(text), "\n\n")[1:] {
 		timing, text, _ := strings.Cut(block, "\n")
 		from, to, _ := strings.Cut(timing, " --> ")
 		cues = append(cues, vttCue{vttTime(t, from), vttTime(t, to), text})
