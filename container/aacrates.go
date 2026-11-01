@@ -112,13 +112,13 @@ const aacPSSyncExtensionType = 0x548
 // replication, which doubles the rate, and parametric stereo, which doubles
 // the channels of a mono core.
 type ascSignalling struct {
-	object      uint32 // the audioObjectType as stated first: 5 and 29 are hierarchical signalling
-	inner       uint32 // the core's own audioObjectType, equal to object unless that is 5 or 29
-	coreIndex   uint32 // the core's samplingFrequencyIndex, 15 when the rate is stated in full
-	core        int    // the core's sampling frequency
-	output      int    // the extension sampling frequency, 0 when SBR is not signalled
-	config      uint32 // channelConfiguration, of the core
-	ps          bool   // parametric stereo is signalled, and the core is mono
+	object    uint32 // the audioObjectType as stated first: 5 and 29 are hierarchical signalling
+	inner     uint32 // the core's own audioObjectType, equal to object unless that is 5 or 29
+	coreIndex uint32 // the core's samplingFrequencyIndex, 15 when the rate is stated in full
+	core      int    // the core's sampling frequency
+	output    int    // the extension sampling frequency, 0 when SBR is not signalled
+	config    uint32 // channelConfiguration, of the core
+	ps        bool   // parametric stereo is signalled, and the core is mono
 }
 
 // readASC reads the signalling of a record the way ffmpeg's
