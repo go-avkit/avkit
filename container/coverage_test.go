@@ -29,8 +29,8 @@ func oneSample() []Sample { return []Sample{{Data: make([]byte, 64)}} }
 func TestTheCoverageOfConfigFromSamplesIsWhatTheREADMESays(t *testing.T) {
 	derives := []string{"avc1", "avc3", "hvc1", "hev1", "av01", "vp09", "mp4a", "ac-3", "ec-3",
 		"mp1", "mp2", "mp3"}
-	inContainer := []string{"vp08", "opus", "flac", "wvtt", "stpp"}
-	unknown := []string{"mjpg", "theora", "vorbis", "alac", "", "wmv3", "tx3g"}
+	inContainer := []string{"vp08", "opus", "flac", "wvtt", "stpp", "tx3g"}
+	unknown := []string{"mjpg", "theora", "vorbis", "alac", "", "wmv3", "pgs"}
 
 	for _, codec := range derives {
 		_, err := ConfigFromSamples(codec, oneSample())

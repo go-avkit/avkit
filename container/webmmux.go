@@ -249,8 +249,10 @@ type webmTrack struct {
 	// split, and cueForm is the CodecID saying which of the two Matroska
 	// mappings they are written in. A cue track holds nothing in held: each
 	// cue is a block group of its own, written once its end is known.
-	cues    *cueAssembler
-	cueForm string
+	cues *cueAssembler
+	// fromTx3g says the samples written are tx3g, turned into wvtt on the way.
+	fromTx3g bool
+	cueForm  string
 }
 
 // heldFrame is one frame waiting to be written, with what it takes to place it.
@@ -594,8 +596,8 @@ func (m *WebMMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 	}
 	t := &webmTrack{id: uint32(number), timescale: cfg.Timescale, inWebM: codec.inWebM, edit: edit,
 		fixedFrames: codec.id == "A_AAC", aspect: aspect}
-	if codec.kind == Subtitle {
-		t.cues, t.cueForm = &cueAssembler{}, codec.id
+	if codec.kind == Subtitle && !codec.bitmap {
+		t.cues, t.cueForm, t.fromTx3g = &cueAssembler{}, codec.id, codec.tx3g
 	}
 	m.entries = append(m.entries, entry)
 	m.tracks = append(m.tracks, t)
@@ -611,6 +613,12 @@ type webmCodec struct {
 	kind     Kind
 	inWebM   bool
 	describe func(TrackConfig) (webmCodecPrivate, error)
+	// bitmap says the track's blocks are pictures carried as they stand, not cues
+	// to be put back together: PGS.
+	bitmap bool
+	// tx3g says the samples handed over are 3GPP timed text, which is written as
+	// the WebVTT cues it is turned into.
+	tx3g bool
 }
 
 // webmCodecPrivate is what a codec adds to its track entry.
@@ -649,6 +657,25 @@ var webmCodecs = map[string]webmCodec{
 	"vorb": {id: "A_VORBIS", kind: Audio, inWebM: true, describe: webmVorbisPrivate},
 	"mp4a": {id: "A_AAC", kind: Audio, describe: webmAACPrivate},
 	"wvtt": {id: webmWebVTT, kind: Subtitle, inWebM: true, describe: webmWebVTTPrivate},
+	// Matroska has no mapping for 3GPP timed text, so it is written as the WebVTT
+	// cues it converts to (see tx3g.go for what that keeps); its sample entry,
+	// which WebVTT has no place for, is checked and not carried.
+	"tx3g": {id: webmWebVTT, kind: Subtitle, inWebM: true, describe: webmTx3gPrivate, tx3g: true},
+	// The Blu-ray presentation graphics stream is a Matroska codec WebM does not
+	// have: its blocks are copied, and the file is Matroska.
+	"pgs": {id: mkvPGS, kind: Subtitle, describe: webmNoPrivate, bitmap: true},
+}
+
+// webmTx3gPrivate checks the sample entry a tx3g track states, when it states
+// one, and writes the bare WebVTT mapping: a tx3g track has no WebVTT header to
+// carry.
+func webmTx3gPrivate(cfg TrackConfig) (webmCodecPrivate, error) {
+	if len(cfg.CodecConfig) > 0 {
+		if err := checkTx3gEntry(cfg.CodecConfig); err != nil {
+			return webmCodecPrivate{}, err
+		}
+	}
+	return webmCodecPrivate{}, nil
 }
 
 // webmCodecFor is the codec a caller's spelling names, whether it spells the
@@ -1031,7 +1058,13 @@ func (m *WebMMuxer) WriteSample(trackID uint32, s Sample) error {
 	if t.cues != nil {
 		// Read before anything is written: a sample that is not what
 		// ISO/IEC 14496-30 says a WebVTT sample is leaves the file as it was.
-		if cues, err = readWebVTTSample(s.Data); err != nil {
+		data := s.Data
+		if t.fromTx3g {
+			if data, err = webvttSampleOfTx3g(data); err != nil {
+				return err
+			}
+		}
+		if cues, err = readWebVTTSample(data); err != nil {
 			return err
 		}
 	}
