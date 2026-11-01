@@ -134,7 +134,7 @@ of −192, and the test holds the granule instead.
 | | codecs | what it means |
 |---|---|---|
 | **derived from the samples** | `avc1`, `avc3`, `hvc1`, `hev1`, `av01`, `vp09`, `mp4a`, `ac-3`, `ec-3`, `mp1`, `mp2`, `mp3` | the elementary stream states its own configuration, and it is read out of it: for AC-3 the `dac3`/`dec3` record from the first sync frame, for MPEG audio the rate and channel count from the frame headers, which must all be of the stated layer and one rate |
-| **stated by the container** | `vp08`, `opus`, `flac`, `wvtt`, `stpp` | `ErrNotInSamples`. The codec is known and its samples **cannot** describe it — VP8 defines no level, an Opus stream carries no identification header, a FLAC frame may leave its rate and bit depth to STREAMINFO (RFC 9639 §9.1.2, §9.1.4), which only the stream header holds, a WebVTT cue never repeats the file header and a TTML document never states its sample entry. Take the configuration from the container, which has it |
+| **stated by the container** | `vp08`, `opus`, `flac`, `wvtt`, `stpp`, `tx3g` | `ErrNotInSamples`. The codec is known and its samples **cannot** describe it — VP8 defines no level, an Opus stream carries no identification header, a FLAC frame may leave its rate and bit depth to STREAMINFO (RFC 9639 §9.1.2, §9.1.4), which only the stream header holds, a WebVTT cue never repeats the file header, a TTML document never states its sample entry and a tx3g sample never states the font table or the default style. Take the configuration from the container, which has it |
 | **not known** | everything else | `ErrUnsupportedCodec` alone. There is nothing to take |
 
 ⛔ The middle row used to be indistinguishable from the last: both carried
@@ -146,11 +146,11 @@ before it existed still matches.
 
 | | video | audio | subtitles |
 |---|---|---|---|
-| MP4 demux | any — the four-character code is read from the sample entry, not from a list | any | any; the configuration of `wvtt` and `stpp` |
-| MP4 mux | `avc1`, `hvc1`, `av01`, `vp08`, `vp09`, `mjpg` | `mp4a`, `opus`, `ac-3`, `ec-3`, `fLaC`, and `mp1`/`mp2`/`mp3` as `mp4a`; **not** `vorb` (see [Audio codecs](#flac-mpeg-audio-and-ac-3-in-mp4-and-matroska)) | `wvtt`, `stpp` |
-| Matroska demux | AVC, HEVC, AV1, VP8, VP9 | AAC, AC-3, E-AC-3, FLAC, MPEG audio (Layers I–III), Opus, Vorbis | WebVTT (`S_TEXT/WEBVTT`, `D_WEBVTT/*`) and SRT (`S_TEXT/UTF8`), both as `wvtt` |
-| Matroska / WebM mux | AV1, VP8, VP9 in WebM; AVC, HEVC as DocType `matroska` | Opus, Vorbis in WebM; AAC, FLAC, MPEG audio, AC-3, E-AC-3 as DocType `matroska` | `wvtt`, as `D_WEBVTT/SUBTITLES` or `S_TEXT/WEBVTT` |
-| MPEG-TS | `avc1`, `hvc1`, `av01`, in and out | `mp4a`, `ac-3`, `ec-3`, `mp1`, `mp2`, `mp3`, in and out; **not** `opus` (see [MPEG-TS carriage](#mpeg-ts-carriage)) | none, in or out |
+| MP4 demux | any — the four-character code is read from the sample entry, not from a list | any | any; the configuration of `wvtt`, `stpp` and `tx3g` |
+| MP4 mux | `avc1`, `hvc1`, `av01`, `vp08`, `vp09`, `mjpg` | `mp4a`, `opus`, `ac-3`, `ec-3`, `fLaC`, and `mp1`/`mp2`/`mp3` as `mp4a`; **not** `vorb` (see [Audio codecs](#flac-mpeg-audio-and-ac-3-in-mp4-and-matroska)) | `wvtt`, `stpp`, `tx3g`; **not** `pgs` (MP4RA registers no sample entry for it) |
+| Matroska demux | AVC, HEVC, AV1, VP8, VP9 | AAC, AC-3, E-AC-3, FLAC, MPEG audio (Layers I–III), Opus, Vorbis | WebVTT (`S_TEXT/WEBVTT`, `D_WEBVTT/*`) and SRT (`S_TEXT/UTF8`), both as `wvtt`; PGS (`S_HDMV/PGS`) as `pgs`, its blocks as they stand |
+| Matroska / WebM mux | AV1, VP8, VP9 in WebM; AVC, HEVC as DocType `matroska` | Opus, Vorbis in WebM; AAC, FLAC, MPEG audio, AC-3, E-AC-3 as DocType `matroska` | `wvtt`, as `D_WEBVTT/SUBTITLES` or `S_TEXT/WEBVTT`; `tx3g`, written as the `wvtt` it converts to; `pgs` as `S_HDMV/PGS`, DocType `matroska` |
+| MPEG-TS | `avc1`, `hvc1`, `av01`, in and out | `mp4a`, `ac-3`, `ec-3`, `mp1`, `mp2`, `mp3`, in and out; **not** `opus` (see [MPEG-TS carriage](#mpeg-ts-carriage)) | none, in or out; `pgs` is refused with its reason |
 | ADTS demux | — | `mp4a` | — |
 | MPEG audio demux | — | `mp1`, `mp2`, `mp3` | — |
 | FLAC demux | — | `fLaC` | — |
@@ -816,6 +816,8 @@ the end. `AllowTruncated()` says to write it anyway.
 Text tracks used to be dropped. They are now carried, in one form: whatever a
 track came from, `Reader` hands it back as the samples of an ISO/IEC 14496-30
 WebVTT track (`wvtt`), and every muxer that writes subtitles takes that form.
+Two kinds are not turned into it and are carried as they are: 3GPP `tx3g` text in
+an MP4, and PGS bitmaps in Matroska; they have their own sections below.
 
 - **A `wvtt` sample** covers a stretch of time and holds the cues shown during
   it — `vttc` boxes, each with its `payl` text and its optional `iden`
@@ -862,9 +864,85 @@ WebVTT track (`wvtt`), and every muxer that writes subtitles takes that form.
 - **MPEG-TS** carries no subtitles here, in either direction. `TSMuxer` says so
   rather than calling the codec unknown.
 
-Not carried: SSA/ASS, bitmap subtitles (VobSub, PGS, DVB), 3GPP `tx3g`, the
-experimental `wvtc`/`stpc`, and the distinction between WebM's captions,
-descriptions and metadata kinds, which all read as subtitles.
+### 3GPP timed text (`tx3g`, `mov_text`)
+
+`tx3g` is 3GPP TS 26.245 timed text (clause 5.16 for the sample entry, 5.17 for
+the sample), which MP4RA registers as "Timed Text stream" and ffmpeg calls
+`mov_text`. It is the third subtitle form in the population's MP4s, after the
+`wvtt` that this package reads everything else as. **`wvtt` stays the canonical
+form** — every Matroska text mapping converts to it, and its cues are
+timeline-exact — and `tx3g` is a **pass-through and a conversion target**: a copy
+loses nothing and a conversion does, so nothing converts unless asked.
+
+| from → to | what happens |
+|---|---|
+| MP4 `tx3g` → MP4 (`Muxer`, `ProgressiveMuxer`, `Remux`, `Cut`, `Concat`, `Join`) | **unchanged**: the sample entry travels as `TrackConfig.CodecConfig`, the samples byte for byte. The track is written with the `text` handler and a null media header (3GPP TS 26.244; ffmpeg writes QuickTime's `sbtl`) |
+| MP4 `tx3g` → WebM / Matroska (`WebMMuxer`) | converted **by the muxer** to the cues of `wvtt` and written as `D_WEBVTT/SUBTITLES`; hand it the `tx3g` samples as read |
+| `wvtt` (from Matroska WebVTT or SRT, or MP4) → `tx3g` in MP4 | `Remux(w, r, SubtitlesAs("tx3g"))`: every sample is rewritten, every duration kept, and the entry is the default one (centred at the bottom, white 18 pixel text in font 1, font table `Serif`, as ffmpeg's `movtextenc` writes for an unstyled track) |
+| `tx3g` → `wvtt` in MP4 | `Remux(w, r, SubtitlesAs("wvtt"))` |
+
+A text sample is the string, and the `styl` box is the one modifier box that is
+read. Samples that last no time are left behind: ffmpeg ends every `mov_text`
+track with an empty sample of zero length, which shows nothing for no time and
+which no muxer here would write.
+
+⛔ **What the conversions lose** (pinned by the tests, which read each side back):
+
+- **`tx3g` → WebVTT keeps** the text and the bold, italic and underline of the
+  style records, as `<b>`, `<i>` and `<u>`; characters are escaped as a cue
+  body requires (`&`, `<`, `>`), line terminators become line feeds and blank
+  lines go (one ends a WebVTT cue). The result is what ffmpeg 9.0.2 decodes the
+  fixture to, cue for cue and time for time, except that ffmpeg writes `&` and
+  `<` raw.
+  **It loses** font ids and sizes, text colours and the background colour, the
+  justification and the default text box, `hlit`/`hclr` highlight, `krok`
+  karaoke, `dlay` scroll delay, `href` links, `tbox` boxes, `twrp` wrap, `blnk`
+  blinking, `disp` stereo disparity, and the display flags. The default style's
+  own face flags are not applied to the text (ffmpeg's decoder does not either:
+  its comment says most players ignore them, since files commonly state them
+  wrongly). The UTF-16 form of the string is read and written back as UTF-8.
+- **WebVTT → `tx3g` keeps** the text and `<b>`, `<i>`, `<u>`; the character
+  references WebVTT defines (`&amp;`, `&lt;`, `&gt;`, `&lrm;`, `&rlm;`, `&nbsp;`)
+  become the characters. **It loses** the cue identifier, the cue settings
+  (position, line, alignment, size), the `NOTE` comments, every other tag
+  (`<c>`, `<v>`, `<lang>`, `<ruby>`, karaoke timestamps) with its text kept, and
+  the `STYLE` and `REGION` blocks of the header. Cues shown together in one
+  sample become the lines of one string, one under the other; a sample whose
+  text exceeds the 65535 bytes of a text length is refused.
+- `Cut` shortens the first text sample like any cue, and refuses a track whose
+  samples hold a `krok` box (its times count from the sample's start); `Concat`
+  refuses the same and ends each input's text track where its pictures end.
+
+### Bitmap subtitles: PGS (`S_HDMV/PGS`)
+
+The Blu-ray presentation graphics stream is read from Matroska as `pgs`, a
+subtitle track whose every block is one display set — the segments from the
+presentation composition segment to the end segment, each as its type byte,
+16-bit size and payload, without the `PG` header and the 90 kHz PTS and DTS of a
+`.sup` file — and written back to Matroska by `WebMMuxer` as `S_HDMV/PGS`, DocType
+`matroska`, **block for block and byte for byte**. The `CodecPrivate` of the track
+is ignored, as the codec mapping says. The fixture's two blocks, written by
+ffmpeg's `matroskaenc` from a `.sup`, are the bytes the test builds from the
+segment layouts. Nothing reads inside a display set.
+
+- **MP4 refuses it**, by name, with the reason: MP4RA's sample-entry registry
+  holds no PGS or HDMV entry (`mp4ra.github.io`, `data/sample-entries.csv`,
+  read 2026-11-01), so no player would know the track. `Remux` therefore fails
+  on a PGS track until it is left out with `DropTracks`.
+- **MPEG-TS refuses it**, though ffmpeg writes it (stream type `0x90`, which
+  ffmpeg's `mpegts.c` also reads back): `0x90` is a stream type of the Blu-ray
+  Disc specifications, which are not public and were not read for this package,
+  and a PES for it needs the decode time of every display set, which a Matroska
+  block does not state. Out of scope, said so, and not needed by the files this
+  was written for — both are Matroska.
+- **Timing.** A block is a display set, not an interval: ffmpeg's `matroskaenc`
+  states no `BlockDuration` for it, so a sample lasts until the next block
+  and the last to the end of the segment, the way every track without durations
+  reads.
+
+Not carried: SSA/ASS, the other bitmap subtitles (VobSub, DVB), HDMV text
+(`S_HDMV/TEXTST`), the experimental `wvtc`/`stpc`, and the distinction between
+WebM's captions, descriptions and metadata kinds, which all read as subtitles.
 
 ## File metadata
 

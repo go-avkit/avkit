@@ -1036,7 +1036,9 @@ func TestTheHandlerOfATimedTextTrackFollowsItsCodec(t *testing.T) {
 	}{
 		{TrackConfig{Kind: Subtitle, Codec: "wvtt"}, "wvtt"},
 		{TrackConfig{Kind: Other, Codec: " STPP "}, "stpp"},
-		{TrackConfig{Kind: Subtitle, Codec: "tx3g"}, "subtitle"},
+		// 3GPP TS 26.244 gives tx3g the same handler and media header.
+		{TrackConfig{Kind: Subtitle, Codec: "tx3g"}, "wvtt"},
+		{TrackConfig{Kind: Subtitle, Codec: "srt"}, "subtitle"},
 		{TrackConfig{Kind: Audio, Codec: "mp4a"}, "audio"},
 	}
 	for _, c := range cases {

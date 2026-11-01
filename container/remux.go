@@ -41,6 +41,20 @@ type remuxSettings struct {
 	conformHVC1    bool
 	allowTruncated bool
 	metadata       *Metadata // ReplaceMetadata's, nil to copy the input's
+	subtitles      string    // SubtitlesAs's, empty to copy each track as it is
+}
+
+// SubtitlesAs writes the WebVTT and 3GPP timed text tracks of the input as the
+// one named: "tx3g" or "wvtt". Without it each track is copied as it is, which
+// is the default because a copy loses nothing and a conversion does.
+//
+// The conversion keeps every sample's duration, so the timeline is untouched, and
+// the text and its bold, italic and underline. What each side has that the other
+// has not is dropped; the README lists it. A track that is TTML or not
+// timed text at all is left as it was, and a track the conversion cannot
+// express -- a cue too long for a tx3g sample -- fails the copy.
+func SubtitlesAs(codec string) RemuxOption {
+	return func(s *remuxSettings) { s.subtitles = strings.ToLower(strings.TrimSpace(codec)) }
 }
 
 // AllowTruncated lets an input that ended before its structure did be written
@@ -274,6 +288,10 @@ func readSource(src *Reader, set *remuxSettings) ([]sourceTrack, error) {
 	if src == nil {
 		return nil, fmt.Errorf("%w: no reader", ErrNoTracks)
 	}
+	if s := set.subtitles; s != "" && s != codecTx3g && s != codecWebVTT {
+		return nil, fmt.Errorf("%w: SubtitlesAs(%q): subtitles are rewritten as %q or %q",
+			ErrUnsupportedCodec, s, codecTx3g, codecWebVTT)
+	}
 	ids := src.TrackIDs()
 	for id := range set.drop {
 		if !slices.Contains(ids, id) {
@@ -297,6 +315,11 @@ func readSource(src *Reader, set *remuxSettings) ([]sourceTrack, error) {
 			return nil, err
 		}
 		t := sourceTrack{id: id, cfg: cfg, samples: samples}
+		if set.subtitles != "" {
+			if t, err = convertSubtitles(t, set.subtitles); err != nil {
+				return nil, err
+			}
+		}
 		if set.conformHVC1 {
 			if t, err = conformTrack(t); err != nil {
 				return nil, err
@@ -559,6 +582,21 @@ func refuseTimedTextShift(t sourceTrack, samples []Sample, sentinel error, doing
 		return fmt.Errorf("%w: track %d is TTML, whose documents state their own times, and %s would show them at the wrong time",
 			sentinel, t.id, doing)
 	}
+	if strings.EqualFold(t.cfg.Codec, codecTx3g) {
+		// A text sample states no time of its own but a krok box's, which
+		// counts from the start of the sample and so from before the cut.
+		for i, s := range samples {
+			parsed, err := parseTx3gSample(s.Data)
+			if err != nil {
+				return fmt.Errorf("sample %d of track %d: %w", i+1, t.id, err)
+			}
+			if parsed.karaoke {
+				return fmt.Errorf("%w: a sample of tx3g track %d holds a krok box, whose times count from the start of the sample, and %s would show them at the wrong time",
+					sentinel, t.id, doing)
+			}
+		}
+		return nil
+	}
 	for i, s := range samples {
 		cues, err := readWebVTTSample(s.Data)
 		if err != nil {
@@ -593,13 +631,18 @@ func padTimedText(tracks []sourceTrack) {
 	}
 	for i := range tracks {
 		t := &tracks[i]
-		if !strings.EqualFold(t.cfg.Codec, codecWebVTT) {
+		empty := vtteSample
+		switch {
+		case strings.EqualFold(t.cfg.Codec, codecWebVTT):
+		case strings.EqualFold(t.cfg.Codec, codecTx3g):
+			empty = tx3gEmptySample
+		default:
 			continue
 		}
 		total, target := trackLength(*t), scaleDuration(longest, longestScale, t.cfg.Timescale)
 		for total < target {
 			step := min(target-total, math.MaxUint32)
-			t.samples = append(t.samples, Sample{Data: vtteSample, Duration: uint32(step), Sync: true})
+			t.samples = append(t.samples, Sample{Data: empty, Duration: uint32(step), Sync: true})
 			total += step
 		}
 	}

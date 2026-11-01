@@ -420,6 +420,13 @@ func (m *Muxer) AddTrack(cfg TrackConfig) (uint32, error) {
 // not find the other. mp4ff's handler table knows both by their sample entry.
 func trackHandler(cfg TrackConfig) string {
 	if codec := strings.ToLower(strings.TrimSpace(cfg.Codec)); isTimedText(codec) {
+		if codec == codecTx3g {
+			// 3GPP TS 26.244 gives a tx3g track the 'text' handler, which
+			// MP4RA registers for 3GPP; ffmpeg writes QuickTime's 'sbtl'.
+			// mp4ff's handler table knows the first by the name of the
+			// WebVTT entry, which has the same handler and media header.
+			return codecWebVTT
+		}
 		return codec
 	}
 	return handlerFor(cfg.Kind)
@@ -524,6 +531,13 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 		if err := describeTTML(trak, cfg); err != nil {
 			return err
 		}
+	case codecTx3g:
+		if err := describeTx3g(trak, cfg); err != nil {
+			return err
+		}
+	case codecPGS:
+		return fmt.Errorf("%w: pgs: MP4RA registers no sample entry for the Blu-ray presentation graphics stream "+
+			"(S_HDMV/PGS), so no player would know the track; Matroska carries it (WebMMuxer)", ErrUnsupportedCodec)
 	case "ipcm", "fpcm", "raw":
 		// ISO/IEC 23003-5 gives PCM its sample entries and a pcmC record,
 		// and mp4ff writes neither yet: refused by name rather than written

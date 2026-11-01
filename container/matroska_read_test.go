@@ -950,13 +950,15 @@ func TestMkvCodecNamesEveryMappingAndRefusesTheRest(t *testing.T) {
 		"D_WEBVTT/CAPTIONS":     "wvtt",
 		"D_WEBVTT/DESCRIPTIONS": "wvtt",
 		"D_WEBVTT/METADATA":     "wvtt",
+		// The one bitmap subtitle carried, as it stands.
+		"S_HDMV/PGS": "pgs",
 	} {
 		got, ok := mkvCodec(id)
 		if !ok || got != want {
 			t.Fatalf("mkvCodec(%q) = %q, %v, want %q", id, got, ok, want)
 		}
 	}
-	for _, id := range []string{"S_TEXT/ASS", "S_TEXT/SSA", "S_VOBSUB", "S_HDMV/PGS", "V_MPEG2", ""} {
+	for _, id := range []string{"S_TEXT/ASS", "S_TEXT/SSA", "S_VOBSUB", "S_HDMV/TEXTST", "V_MPEG2", ""} {
 		if got, ok := mkvCodec(id); ok {
 			t.Fatalf("mkvCodec(%q) = %q, want no mapping", id, got)
 		}

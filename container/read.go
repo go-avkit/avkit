@@ -488,6 +488,12 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 		if stsd.Wvtt.VttC != nil {
 			cfg.CodecConfig = []byte(stsd.Wvtt.VttC.Config)
 		}
+	case tx3gEntry(stsd) != nil:
+		// 3GPP timed text: mp4ff has no box for it and keeps the entry as an
+		// unknown box, whose payload is the whole description -- the font
+		// table, the justification and the default style -- and travels as it
+		// stands.
+		cfg.CodecConfig = bytes.Clone(tx3gEntry(stsd).Payload())
 	case stsd.Stpp != nil:
 		// The whole sample entry travels, because it is the whole
 		// description: the TTML namespace, the schema location and the MIME
@@ -660,7 +666,11 @@ func (r *Reader) Samples(trackID uint32) ([]Sample, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
 	}
-	return r.mp4Samples(trak, 0)
+	samples, err := r.mp4Samples(trak, 0)
+	if err == nil && tx3gEntry(trak.Mdia.Minf.Stbl.Stsd) != nil {
+		samples = dropTx3gEndMarkers(samples)
+	}
+	return samples, err
 }
 
 // mp4Samples reads an MP4 track's samples in decoding order: all of them, or

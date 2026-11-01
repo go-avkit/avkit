@@ -169,6 +169,8 @@ func ConfigFromSamples(codec string, samples []Sample, opts ...ConfigOption) (St
 		cfg, err = ac3StreamConfig(name, samples)
 	case codecWebVTT:
 		return refuse(name, "the WebVTT file header is stated once, by the sample entry's vttC, and never by a cue")
+	case codecTx3g:
+		return refuse(name, "the font table, justification and default style are stated by the tx3g sample entry, never by a sample")
 	case codecTTML:
 		return refuse(name, "the TTML namespace and schema are stated by the stpp sample entry, not by its documents")
 	case "mp1", "mp2", "mp3":
