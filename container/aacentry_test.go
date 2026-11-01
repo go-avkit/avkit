@@ -111,8 +111,9 @@ func TestMP4MuxersStateTheChannelCountOfTheTrackFields(t *testing.T) {
 		{"7.1", 8, 0, 7, 8},
 		// Nothing stated has always meant stereo.
 		{"unstated", 0, 0, 2, 2},
-		// HE-AACv2's record states the mono core parametric stereo builds on.
-		{"HE-AACv2", 2, aac.HEAACv2, 1, 1},
+		// HE-AACv2's record states the mono core parametric stereo builds on;
+		// the sample entry states what is heard.
+		{"HE-AACv2", 2, aac.HEAACv2, 1, 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
