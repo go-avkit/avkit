@@ -446,6 +446,29 @@ written from it stated 22 050 in its sample entry. Measured on Apple's HE-AAC
 before, and states 22050 and 44100 now, as ffmpeg's does; both files read back
 at 44 100 Hz.
 
+### HE-AACv2: a mono core that plays as stereo
+
+Parametric stereo (PS) makes a stereo output of a MONO core, so an HE-AACv2
+`AudioSpecificConfig` says `channelConfiguration` 1 (Table 1.19) for a stream
+that is heard in two channels. The channel count of a track is therefore what
+the stream plays as: 2 when the record signals PS (audio object type 29, or the
+`0x548` sync extension behind the SBR one) over a mono core, as ffmpeg keeps PS
+for a mono core only. `TrackConfig.Channels` read from an HE-AACv2 file is 2, the
+MP4 muxers write 2 in the `mp4a` sample entry and `WebMMuxer` 2 in `Channels`
+(Apple's encoder and ffmpeg's movenc and matroskaenc write the same; measured on
+`aac_at -profile:a 28`, record `13 88 56 e5 a5 48 80`), and the record itself is
+written byte for byte. Before, both said 1.
+
+An MPEG transport stream carries AAC in ADTS, whose header states the CORE's
+object type, rate and channel configuration and has no place for SBR or PS; a
+decoder finds them in the frames. `TSMuxer` writes the header from the track's
+`AudioSpecificConfig` as ffmpeg's adtsenc does (it used the output rate, so a
+44.1 kHz HE-AAC stream read as 88.2 kHz, and refused the hierarchical form of
+HE-AACv2 outright). The limit is the format's: a transport stream read back
+states the core (22 050 Hz, one channel for HE-AACv2) and the record `13 88`,
+the one ffmpeg writes when it copies the same stream into an MP4, because
+nothing outside the frames says more. A decoder still plays it as HE-AACv2.
+
 ## A segment index for DASH on-demand
 
 `NewMuxer(w, container.SegmentIndex())` writes one segment index box (`sidx`,

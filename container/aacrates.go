@@ -98,18 +98,54 @@ func (b *ascBits) frequency() int {
 // aacRates is the core sampling frequency an AudioSpecificConfig states and,
 // when it signals SBR, the output one; zero output when it does not.
 func aacRates(asc []byte) (core, output int) {
+	s := readASC(asc)
+	return s.core, s.output
+}
+
+// aacPSSyncExtensionType is the psSyncExtensionType of ISO/IEC 14496-3
+// Table 1.15, which follows the SBR extension of a backward-compatible
+// HE-AACv2 record and is followed by the one-bit psPresentFlag.
+const aacPSSyncExtensionType = 0x548
+
+// ascSignalling is what an AudioSpecificConfig says about its core and about
+// the extensions that make the output larger than the core: spectral band
+// replication, which doubles the rate, and parametric stereo, which doubles
+// the channels of a mono core.
+type ascSignalling struct {
+	object      uint32 // the audioObjectType as stated first: 5 and 29 are hierarchical signalling
+	inner       uint32 // the core's own audioObjectType, equal to object unless that is 5 or 29
+	coreIndex   uint32 // the core's samplingFrequencyIndex, 15 when the rate is stated in full
+	core        int    // the core's sampling frequency
+	output      int    // the extension sampling frequency, 0 when SBR is not signalled
+	config      uint32 // channelConfiguration, of the core
+	ps          bool   // parametric stereo is signalled, and the core is mono
+}
+
+// readASC reads the signalling of a record the way ffmpeg's
+// ff_mpeg4audio_get_config_gb does: the header fields; then, for audio object
+// type 5 or 29, the extension rate and the core's own object type; and
+// otherwise, after the core's GASpecificConfig, a bit-by-bit search for the
+// backward-compatible sync extension and the PS one behind it. ffmpeg only keeps
+// PS for a mono core ("c->channels & ~0x01"), and so does this.
+func readASC(asc []byte) ascSignalling {
 	b := &ascBits{data: asc}
-	object := b.objectType()
-	core = b.frequency()
-	b.read(4) // channelConfiguration
-	if object == aacObjectSBR || object == aacObjectPS {
+	var s ascSignalling
+	s.object = b.objectType()
+	s.coreIndex = b.peek(4)
+	s.core = b.frequency()
+	s.config = b.read(4)
+	s.inner = s.object
+	if s.object == aacObjectSBR || s.object == aacObjectPS {
 		// ffmpeg's test for the "MP3onMP4" draft that reuses 29 is left out:
 		// it needs the six bits after the extension index to be zero, and
 		// every record reaching here has passed aac.DecodeAudioSpecificConfig,
 		// which requires the core object type there to be AAC-LC, 00010.
-		return core, b.frequency()
+		s.output = b.frequency()
+		s.inner = b.objectType()
+		s.ps = s.object == aacObjectPS && s.config == 1
+		return s
 	}
-	switch object {
+	switch s.object {
 	case aacObjectMain, aacObjectLC, aacObjectSSR, aacObjectLTP, aacObjectERLC, aacObjectERLD, aacObjectERELD:
 		b.read(1) // frameLengthFlag, the first bit of GASpecificConfig
 	}
@@ -120,11 +156,44 @@ func aacRates(asc []byte) (core, output int) {
 		}
 		b.read(11)
 		if b.objectType() == aacObjectSBR && b.read(1) == 1 {
-			output = b.frequency()
+			s.output = b.frequency()
+			if b.left() > 11 && b.read(11) == aacPSSyncExtensionType {
+				s.ps = b.read(1) == 1 && s.config == 1
+			}
 		}
 		break
 	}
-	return core, output
+	return s
+}
+
+// aacOutputChannels is how many channels an AudioSpecificConfig's stream
+// plays as: the core's channelConfiguration (Table 1.19), except that a mono
+// core with parametric stereo signalled is stereo. The two differ for every
+// HE-AACv2 file, and the channelConfiguration is the one that is wrong for a
+// listener: ffmpeg states 2 in the sample entry of an MP4 and in the Channels
+// element of a Matroska file, and so does Apple's encoder. Zero means the
+// bitstream states the layout.
+func aacOutputChannels(asc []byte) int {
+	s := readASC(asc)
+	n := aacChannels(byte(s.config))
+	if n == 1 && s.ps {
+		return 2
+	}
+	return n
+}
+
+// adtsParameters is what an ADTS header states of a track whose record is asc,
+// as ffmpeg's adtsenc.c reads them from the extradata (adts_decode_extradata):
+// the object type of the CORE and its sampling frequency index, never the
+// extension's, because an ADTS header has no place for SBR or PS and the
+// decoder finds them in the frames. ok is false for a record no ADTS header
+// can state: a core other than Main, LC, SSR or LTP, or a rate written in full.
+func adtsParameters(asc []byte) (objectType byte, rate int, configuration byte, ok bool) {
+	s := readASC(asc)
+	if s.inner < aacObjectMain || s.inner > aacObjectLTP || s.coreIndex == 0xF || s.config > 7 || s.core == 0 {
+		return 0, 0, 0, false
+	}
+	return byte(s.inner), s.core, byte(s.config), true
 }
 
 // webmAACRates states an AAC track's rates as ffmpeg's matroskaenc states them:

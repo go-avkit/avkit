@@ -825,7 +825,9 @@ func describeMJPEG(trak *mp4.TrakBox, cfg TrackConfig) error {
 // movenc.c writes the extradata it was given. Rebuilding it would lose what this
 // package does not model: the SBR and PS signalling of HE-AAC, a program
 // config element, the GASpecificConfig flags. The channel count of the sample
-// entry is then the one the record states, and the caller's only where the
+// entry is then the one the stream plays as -- the record's, except that a mono
+// core with parametric stereo signalled is 2, as Apple's encoder and ffmpeg's
+// movenc state it (see aacOutputChannels) -- and the caller's only where the
 // record leaves it to the bitstream (configuration 0).
 //
 // Without one, the record is built from the track's fields; a channel count no
@@ -837,11 +839,10 @@ func describeAAC(trak *mp4.TrakBox, cfg TrackConfig) error {
 	if len(cfg.CodecConfig) == 0 {
 		return buildAACEntry(trak, cfg)
 	}
-	asc, err := aac.DecodeAudioSpecificConfig(bytes.NewReader(cfg.CodecConfig))
-	if err != nil {
+	if _, err := aac.DecodeAudioSpecificConfig(bytes.NewReader(cfg.CodecConfig)); err != nil {
 		return fmt.Errorf("%w: mp4a AudioSpecificConfig: %v", ErrTrackConfig, err)
 	}
-	channels := aacChannels(asc.ChannelConfiguration)
+	channels := aacOutputChannels(cfg.CodecConfig)
 	if channels == 0 {
 		channels = cfg.Channels
 	}
@@ -879,6 +880,10 @@ func buildAACEntry(trak *mp4.TrakBox, cfg TrackConfig) error {
 	}
 	if err != nil {
 		return fmt.Errorf("%w: mp4a: %v", ErrTrackConfig, err)
+	}
+	if objType == aac.HEAACv2 {
+		// The record states the mono core; the entry states what is heard.
+		trak.Mdia.Minf.Stbl.Stsd.Mp4a.ChannelCount = 2
 	}
 	return nil
 }

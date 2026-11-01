@@ -949,11 +949,12 @@ func webmWebVTTPrivate(cfg TrackConfig) (webmCodecPrivate, error) {
 
 // webmAACRecord states a track's own AudioSpecificConfig, byte for byte.
 func webmAACRecord(cfg TrackConfig) (webmCodecPrivate, error) {
-	asc, err := aac.DecodeAudioSpecificConfig(bytes.NewReader(cfg.CodecConfig))
-	if err != nil {
+	if _, err := aac.DecodeAudioSpecificConfig(bytes.NewReader(cfg.CodecConfig)); err != nil {
 		return webmCodecPrivate{}, fmt.Errorf("%w: A_AAC AudioSpecificConfig: %v", ErrTrackConfig, err)
 	}
-	if n := aacChannels(asc.ChannelConfiguration); n > 0 {
+	// Channels is what the stream plays as, 2 for parametric stereo, as
+	// matroskaenc writes it.
+	if n := aacOutputChannels(cfg.CodecConfig); n > 0 {
 		cfg.Channels = n
 	}
 	audio, err := webmAudioFields(cfg, "A_AAC")
