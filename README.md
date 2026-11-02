@@ -63,15 +63,16 @@ adding a codec to the dispatch without adding it here fails the suite.
 | MP4 / ISO-BMFF | ✓ | ✓ one file, a sequence of segments, or fragmented, with or without `sidx` | ✓ fragmented (optionally indexed by `sidx`) **and** progressive |
 | Matroska / WebM | ✓ | ✓ | ✓ with Cues, and a SeekHead when buffered or the writer can seek |
 | MPEG-TS | ✓ | ✓ | ✓ |
-| ADTS (raw AAC) | ✓ | ✓ | — |
-| MPEG audio (MP3, MP2, MP1) | ✓ | ✓ the Xing/Info/VBRI frame dropped, the LAME encoder delay and end padding kept | — |
-| native FLAC | ✓ | ✓ | — |
-| Ogg | ✓ | ✓ Opus, Vorbis and FLAC streams; Theora, Speex, VP8 and Kate named, not read | — |
-| WAV (RIFF, RF64, BW64) | ✓ | ✓ linear PCM; other format tags named, not read | — |
+| ADTS (raw AAC) | ✓ | ✓ | ✓ one `mp4a` track, `AudioWriter` |
+| MPEG audio (MP3, MP2, MP1) | ✓ | ✓ the Xing/Info/VBRI frame dropped, the LAME encoder delay and end padding kept | ✓ the frames as they are, no ID3v2 and no Xing |
+| native FLAC | ✓ | ✓ | ✓ the source's STREAMINFO, no SEEKTABLE |
+| Ogg | ✓ | ✓ Opus, Vorbis and FLAC streams; Theora, Speex, VP8 and Kate named, not read | ✓ Opus, Vorbis, FLAC; one stream |
+| WAV (RIFF, RF64, BW64) | ✓ | ✓ linear PCM; other format tags named, not read | ✓ `ipcm`, `fpcm`, `raw `; extensible, RF64 |
 | AVI (with OpenDML `AVIX` forms) | ✓ | ✓ H.264, MPEG-4 Part 2, Motion JPEG; PCM, MP3/MP2, AC-3, AAC; other FourCCs and tags named, not read | — |
 
 The last six are read whole, in one pass, by `Demux` and `NewReader` (not by
-`NewFileReader`, which serves MP4 alone), and are never written. Nothing else: no
+`NewFileReader`, which serves MP4 alone); the five audio ones are also written
+(see "Extracting an audio track"). Nothing else: no
 FLV, no MXF, and no HLS or DASH manifests.
 A file that is none of these sniffs as `FormatUnknown` rather than being guessed
 at.
@@ -1039,6 +1040,35 @@ progressive) and Matroska output as the same tags with a byte-identical cover.
 ⛔ ebml-go allocates an element's value **before** reading it, so a Matroska
 file of under a hundred bytes announcing a 100 MB attachment cost 100 MB. Leaf elements are
 now capped at the size of the document.
+
+## Extracting an audio track
+
+`NewAudioWriter(format, w)` writes one audio track as an audio-only file, with
+the shape of the muxers (`AddTrack`, `WriteSample`, `Close`), and
+`Remux(w, r, AudioOutput(format), DropTracks(...))` (also `Cut` and `Concat`)
+does it from any input. Nothing is re-encoded. A codec the format does not carry
+is refused with `ErrUnsupportedCodec` naming what it does (Opus into ADTS, an
+`mp4a` track into FLAC); a second track is refused.
+
+| format | codecs | what is written |
+|---|---|---|
+| `FormatADTS` | `mp4a` | a header per frame as ffmpeg's `adtsenc.c` writes it, from the CORE of the AudioSpecificConfig (HE-AAC at its core rate, as in the MPEG-TS muxer); a core ADTS cannot state, or a program config element, is refused |
+| `FormatMPEGAudio` | `mp1`, `mp2`, `mp3` | the frames and nothing else. ffmpeg's `mp3enc.c` adds an ID3v2.4 tag and a Xing/Info frame; neither is written (no metadata, and the frame counts need a seek back) |
+| `FormatFLAC` | `fLaC` | `fLaC`, the blocks of the track's configuration with STREAMINFO as the source states it (sample count and MD5 untouched, never computed), SEEKTABLE left out, then the frames |
+| `FormatOgg` | `Opus`, `vorb`, `fLaC` | RFC 3533 pages with CRC, BOS/EOS and granule positions; RFC 7845 `OpusHead` (pre-skip) and `OpusTags`, the three Vorbis headers, the RFC 9639 §10.1 mapping header; a page a second, the last trimmed to where the audio ends |
+| `FormatWAV` | `ipcm`, `fpcm`, `raw ` | `WAVE_FORMAT_EXTENSIBLE` above two channels, above 48 kHz or above 16 integer bits; sizes patched in when the writer can seek, RF64 when the file passes 4 GiB or `WAVRF64()` asks, big-endian PCM swapped and signed 8-bit made unsigned |
+
+What is not carried: the container's tags, and the priming and edit lists it
+states outside the frames (Opus's pre-skip travels in `OpusHead`).
+
+Measured against `ffmpeg -c copy` (9.0.2) on MP4 and Matroska fixtures made by
+ffmpeg: per-packet `framemd5`, `ffprobe` duration, rate and channels, and the
+decoded PCM are identical for ADTS, MP3, MP2, FLAC, FLAC-in-Ogg, Opus in Ogg
+from MP4 and from Ogg, and WAV (byte for byte). Two honest differences:
+ffmpeg's Ogg muxer states Vorbis granule positions one block late and, for a
+trimmed last packet, a duration of 194783 s, so Vorbis is compared with the
+original file instead; and a Matroska source states durations in milliseconds,
+so the end of its last Opus or Vorbis packet is exact to the millisecond only.
 
 ## Guarantees
 

@@ -42,6 +42,8 @@ type remuxSettings struct {
 	allowTruncated bool
 	metadata       *Metadata // ReplaceMetadata's, nil to copy the input's
 	subtitles      string    // SubtitlesAs's, empty to copy each track as it is
+	audio          Format    // AudioOutput's, FormatUnknown for a fragmented MP4
+	audioOpts      []AudioOption
 }
 
 // SubtitlesAs writes the WebVTT and 3GPP timed text tracks of the input as the
@@ -394,6 +396,9 @@ func describeFromSamples(cfg TrackConfig, samples []Sample) (TrackConfig, error)
 // writeCopy declares the first input's tracks, then writes every input's
 // samples behind one another.
 func writeCopy(w io.Writer, set *remuxSettings, md Metadata, inputs [][]sourceTrack) error {
+	if set.audio != FormatUnknown {
+		return writeAudioCopy(w, set, inputs)
+	}
 	m := NewMuxer(w, set.mux...)
 	if err := m.SetMetadata(md); err != nil {
 		return err
