@@ -271,18 +271,33 @@ func (t *tsMuxTrack) describe(cfg TrackConfig) (astits.StreamType, []*astits.Des
 		return 0, nil, fmt.Errorf("%w: opus: no published specification carries Opus in an MPEG-TS "+
 			"(the only one, ETSI TS opus V0.1.3, is a 2015 draft that was never adopted)", ErrUnsupportedCodec)
 	case "mp4a":
-		if cfg.Channels < 1 || cfg.Channels > tsMaxChannelConfig {
-			return 0, nil, fmt.Errorf("%w: mp4a needs between 1 and %d channels, not %d",
-				ErrTrackConfig, tsMaxChannelConfig, cfg.Channels)
-		}
-		objectType := cfg.AudioObjectType
+		objectType, rate, configuration := cfg.AudioObjectType, cfg.SampleRate, byte(cfg.Channels)
 		if objectType == 0 {
 			objectType = aac.AAClc
+		}
+		if len(cfg.CodecConfig) > 0 {
+			// The record is what the header is written from, as ffmpeg's
+			// adtsenc does: the CORE's object type, rate and channel
+			// configuration. The track's own fields state what is heard, which
+			// for HE-AAC is twice the rate and for parametric stereo twice the
+			// channels, and a header that stated those would make a decoder run
+			// the core at the wrong rate. An ADTS header has no place for SBR or
+			// PS: a decoder finds them in the frames.
+			var ok bool
+			objectType, rate, configuration, ok = adtsParameters(cfg.CodecConfig)
+			if !ok {
+				return 0, nil, fmt.Errorf("%w: mp4a: the AudioSpecificConfig % x states a core no ADTS header can state",
+					ErrTrackConfig, cfg.CodecConfig)
+			}
+		}
+		if configuration < 1 || configuration > tsMaxChannelConfig {
+			return 0, nil, fmt.Errorf("%w: mp4a needs between 1 and %d channels, not %d",
+				ErrTrackConfig, tsMaxChannelConfig, cfg.Channels)
 		}
 		// The header carries the sample rate as an index into a fixed table
 		// and states the profile in two bits, so a rate or a profile it has
 		// no room for is a configuration no transport stream can state.
-		header, err := aac.NewADTSHeader(cfg.SampleRate, byte(cfg.Channels), objectType, 0)
+		header, err := aac.NewADTSHeader(rate, configuration, objectType, 0)
 		if err != nil {
 			return 0, nil, fmt.Errorf("%w: mp4a: %v", ErrTrackConfig, err)
 		}
