@@ -1,0 +1,11 @@
+WEBVTT
+
+00:01.000 --> 00:02.000
+Hello world
+
+00:03.000 --> 00:04.500
+<b>Bold</b> and <i>italic</i> and <u>under</u>
+second line
+
+00:04.500 --> 00:05.000
+Café + 日本語 <b>x</b>

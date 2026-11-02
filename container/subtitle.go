@@ -19,7 +19,8 @@ import (
 
 // The sample entries a subtitle track is written with. Every timed-text track
 // this package reads arrives as one of them, whatever container it came from:
-// WebVTT, and SRT turned into WebVTT, as wvtt; TTML as stpp.
+// WebVTT, and SRT turned into WebVTT, as wvtt; TTML as stpp; 3GPP timed text as
+// tx3g (see tx3g.go), which an MP4 keeps as it is and Matroska reads as wvtt.
 const (
 	codecWebVTT = "wvtt"
 	codecTTML   = "stpp"
@@ -595,7 +596,7 @@ func describeTTML(trak *mp4.TrakBox, cfg TrackConfig) error {
 // stretch of time, rather than decoded one from another.
 func isTimedText(codec string) bool {
 	switch strings.ToLower(strings.TrimSpace(codec)) {
-	case codecWebVTT, codecTTML:
+	case codecWebVTT, codecTTML, codecTx3g:
 		return true
 	}
 	return false

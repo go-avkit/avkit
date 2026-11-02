@@ -587,6 +587,8 @@ var mkvCodecs = map[string]string{
 	// as it is.
 	mkvWebVTT: codecWebVTT,
 	mkvSRT:    codecWebVTT,
+	// A bitmap stream, carried as it stands: see codecPGS.
+	mkvPGS: codecPGS,
 }
 
 // mkvCodecFamilies maps the CodecIDs Matroska writes with a suffix: A_AAC and
@@ -763,6 +765,10 @@ func mkvCodecPrivate(cfg *TrackConfig, te mkvTrackEntry) error {
 			}
 			cfg.CodecConfig = te.CodecPrivate
 		}
+	case codecPGS:
+		// The codec mapping says CodecPrivate SHOULD NOT be written for
+		// S_HDMV/PGS and MUST be ignored when it is, so what a file puts there
+		// is not carried.
 	case "fLaC":
 		// STREAMINFO is the normative statement of the format, and a
 		// private that does not hold one describes a track nothing can
