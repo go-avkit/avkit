@@ -758,7 +758,7 @@ func TestProgressiveChunksOnACoarseTimescale(t *testing.T) {
 	var buf bytes.Buffer
 	m := NewProgressiveMuxer(&buf, ChunkDuration(time.Millisecond))
 	id, err := m.AddTrack(TrackConfig{
-		Kind: Audio, Codec: "mp4a", Timescale: 1, Channels: 2, SampleRate: 48000,
+		Kind: Audio, Codec: "mp4a", Timescale: 1, Channels: 2, SampleRate: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -787,7 +787,7 @@ func TestProgressiveWidensTheHeadersOfALongFile(t *testing.T) {
 	var buf bytes.Buffer
 	m := NewProgressiveMuxer(&buf, ChunkDuration(time.Hour))
 	id, err := m.AddTrack(TrackConfig{
-		Kind: Audio, Codec: "mp4a", Timescale: 1000, Channels: 2, SampleRate: 48000,
+		Kind: Audio, Codec: "mp4a", Timescale: 1000, Channels: 2, SampleRate: 1000,
 	})
 	if err != nil {
 		t.Fatal(err)

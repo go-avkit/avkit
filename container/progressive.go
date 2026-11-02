@@ -199,6 +199,9 @@ type progressiveTrack struct {
 	presentedUntil int64
 	// priming is the track's StartDelay in its own timescale.
 	priming int64
+	// clock converts the samples of an audio track whose timescale was too
+	// coarse to count samples in (see withAudioClock); nil for any other.
+	clock *audioClock
 	// editList is the caller's own edit list, written in place of the one
 	// built from the first composition offset and the priming.
 	editList *EditList
@@ -252,6 +255,7 @@ func (m *ProgressiveMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 			return 0, err
 		}
 	}
+	cfg, clock := withAudioClock(cfg)
 	lang := cfg.Language
 	if lang == "" {
 		lang = "und"
@@ -264,7 +268,7 @@ func (m *ProgressiveMuxer) AddTrack(cfg TrackConfig) (uint32, error) {
 		return 0, err
 	}
 	t := &progressiveTrack{id: id, trak: trak, timescale: cfg.Timescale,
-		priming: primingTicks(cfg.StartDelay, cfg.Timescale), editList: cfg.EditList}
+		priming: primingTicks(cfg.StartDelay, cfg.Timescale), editList: cfg.EditList, clock: clock}
 	m.tracks = append(m.tracks, t)
 	m.byID[id] = t
 	return id, nil
@@ -290,6 +294,10 @@ func (m *ProgressiveMuxer) WriteSample(trackID uint32, s Sample) error {
 	t, ok := m.byID[trackID]
 	if !ok {
 		return fmt.Errorf("%w: %d", ErrUnknownTrack, trackID)
+	}
+	s, err := t.clock.sample(s)
+	if err != nil {
+		return err
 	}
 	if err := m.begin(); err != nil {
 		return err

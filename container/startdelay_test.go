@@ -90,11 +90,10 @@ func TestRemuxCarriesTheStartDelayIntoAnEditList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The output track counts in milliseconds -- Matroska's default timecode
-	// scale, carried over -- so 21.333 ms is stated as 21. That is the
-	// precision the timescale allows, and it is the difference between losing
-	// a third of a millisecond and gaining a whole 21.333 ms frame.
-	if want := 21 * time.Millisecond; cfg.StartDelay != want {
+	// The output track counts in samples -- the 48 kHz of its sample rate, not
+	// the milliseconds of Matroska's default timecode scale -- so the priming is
+	// stated whole, as 1024 samples, instead of rounded to 21 ms.
+	if want := aacPriming; cfg.StartDelay != want {
 		t.Errorf("after the remux the delay is %v; want %v", cfg.StartDelay, want)
 	}
 
@@ -112,8 +111,8 @@ func TestRemuxCarriesTheStartDelayIntoAnEditList(t *testing.T) {
 		t.Fatalf("edit list has %d entries; want one", len(entries))
 	}
 	// 1024 samples at a 48 kHz timescale.
-	if entries[0].MediaTime != 21 {
-		t.Errorf("media time = %d; want 21, the priming in the track's own timescale",
+	if entries[0].MediaTime != 1024 {
+		t.Errorf("media time = %d; want 1024, the priming in the track's own timescale",
 			entries[0].MediaTime)
 	}
 	if entries[0].SegmentDuration != 0 {
@@ -152,7 +151,7 @@ func TestAnMP4EditListSurvivesARemux(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := 21 * time.Millisecond; cfg.StartDelay != want {
+	if want := aacPriming; cfg.StartDelay != want {
 		t.Errorf("after a second remux the delay is %v; want %v", cfg.StartDelay, want)
 	}
 }
@@ -275,8 +274,8 @@ func TestADelayShorterThanATickIsNotWritten(t *testing.T) {
 	var buf bytes.Buffer
 	m := NewMuxer(&buf)
 	if _, err := m.AddTrack(TrackConfig{
-		Kind: Audio, Codec: "mp4a", Timescale: 1000, SampleRate: 48000, Channels: 2,
-		StartDelay: 100 * time.Microsecond, // a tenth of a tick at 1 kHz
+		Kind: Audio, Codec: "mp4a", Timescale: 48000, SampleRate: 48000, Channels: 2,
+		StartDelay: 5 * time.Microsecond, // a quarter of a tick at 48 kHz
 	}); err != nil {
 		t.Fatal(err)
 	}
