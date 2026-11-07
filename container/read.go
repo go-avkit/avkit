@@ -64,6 +64,10 @@ type Reader struct {
 	// well, but each carrying what went wrong with it: a file may hold a
 	// track this package cannot describe next to tracks it can.
 	mkv map[uint32]*mkvReadTrack
+	// chapterTracks are the tracks another one names as holding its chapters,
+	// and chaptersFromTrack says File.Chapters came from one of them.
+	chapterTracks     map[uint32]bool
+	chaptersFromTrack bool
 }
 
 // newTSReader reads a transport stream in one pass: it has no table to seek
@@ -150,7 +154,9 @@ func NewFileReader(src FileSource, size int64) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Reader{at: src, size: size, file: file, mp4: parsed, traks: readableTraks(parsed)}, nil
+	r := &Reader{at: src, size: size, file: file, mp4: parsed, traks: readableTraks(parsed)}
+	r.loadChapters()
+	return r, nil
 }
 
 // readableTraks indexes the tracks of a movie by ID.
@@ -205,7 +211,9 @@ func NewReader(data []byte) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Reader{data: data, file: file, mp4: parsed, traks: readableTraks(parsed)}, nil
+	r := &Reader{data: data, file: file, mp4: parsed, traks: readableTraks(parsed)}
+	r.loadChapters()
+	return r, nil
 }
 
 // mp4StartDelay reads a track's encoder priming out of its edit list.

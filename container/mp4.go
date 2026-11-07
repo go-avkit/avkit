@@ -20,7 +20,13 @@ func demuxMP4(data []byte) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return mp4File(mf)
+	f, err := mp4File(mf)
+	if err != nil {
+		return nil, err
+	}
+	// A chapter track is read through the samples, which a Reader fetches.
+	(&Reader{data: data, file: f, mp4: mf, traks: readableTraks(mf)}).loadChapters()
+	return f, nil
 }
 
 // mp4File projects an already decoded box tree onto the unified metadata, so
@@ -41,6 +47,7 @@ func mp4File(mf *mp4.File) (*File, error) {
 		f.Tracks = append(f.Tracks, mp4Track(trak))
 	}
 	f.Metadata = mp4Metadata(mf.Moov)
+	f.Chapters = mp4Chapters(mf.Moov)
 	return f, nil
 }
 

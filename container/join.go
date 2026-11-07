@@ -36,6 +36,9 @@ func Join(w io.Writer, srcs []*Reader, opts ...RemuxOption) error {
 	if err := m.SetMetadata(settingsFor(opts).outputMetadata(srcs)); err != nil {
 		return err
 	}
+	if err := m.SetChapters(settingsFor(opts).outputChapters(srcs)); err != nil {
+		return err
+	}
 	if err := joinInto(m, srcs, opts...); err != nil {
 		return err
 	}
@@ -53,6 +56,9 @@ func JoinProgressive(w io.Writer, srcs []*Reader, opts ...RemuxOption) error {
 	}
 	m := NewProgressiveMuxer(w)
 	if err := m.SetMetadata(settingsFor(opts).outputMetadata(srcs)); err != nil {
+		return err
+	}
+	if err := m.SetChapters(settingsFor(opts).outputChapters(srcs)); err != nil {
 		return err
 	}
 	if err := joinInto(m, srcs, opts...); err != nil {
@@ -73,7 +79,7 @@ func joinInto(m sampleWriter, srcs []*Reader, opts ...RemuxOption) error {
 	var tracks []*joinTrack
 	for _, src := range srcs {
 		for _, id := range src.TrackIDs() {
-			if set.drop[id] {
+			if set.drop[id] || src.isChapterTrack(id) {
 				continue
 			}
 			cfg, err := src.TrackConfig(id)

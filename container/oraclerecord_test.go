@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"flag"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,12 +30,27 @@ var updateOracle = flag.Bool("update-oracle", false, "record what FFmpeg reads i
 
 const oracleFile = "testdata/oracle.json"
 
+// What an oracle comparison covers.
+const (
+	oracleStreams  = 1 << iota // the audio stream's parameters and extradata
+	oracleSums                 // the size and checksum of every packet
+	oracleChapters             // the chapters
+	oracleDuration             // the duration of the file
+)
+
+// oracleChapter is one chapter as ffprobe reads it, in seconds.
+type oracleChapter struct {
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+	Title string  `json:"title"`
+}
+
 // oracleView is what FFmpeg reads out of one file.
 type oracleView struct {
-	Streams  string   `json:"streams"`  // ffprobe, the audio stream's parameters and extradata
-	Chapters string   `json:"chapters"` // ffprobe -show_chapters: start, end and title of each
-	Sums     []string `json:"sums"`     // ffmpeg -c copy -f framemd5: size and checksum of each packet
-	Duration float64  `json:"duration"` // seconds
+	Streams  string          `json:"streams,omitempty"`  // ffprobe, the audio stream's parameters and extradata
+	Chapters []oracleChapter `json:"chapters,omitempty"` // ffprobe -show_chapters
+	Sums     []string        `json:"sums,omitempty"`     // ffmpeg -c copy -f framemd5: size and checksum of each packet
+	Duration float64         `json:"duration"`           // seconds
 }
 
 // oracleRecord is the recording of one comparison.
@@ -44,22 +60,39 @@ type oracleRecord struct {
 	Reference    oracleView `json:"reference"`
 }
 
-// oracleViewOf asks FFmpeg what it reads in path. Only the fields a test is
-// about are filled: wantSums reads every packet, wantChapters the chapters.
-func oracleViewOf(t *testing.T, path string, wantSums, wantChapters bool) oracleView {
+// oracleViewOf asks FFmpeg what it reads in path, for what asks for.
+func oracleViewOf(t *testing.T, path string, what int) oracleView {
 	t.Helper()
 	var v oracleView
-	v.Streams = oracleRun(t, oracleFFprobe, "-v", "error", "-select_streams", "a:0", "-show_data", "-show_entries",
-		"stream=codec_name,sample_rate,channels,channel_layout,bits_per_raw_sample,extradata_size,extradata",
-		"-of", "default=nw=1", path)
-	d := strings.TrimSpace(oracleRun(t, oracleFFprobe, "-v", "error", "-show_entries", "format=duration",
-		"-of", "default=nw=1:nk=1", path))
-	v.Duration, _ = strconv.ParseFloat(d, 64)
-	if wantChapters {
-		v.Chapters = oracleRun(t, oracleFFprobe, "-v", "error", "-show_chapters", "-show_entries",
-			"chapter=id,start_time,end_time:chapter_tags=title", "-of", "default=nw=1", path)
+	if what&oracleStreams != 0 {
+		v.Streams = oracleRun(t, oracleFFprobe, "-v", "error", "-select_streams", "a:0", "-show_data", "-show_entries",
+			"stream=codec_name,sample_rate,channels,channel_layout,bits_per_raw_sample,extradata_size,extradata",
+			"-of", "default=nw=1", path)
 	}
-	if wantSums {
+	if what&oracleDuration != 0 {
+		d := strings.TrimSpace(oracleRun(t, oracleFFprobe, "-v", "error", "-show_entries", "format=duration",
+			"-of", "default=nw=1:nk=1", path))
+		v.Duration, _ = strconv.ParseFloat(d, 64)
+	}
+	if what&oracleChapters != 0 {
+		var probe struct {
+			Chapters []struct {
+				StartTime string            `json:"start_time"`
+				EndTime   string            `json:"end_time"`
+				Tags      map[string]string `json:"tags"`
+			} `json:"chapters"`
+		}
+		out := oracleRun(t, oracleFFprobe, "-v", "error", "-show_chapters", "-of", "json", path)
+		if err := json.Unmarshal([]byte(out), &probe); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range probe.Chapters {
+			start, _ := strconv.ParseFloat(c.StartTime, 64)
+			end, _ := strconv.ParseFloat(c.EndTime, 64)
+			v.Chapters = append(v.Chapters, oracleChapter{Start: start, End: end, Title: c.Tags["title"]})
+		}
+	}
+	if what&oracleSums != 0 {
 		out := oracleRun(t, oracleFFmpeg, "-v", "error", "-i", path, "-map", "0:a:0", "-c", "copy",
 			"-f", "framemd5", "-")
 		for _, line := range strings.Split(out, "\n") {
@@ -77,15 +110,12 @@ func oracleViewOf(t *testing.T, path string, wantSums, wantChapters bool) oracle
 
 // sameDuration says two durations agree to what the coarser container can state:
 // a Matroska file counts in milliseconds.
-func sameDuration(a, b float64) bool {
-	d := a - b
-	return d > -0.011 && d < 0.011
-}
+func sameDuration(a, b float64) bool { return math.Abs(a-b) < 0.011 }
 
 // checkOracle compares what FFmpeg reads out of ours with what it reads out of
 // the reference, for the comparison named key. reference is called only when
 // FFmpeg is installed, and returns the path of the file to compare with.
-func checkOracle(t *testing.T, key, ext string, ours []byte, wantSums, wantChapters bool, reference func(dir string) string) {
+func checkOracle(t *testing.T, key, ext string, ours []byte, what int, reference func(dir string) string) {
 	t.Helper()
 	sum := sha256.Sum256(ours)
 	rec := oracleRecord{OutputSHA256: hex.EncodeToString(sum[:])}
@@ -107,15 +137,18 @@ func checkOracle(t *testing.T, key, ext string, ours []byte, wantSums, wantChapt
 		if err := os.WriteFile(path, ours, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		rec.Ours = oracleViewOf(t, path, wantSums, wantChapters)
-		rec.Reference = oracleViewOf(t, reference(dir), wantSums, wantChapters)
+		rec.Ours = oracleViewOf(t, path, what)
+		rec.Reference = oracleViewOf(t, reference(dir), what)
 		if *updateOracle {
 			recorded[key] = rec
-			raw, err := json.MarshalIndent(recorded, "", " ")
-			if err != nil {
+			var raw strings.Builder
+			enc := json.NewEncoder(&raw)
+			enc.SetEscapeHTML(false)
+			enc.SetIndent("", " ")
+			if err := enc.Encode(recorded); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(oracleFile, append(raw, '\n'), 0o644); err != nil {
+			if err := os.WriteFile(oracleFile, []byte(raw.String()), 0o644); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -129,7 +162,7 @@ func checkOracle(t *testing.T, key, ext string, ours []byte, wantSums, wantChapt
 				"re-record with -update-oracle on a machine with FFmpeg", key)
 		}
 	}
-	compareViews(t, key, rec.Ours, rec.Reference)
+	compareViews(t, key, rec.Ours, rec.Reference, what)
 	if live && !*updateOracle {
 		// And what was recorded must still be what FFmpeg says.
 		want, ok := recorded[key]
@@ -139,22 +172,39 @@ func checkOracle(t *testing.T, key, ext string, ours []byte, wantSums, wantChapt
 		if want.OutputSHA256 != rec.OutputSHA256 {
 			t.Fatalf("%s: the bytes written changed since they were recorded: run with -update-oracle", key)
 		}
-		compareViews(t, key+" (recorded)", want.Ours, rec.Ours)
+		compareViews(t, key+" (recorded)", want.Ours, rec.Ours, what)
 	}
 }
 
-func compareViews(t *testing.T, key string, ours, ref oracleView) {
+// chapterEndSlack is how far the end of the LAST chapter may differ. A chapter
+// of an MP4's chpl states no end, so FFmpeg takes the last one from the file's
+// duration, which is the media's and so follows an encoder's padding; every
+// other end is the next chapter's start, or stated.
+const chapterEndSlack = 0.025
+
+func compareViews(t *testing.T, key string, ours, ref oracleView, what int) {
 	t.Helper()
 	if ours.Streams != ref.Streams {
 		t.Errorf("%s: FFmpeg reads the stream as\n%s\nwhere the reference reads\n%s", key, ours.Streams, ref.Streams)
 	}
-	if ours.Chapters != ref.Chapters {
-		t.Errorf("%s: FFmpeg reads the chapters as\n%s\nwhere the reference reads\n%s", key, ours.Chapters, ref.Chapters)
+	if len(ours.Chapters) != len(ref.Chapters) {
+		t.Errorf("%s: FFmpeg reads chapters %+v where the reference reads %+v", key, ours.Chapters, ref.Chapters)
+	} else {
+		for i, c := range ours.Chapters {
+			want := ref.Chapters[i]
+			slack := 1e-6
+			if i == len(ours.Chapters)-1 {
+				slack = chapterEndSlack
+			}
+			if c.Title != want.Title || math.Abs(c.Start-want.Start) > 1e-6 || math.Abs(c.End-want.End) > slack {
+				t.Errorf("%s: FFmpeg reads chapter %d as %+v where the reference reads %+v", key, i+1, c, want)
+			}
+		}
 	}
 	if strings.Join(ours.Sums, "\n") != strings.Join(ref.Sums, "\n") {
 		t.Errorf("%s: FFmpeg reads %d packets that differ from the reference's %d", key, len(ours.Sums), len(ref.Sums))
 	}
-	if !sameDuration(ours.Duration, ref.Duration) {
+	if what&oracleDuration != 0 && !sameDuration(ours.Duration, ref.Duration) {
 		t.Errorf("%s: FFmpeg reads a duration of %v s, the reference %v s", key, ours.Duration, ref.Duration)
 	}
 }

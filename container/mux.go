@@ -271,6 +271,7 @@ type Muxer struct {
 	// nil otherwise.
 	index    *segmentIndex
 	metadata *Metadata // what SetMetadata was given, nil for nothing
+	chapters []Chapter // what SetChapters was given
 }
 
 // muxTrack is one track's writing state.

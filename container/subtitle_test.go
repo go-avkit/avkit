@@ -915,7 +915,7 @@ func TestACutPastTheLastCueLeavesTheTextTrackEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := trim(tracks, 500*time.Millisecond, 0, false); err != nil {
+	if _, err := trim(tracks, 500*time.Millisecond, 0, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(tracks[1].samples) != 0 {
