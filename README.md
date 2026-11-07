@@ -186,7 +186,7 @@ See [File metadata](#file-metadata-1) for what each field is called where.
 
 | | read | written |
 |---|---|---|
-| MP4 | Nero's `chpl` in `moov/udta`, and a QuickTime chapter track (a `chap` track reference to a text track whose samples are the titles, each lasting its duration); the track wins when a file has both, since it states the ends | `chpl` only: version 1, starts in 100 ns units, no ends; at most 255 chapters and titles of 255 bytes, more is refused (`ErrChapters`) |
+| MP4 | Nero's `chpl` in `moov/udta`, and a QuickTime chapter track (a `chap` track reference to a text track whose samples are the titles, each lasting its duration); the track wins when a file has both, since it states the ends | a `chpl` (version 1, starts in 100 ns units, no ends; at most 255 chapters and titles of 255 bytes, more is refused with `ErrChapters`) **and** a QuickTime chapter track, as FFmpeg writes both: a `text` track with a `gmhd` header, named by a `chap` entry in the first track's `tref`, one sample per chapter lasting to the next and the last to the end of the media; a chapter of no length is a sample of duration 0. A list whose first chapter begins after 0 has the `chpl` only |
 | Matroska | `Chapters`/`EditionEntry`/`ChapterAtom` (RFC 9559 §5.1.7), the default edition's, else the first's; an **ordered** edition is skipped (it is a timeline of its own), nested atoms and displays after the first are not read | one edition, one atom per chapter, `ChapterTimeStart` and, when known, `ChapterTimeEnd` in nanoseconds, `ChapString` and `ChapLanguage` ("und" when none); after the Tracks, as FFmpeg writes it |
 | MPEG-TS | none | none |
 
@@ -197,20 +197,23 @@ of the inputs before it. A QuickTime chapter track is not copied as a track — 
 samples are the chapters — so a file from FFmpeg that has one copies cleanly,
 where it used to be refused for its `text` track.
 
-⛔ **The chapter track is not written**, only the `chpl`: FFmpeg, GPAC and VLC read
-that, Apple's players look for the track. The `chpl` box is in no published
-specification (mp4ff's `ChplBox` says so); the QuickTime chapter track format is
-Apple's. An MP4 loses the ends of the chapters on the way in, and FFmpeg reads each
-chapter as ending where the next begins.
+The `chpl` box is in no published specification (mp4ff's `ChplBox` says so); the
+QuickTime chapter track format is Apple's, and its sample entry and media header
+are written byte for byte as FFmpeg writes them (Apple's specification was not
+opened). The track's samples are counted at the first track's timescale, so a
+start read back from an MP4 is rounded to a tick of it (21 µs at 48 kHz); the
+`chpl` keeps 100 ns.
 
-⛔ FFmpeg's own cut (`-ss`/`-to` as output options, with `-c copy`) keeps a chapter
-that ends exactly on the cut as a chapter of no length at 0; `Cut` drops it.
+`Cut` keeps a chapter that touches the cut as FFmpeg's `copy_chapters` does: one
+that ends exactly on the cut stays with no length at 0, and one that begins exactly
+at the window's end stays at the end.
 
 Checked against FFmpeg 9.0.2: the chapters of fixtures it wrote (an MP4 with `chpl`
 and a chapter track, one with the track alone, QuickTime, Matroska) are read as
 `ffprobe` reads them, remuxed through each muxer they probe as the same starts, ends
-and titles, and a `Cut` and a `Concat` give the chapters FFmpeg's own cut and an
-`ffmetadata` of the same chapters give. What FFmpeg read is recorded in
+and titles, and a `Cut` (inside a chapter, on the end of one and at the start of
+one) and a `Concat` give the chapters FFmpeg's own cut and an `ffmetadata` of the
+same chapters give. What FFmpeg read is recorded in
 `container/testdata/oracle.json`, so the comparison is made without FFmpeg too.
 
 ### What is deliberately absent

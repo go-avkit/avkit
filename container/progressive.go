@@ -170,6 +170,9 @@ type ProgressiveMuxer struct {
 	closed   bool
 	metadata *Metadata // what SetMetadata was given, nil for nothing
 	chapters []Chapter // what SetChapters was given
+	// noDuration lets WriteSample take a sample of duration 0, which only a
+	// chapter of no length is.
+	noDuration bool
 }
 
 // progressiveTrack is one track's writing state: the tables under construction
@@ -289,7 +292,7 @@ func (m *ProgressiveMuxer) WriteSample(trackID uint32, s Sample) error {
 		return ErrNoTracks
 	case len(s.Data) == 0:
 		return fmt.Errorf("%w: no data", ErrSample)
-	case s.Duration == 0:
+	case s.Duration == 0 && !m.noDuration:
 		return fmt.Errorf("%w: no duration", ErrSample)
 	}
 	t, ok := m.byID[trackID]
@@ -465,7 +468,11 @@ func (m *ProgressiveMuxer) Close() error {
 	if m.closed {
 		return ErrClosed
 	}
+	err := m.writeChapterTrack()
 	m.closed = true
+	if err != nil {
+		return err
+	}
 	if len(m.tracks) == 0 {
 		return ErrNoTracks
 	}

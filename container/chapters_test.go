@@ -114,6 +114,16 @@ func writeChaptered(t *testing.T, kind string, cfg TrackConfig, samples []Sample
 	return buf.Bytes()
 }
 
+// sameChapters says two lists of chapters have the same titles and starts, to the
+// tick of a 48 kHz chapter track, and ignores the ends and the languages: an
+// MP4 states the ends in its chapter track and no language at all.
+func sameChapters(got, want []Chapter) bool {
+	return slices.EqualFunc(got, want, func(a, b Chapter) bool {
+		d := a.Start - b.Start
+		return a.Title == b.Title && d > -25*time.Microsecond && d < 25*time.Microsecond
+	})
+}
+
 // withoutEnds is chapters as an MP4's chpl states them.
 func withoutEnds(cs []Chapter, language string) []Chapter {
 	out := slices.Clone(cs)
@@ -151,7 +161,7 @@ func TestEveryMuxerWritesTheChaptersItIsGiven(t *testing.T) {
 				// A chpl states a start and a title.
 				want = withoutEnds(want, "")
 			}
-			if !slices.Equal(f.Chapters, want) {
+			if !sameChapters(f.Chapters, want) {
 				t.Errorf("read back %+v, want %+v", f.Chapters, want)
 			}
 			ext := ".mp4"
@@ -176,10 +186,12 @@ func TestRemuxCarriesChaptersAndDropsTheChapterTrack(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(f.Tracks) != 1 || f.Tracks[0].Codec != "mp4a" {
-				t.Errorf("the output holds %+v, want the audio track alone", f.Tracks)
+			// The audio, and the chapter track Remux wrote in place of the one it
+			// read: the output's own, not a copy.
+			if len(f.Tracks) != 2 || f.Tracks[0].Codec != "mp4a" || f.Tracks[1].Codec != "text" {
+				t.Errorf("the output holds %+v, want the audio track and the chapter track", f.Tracks)
 			}
-			if want := withoutEnds(fourChapters(""), ""); !slices.Equal(f.Chapters, want) {
+			if want := withoutEnds(fourChapters(""), ""); !sameChapters(f.Chapters, want) {
 				t.Errorf("Remux wrote %+v, want %+v", f.Chapters, want)
 			}
 			checkOracle(t, "remux "+fx.file, ".mp4", out.Bytes(), oracleChapters|oracleEnds,
@@ -205,7 +217,7 @@ func TestReplaceChaptersWritesTheCallersOwn(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 		f, err := Demux(out.Bytes())
-		if err != nil || !slices.Equal(f.Chapters, own) {
+		if err != nil || !sameChapters(f.Chapters, own) {
 			t.Errorf("%s: wrote %+v, %v; want %+v", name, f.Chapters, err, own)
 		}
 		out.Reset()
@@ -221,14 +233,14 @@ func TestReplaceChaptersWritesTheCallersOwn(t *testing.T) {
 	if err := Join(&out, []*Reader{r}); err != nil {
 		t.Fatal(err)
 	}
-	if f, _ := Demux(out.Bytes()); !slices.Equal(f.Chapters, withoutEnds(fourChapters(""), "")) {
+	if f, _ := Demux(out.Bytes()); !sameChapters(f.Chapters, withoutEnds(fourChapters(""), "")) {
 		t.Errorf("Join wrote %+v", f.Chapters)
 	}
 	out.Reset()
 	if err := JoinProgressive(&out, []*Reader{r}); err != nil {
 		t.Fatal(err)
 	}
-	if f, _ := Demux(out.Bytes()); !slices.Equal(f.Chapters, withoutEnds(fourChapters(""), "")) {
+	if f, _ := Demux(out.Bytes()); !sameChapters(f.Chapters, withoutEnds(fourChapters(""), "")) {
 		t.Errorf("JoinProgressive wrote %+v", f.Chapters)
 	}
 	// Chapters the container cannot hold fail the copy, and say so.
@@ -312,18 +324,13 @@ func TestCutShiftsAndTrimsTheChapters(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !slices.Equal(f.Chapters, w.want) {
+				if !sameChapters(f.Chapters, w.want) {
 					t.Errorf("Cut wrote %+v, want %+v", f.Chapters, w.want)
 				}
 				key := fmt.Sprintf("cut %s %s", w.name, src)
-				what := oracleChapters
-				if w.name != "ends on the cut" {
-					// The chapter that ends on the cut has no length, and a
-					// chpl states no end: FFmpeg reads it ending where the
-					// next chapter does, which starts at 0 as well.
-					what |= oracleEnds
-				}
-				checkOracle(t, key, ".mp4", out.Bytes(), what, func(dir string) string {
+				// With the ends: the chapter that ends on the cut has no length,
+				// which only the chapter track can state.
+				checkOracle(t, key, ".mp4", out.Bytes(), oracleChapters|oracleEnds, func(dir string) string {
 					ref := filepath.Join(dir, "cut.mp4")
 					oracleRun(t, oracleFFmpeg, "-v", "error", "-y", "-i", "testdata/"+src,
 						"-ss", fmt.Sprint(w.from.Seconds()), "-to", fmt.Sprint(w.to.Seconds()),
@@ -359,7 +366,7 @@ func TestConcatPutsTheChaptersOfEachInputAfterTheOnesBefore(t *testing.T) {
 		c.Start = (c.Start + offset) / 100 * 100
 		want = append(want, c)
 	}
-	if !slices.Equal(f.Chapters, want) {
+	if !sameChapters(f.Chapters, want) {
 		t.Errorf("Concat wrote %+v, want %+v", f.Chapters, want)
 	}
 	total := offset + offset
