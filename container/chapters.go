@@ -482,11 +482,13 @@ func mkvChaptersOf(cs []Chapter) []mkvChapters {
 // cutChapters is what a cut of the window from to to (a to of zero or less being
 // the end of the file) keeps of the chapters, counted from the window's start.
 //
-// A chapter is kept when it overlaps the window: it ends after from and begins
-// before to. One that begins before the window begins at its start, and one that
-// ends after it ends at its end, when it states an end; an unstated end stays
-// unstated, since it runs until the next chapter, which is in the window or not.
-// A chapter with no length is kept when it begins inside.
+// A chapter is kept as FFmpeg keeps it: unless it ends before from or begins
+// after to, so one that touches either edge stays, with no length. (RFC 9559
+// only asks that a ChapterTimeEnd be greater than or equal to its ChapterTimeStart,
+// so a chapter of no length is a valid one, and FFmpeg's choice is followed
+// rather than argued with.) One that begins before the window begins at its start, and
+// one that ends after it ends at its end, when it states an end; an unstated end
+// stays unstated, since it runs until the next chapter.
 func cutChapters(cs []Chapter, from, to time.Duration) []Chapter {
 	var out []Chapter
 	for i, c := range cs {
@@ -498,9 +500,12 @@ func cutChapters(cs []Chapter, from, to time.Duration) []Chapter {
 				end = cs[i+1].Start
 			}
 		}
-		beginsBeforeEnd := to <= 0 || c.Start < to
-		endsAfterStart := end > from || (end == c.Start && c.Start >= from)
-		if !beginsBeforeEnd || !endsAfterStart {
+		// FFmpeg's rule (fftools/ffmpeg_mux_init.c, copy_chapters): a chapter is
+		// skipped when it ends BEFORE the cut (in_ch->end < ts_off) and the copy
+		// stops at one that begins AFTER the window's end (in_ch->start >
+		// rt + ts_off). One that ends exactly on the cut stays, as a chapter of no
+		// length at 0, and so does one that begins exactly at the window's end.
+		if end < from || (to > 0 && c.Start > to) {
 			continue
 		}
 		cut := c

@@ -158,7 +158,7 @@ func TestEveryMuxerWritesTheChaptersItIsGiven(t *testing.T) {
 			if kind == "matroska" {
 				ext = ".mkv"
 			}
-			checkOracle(t, "chapters "+kind, ext, data, oracleChapters,
+			checkOracle(t, "chapters "+kind, ext, data, oracleChapters|oracleEnds,
 				func(string) string { return "testdata/ffmpeg-chapters.mkv" })
 		})
 	}
@@ -182,7 +182,7 @@ func TestRemuxCarriesChaptersAndDropsTheChapterTrack(t *testing.T) {
 			if want := withoutEnds(fourChapters(""), ""); !slices.Equal(f.Chapters, want) {
 				t.Errorf("Remux wrote %+v, want %+v", f.Chapters, want)
 			}
-			checkOracle(t, "remux "+fx.file, ".mp4", out.Bytes(), oracleChapters,
+			checkOracle(t, "remux "+fx.file, ".mp4", out.Bytes(), oracleChapters|oracleEnds,
 				func(string) string { return "testdata/" + fx.file })
 		})
 	}
@@ -274,36 +274,64 @@ func TestCutShiftsAndTrimsTheChapters(t *testing.T) {
 	// it is asked to, inside the first chapter and inside the third, and FFmpeg's
 	// own cut (-ss and -to as output options, with -c copy) is the reference.
 	//
-	// ⛔ A cut exactly on the end of a chapter is where the two part: FFmpeg's
-	// copy_chapters skips a chapter only when it ends BEFORE the cut, so one that
-	// ends at it stays, as a chapter of no length at 0; this drops it.
-	from, to := 640*time.Millisecond, 2560*time.Millisecond
-	for _, src := range []string{"ffmpeg-chapters.mp4", "ffmpeg-chapters.mkv"} {
-		t.Run(src, func(t *testing.T) {
-			r := mustReader(t, readFixture(t, src))
-			var out bytes.Buffer
-			if err := Cut(&out, r, from, to); err != nil {
-				t.Fatalf("Cut: %v", err)
-			}
-			f, err := Demux(out.Bytes())
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := []Chapter{
-				{Start: 0, Title: "Intro"},
-				{Start: 360 * time.Millisecond, Title: "Second é 日本"},
-				{Start: 960 * time.Millisecond, Title: "Third"},
-			}
-			if !slices.Equal(f.Chapters, want) {
-				t.Errorf("Cut wrote %+v, want %+v", f.Chapters, want)
-			}
-			checkOracle(t, "cut "+src, ".mp4", out.Bytes(), oracleChapters, func(dir string) string {
-				ref := filepath.Join(dir, "cut.mp4")
-				oracleRun(t, oracleFFmpeg, "-v", "error", "-y", "-i", "testdata/"+src, "-ss", "0.64", "-to", "2.56",
-					"-map", "0:a", "-map_chapters", "0", "-c", "copy", ref)
-				return ref
+	// The second and third windows are the boundaries. FFmpeg's copy_chapters
+	// skips a chapter only when it ends BEFORE the cut and stops at one that begins
+	// AFTER the window's end, so the chapter that ends exactly on the cut (1.6 s)
+	// stays as one of no length at 0, and the one that begins exactly at the
+	// window's end (1.6 s) stays as one of no length at the end. Cut does the same.
+	ms := time.Millisecond
+	for _, w := range []struct {
+		name     string
+		from, to time.Duration
+		want     []Chapter
+	}{
+		{"inside", 640 * ms, 2560 * ms, []Chapter{
+			{Start: 0, Title: "Intro"},
+			{Start: 360 * ms, Title: "Second é 日本"},
+			{Start: 960 * ms, Title: "Third"},
+		}},
+		{"ends on the cut", 1600 * ms, 3200 * ms, []Chapter{
+			{Start: 0, Title: "Second é 日本"},
+			{Start: 0, Title: "Third"},
+			{Start: 1300 * ms, Title: "Outro"},
+		}},
+		{"begins at the end", 0, 1600 * ms, []Chapter{
+			{Start: 0, Title: "Intro"},
+			{Start: time.Second, Title: "Second é 日本"},
+			{Start: 1600 * ms, Title: "Third"},
+		}},
+	} {
+		for _, src := range []string{"ffmpeg-chapters.mp4", "ffmpeg-chapters.mkv"} {
+			t.Run(w.name+" "+src, func(t *testing.T) {
+				r := mustReader(t, readFixture(t, src))
+				var out bytes.Buffer
+				if err := Cut(&out, r, w.from, w.to); err != nil {
+					t.Fatalf("Cut: %v", err)
+				}
+				f, err := Demux(out.Bytes())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Equal(f.Chapters, w.want) {
+					t.Errorf("Cut wrote %+v, want %+v", f.Chapters, w.want)
+				}
+				key := fmt.Sprintf("cut %s %s", w.name, src)
+				what := oracleChapters
+				if w.name != "ends on the cut" {
+					// The chapter that ends on the cut has no length, and a
+					// chpl states no end: FFmpeg reads it ending where the
+					// next chapter does, which starts at 0 as well.
+					what |= oracleEnds
+				}
+				checkOracle(t, key, ".mp4", out.Bytes(), what, func(dir string) string {
+					ref := filepath.Join(dir, "cut.mp4")
+					oracleRun(t, oracleFFmpeg, "-v", "error", "-y", "-i", "testdata/"+src,
+						"-ss", fmt.Sprint(w.from.Seconds()), "-to", fmt.Sprint(w.to.Seconds()),
+						"-map", "0:a", "-map_chapters", "0", "-c", "copy", ref)
+					return ref
+				})
 			})
-		})
+		}
 	}
 }
 
@@ -335,7 +363,7 @@ func TestConcatPutsTheChaptersOfEachInputAfterTheOnesBefore(t *testing.T) {
 		t.Errorf("Concat wrote %+v, want %+v", f.Chapters, want)
 	}
 	total := offset + offset
-	checkOracle(t, "concat", ".mp4", out.Bytes(), oracleChapters, func(dir string) string {
+	checkOracle(t, "concat", ".mp4", out.Bytes(), oracleChapters|oracleEnds, func(dir string) string {
 		return ffmpegChapterReference(t, dir, total.Seconds(), want)
 	})
 }
@@ -646,10 +674,11 @@ func TestACutKeepsWhatItOverlaps(t *testing.T) {
 		"whole":       {0, 0, cs},
 		"inside b":    {3 * s, 4 * s, []Chapter{{Start: 0, Title: "b"}}},
 		"across":      {1 * s, 6 * s, []Chapter{{Start: 0, End: 1 * s, Title: "a"}, {Start: 1 * s, Title: "b"}, {Start: 4 * s, End: 5 * s, Title: "c"}}},
-		"clipped end": {5 * s, 7 * s, []Chapter{{Start: 0, End: 2 * s, Title: "c"}}},
-		"a point":     {8 * s, 8*s + 1, []Chapter{{Start: 0, End: 0, Title: "point"}}},
+		"clipped end": {5 * s, 7 * s, []Chapter{{Start: 0, Title: "b"}, {Start: 0, End: 2 * s, Title: "c"}}},
+		"a point":     {8 * s, 8*s + 1, []Chapter{{Start: 0, Title: "c"}, {Start: 0, Title: "point"}}},
 		"to the end":  {9 * s, 0, []Chapter{{Start: 0, Title: "last"}}},
-		"after a":     {2 * s, 3 * s, []Chapter{{Start: 0, Title: "b"}}},
+		"after a":     {2 * s, 3 * s, []Chapter{{Start: 0, End: 0, Title: "a"}, {Start: 0, Title: "b"}}},
+		"to c":        {0, 5 * s, []Chapter{{Start: 0, End: 2 * s, Title: "a"}, {Start: 2 * s, Title: "b"}, {Start: 5 * s, End: 5 * s, Title: "c"}}},
 		"for ever":    {20 * s, 30 * s, []Chapter{{Start: 0, Title: "last"}}},
 	} {
 		got := cutChapters(cs, tc.from, tc.to)

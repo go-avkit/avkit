@@ -36,6 +36,7 @@ const (
 	oracleSums                 // the size and checksum of every packet
 	oracleChapters             // the chapters
 	oracleDuration             // the duration of the file
+	oracleEnds                 // the ends of the chapters, which a chpl cannot state
 )
 
 // oracleChapter is one chapter as ffprobe reads it, in seconds.
@@ -195,6 +196,9 @@ func compareViews(t *testing.T, key string, ours, ref oracleView, what int) {
 			slack := 1e-6
 			if i == len(ours.Chapters)-1 {
 				slack = chapterEndSlack
+			}
+			if what&oracleEnds == 0 {
+				slack = math.Inf(1)
 			}
 			if c.Title != want.Title || math.Abs(c.Start-want.Start) > 1e-6 || math.Abs(c.End-want.End) > slack {
 				t.Errorf("%s: FFmpeg reads chapter %d as %+v where the reference reads %+v", key, i+1, c, want)

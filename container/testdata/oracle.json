@@ -251,7 +251,179 @@
    "duration": 0
   }
  },
- "cut ffmpeg-chapters.mkv": {
+ "cut begins at the end ffmpeg-chapters.mkv": {
+  "output_sha256": "f57e6c89870f029b7cde8da3e197965999f7471f02f89ff6b78adb1b0965b5ac",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 1.6,
+     "title": "Third"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 1.6,
+     "title": "Third"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "cut begins at the end ffmpeg-chapters.mp4": {
+  "output_sha256": "f0f031ef4e375d407c3ed53f6e4f2990e40dd3e3d720580b4b64132250b8ef50",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 1.6,
+     "title": "Third"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 1.6,
+     "title": "Third"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "cut ends on the cut ffmpeg-chapters.mkv": {
+  "output_sha256": "cc94072348b5da7ea8884f0fe606f306facc6810aa165555c51bf93977914091",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 0,
+     "end": 1.3,
+     "title": "Third"
+    },
+    {
+     "start": 1.3,
+     "end": 1.6,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 0,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 0,
+     "end": 1.3,
+     "title": "Third"
+    },
+    {
+     "start": 1.3,
+     "end": 1.6,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "cut ends on the cut ffmpeg-chapters.mp4": {
+  "output_sha256": "18f913a84d53fc3413d8ecb5980e8ee6fed47313c08a0aaca7dc5766aed0510f",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 0,
+     "end": 1.3,
+     "title": "Third"
+    },
+    {
+     "start": 1.3,
+     "end": 1.6,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 0,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 0,
+     "end": 1.3,
+     "title": "Third"
+    },
+    {
+     "start": 1.3,
+     "end": 1.6,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "cut inside ffmpeg-chapters.mkv": {
   "output_sha256": "ea00c289cf15a127a252c062d21702485d606b99ac81410f18401551edf23baa",
   "ours": {
    "chapters": [
@@ -294,7 +466,7 @@
    "duration": 0
   }
  },
- "cut ffmpeg-chapters.mp4": {
+ "cut inside ffmpeg-chapters.mp4": {
   "output_sha256": "55f92d6842f3160948971deb8e868caf995a4fa1301c4681cc22cbd4c4b31caf",
   "ours": {
    "chapters": [
