@@ -135,7 +135,7 @@ of −192, and the test holds the granule instead.
 | | codecs | what it means |
 |---|---|---|
 | **derived from the samples** | `avc1`, `avc3`, `hvc1`, `hev1`, `av01`, `vp09`, `mp4a`, `ac-3`, `ec-3`, `mp1`, `mp2`, `mp3` | the elementary stream states its own configuration, and it is read out of it: for AC-3 the `dac3`/`dec3` record from the first sync frame, for MPEG audio the rate and channel count from the frame headers, which must all be of the stated layer and one rate |
-| **stated by the container** | `vp08`, `opus`, `flac`, `wvtt`, `stpp`, `tx3g` | `ErrNotInSamples`. The codec is known and its samples **cannot** describe it — VP8 defines no level, an Opus stream carries no identification header, a FLAC frame may leave its rate and bit depth to STREAMINFO (RFC 9639 §9.1.2, §9.1.4), which only the stream header holds, a WebVTT cue never repeats the file header, a TTML document never states its sample entry and a tx3g sample never states the font table or the default style. Take the configuration from the container, which has it |
+| **stated by the container** | `vp08`, `opus`, `flac`, `alac`, `mlpa`, `wvtt`, `stpp`, `tx3g` | `ErrNotInSamples`. The codec is known and its samples **cannot** describe it — VP8 defines no level, an Opus stream carries no identification header, a FLAC frame may leave its rate and bit depth to STREAMINFO (RFC 9639 §9.1.2, §9.1.4), which only the stream header holds, an ALAC frame holds none of the cookie, a TrueHD access unit does not say how many channels to output, a WebVTT cue never repeats the file header, a TTML document never states its sample entry and a tx3g sample never states the font table or the default style. Take the configuration from the container, which has it |
 | **not known** | everything else | `ErrUnsupportedCodec` alone. There is nothing to take |
 
 ⛔ The middle row used to be indistinguishable from the last: both carried
@@ -148,10 +148,10 @@ before it existed still matches.
 | | video | audio | subtitles |
 |---|---|---|---|
 | MP4 demux | any — the four-character code is read from the sample entry, not from a list | any | any; the configuration of `wvtt`, `stpp` and `tx3g` |
-| MP4 mux | `avc1`, `hvc1`, `av01`, `vp08`, `vp09`, `mjpg` | `mp4a`, `opus`, `ac-3`, `ec-3`, `fLaC`, and `mp1`/`mp2`/`mp3` as `mp4a`; **not** `vorb` (see [Audio codecs](#flac-mpeg-audio-and-ac-3-in-mp4-and-matroska)) | `wvtt`, `stpp`, `tx3g`; **not** `pgs` (MP4RA registers no sample entry for it) |
-| Matroska demux | AVC, HEVC, AV1, VP8, VP9 | AAC, AC-3, E-AC-3, FLAC, MPEG audio (Layers I–III), Opus, Vorbis | WebVTT (`S_TEXT/WEBVTT`, `D_WEBVTT/*`) and SRT (`S_TEXT/UTF8`), both as `wvtt`; PGS (`S_HDMV/PGS`) as `pgs`, its blocks as they stand |
-| Matroska / WebM mux | AV1, VP8, VP9 in WebM; AVC, HEVC as DocType `matroska` | Opus, Vorbis in WebM; AAC, FLAC, MPEG audio, AC-3, E-AC-3 as DocType `matroska` | `wvtt`, as `D_WEBVTT/SUBTITLES` or `S_TEXT/WEBVTT`; `tx3g`, written as the `wvtt` it converts to; `pgs` as `S_HDMV/PGS`, DocType `matroska` |
-| MPEG-TS | `avc1`, `hvc1`, `av01`, in and out | `mp4a`, `ac-3`, `ec-3`, `mp1`, `mp2`, `mp3`, in and out; **not** `opus` (see [MPEG-TS carriage](#mpeg-ts-carriage)) | none, in or out; `pgs` is refused with its reason |
+| MP4 mux | `avc1`, `hvc1`, `av01`, `vp08`, `vp09`, `mjpg` | `mp4a`, `opus`, `ac-3`, `ec-3`, `fLaC`, `alac`, `mlpa` (TrueHD), and `mp1`/`mp2`/`mp3` as `mp4a`; **not** `vorb` (see [Audio codecs](#flac-mpeg-audio-and-ac-3-in-mp4-and-matroska)) | `wvtt`, `stpp`, `tx3g`; **not** `pgs` (MP4RA registers no sample entry for it) |
+| Matroska demux | AVC, HEVC, AV1, VP8, VP9 | AAC, AC-3, E-AC-3, FLAC, ALAC, TrueHD, MPEG audio (Layers I–III), Opus, Vorbis | WebVTT (`S_TEXT/WEBVTT`, `D_WEBVTT/*`) and SRT (`S_TEXT/UTF8`), both as `wvtt`; PGS (`S_HDMV/PGS`) as `pgs`, its blocks as they stand |
+| Matroska / WebM mux | AV1, VP8, VP9 in WebM; AVC, HEVC as DocType `matroska` | Opus, Vorbis in WebM; AAC, FLAC, ALAC, TrueHD, MPEG audio, AC-3, E-AC-3 as DocType `matroska` | `wvtt`, as `D_WEBVTT/SUBTITLES` or `S_TEXT/WEBVTT`; `tx3g`, written as the `wvtt` it converts to; `pgs` as `S_HDMV/PGS`, DocType `matroska` |
+| MPEG-TS | `avc1`, `hvc1`, `av01`, in and out | `mp4a`, `ac-3`, `ec-3`, `mp1`, `mp2`, `mp3`, in and out; **not** `opus`, `alac` or TrueHD (see [MPEG-TS carriage](#mpeg-ts-carriage)) | none, in or out; `pgs` is refused with its reason |
 | ADTS demux | — | `mp4a` | — |
 | MPEG audio demux | — | `mp1`, `mp2`, `mp3` | — |
 | FLAC demux | — | `fLaC` | — |
@@ -736,6 +736,41 @@ bits), MP3 (44.1 and 22.05 kHz), MP2, AC-3 and E-AC-3 written by FFmpeg into
 Matroska, MP4 and MPEG-TS, remuxed through each of the three muxers, probe as the
 same codec, rate and channel count, hold the same packets (`framemd5`), and
 decode without an error message.
+
+## ALAC and TrueHD in MP4 and Matroska
+
+| codec (`TrackConfig.Codec`) | MP4 (`Muxer`, `ProgressiveMuxer`) | Matroska (`WebMMuxer`, DocType `matroska`) | specification |
+|---|---|---|---|
+| Apple Lossless (`alac`) | `alac` sample entry holding an `alac` box: version and flags, then the 24-byte `ALACSpecificConfig` and, when the track has one, the 24-byte `ALACChannelLayoutInfo`; `samplesize` the bit depth, `samplerate` the rate, or 0 above 65535 Hz (the cookie has it in full) | `A_ALAC`, `CodecPrivate` = the cookie; Audio element repeats rate and channels | Apple `ALACMagicCookieDescription.txt` (macosforge/alac); MP4RA sample entry `alac`; FFmpeg `movenc.c`, `matroskaenc.c` |
+| Dolby TrueHD (`mlpa`) | `mlpa` sample entry holding a `dmlp` box (`format_info`, 15-bit `peak_data_rate`, reserved); the entry states the rate as a plain 32-bit integer; one sample is one access unit of `40 << (ratebits & 7)` samples | `A_TRUEHD`, no `CodecPrivate`; Audio element has rate and channels | Dolby, *Dolby TrueHD (MLP) bitstreams within the ISO base media file format*; MP4RA sample entry `mlpa`; FFmpeg `movenc.c` `mov_write_dmlp_tag` |
+
+`TrackConfig.CodecConfig` of an ALAC track is the magic cookie and of a TrueHD
+track the ten bytes of its `dmlp`, whichever container they were read from. A
+TrueHD track read from Matroska, which states none, has its `dmlp` taken from the
+first access unit that carries a major sync, and is counted in samples (the exact
+length of an access unit) rather than in the milliseconds Matroska's timestamps
+round it to. A cookie that is the wrong size, states a bit depth other than 16,
+20, 24 or 32, a compatible version other than 0 or no channels is refused, as is
+a `dmlp` whose sampling frequency is reserved.
+
+⛔ **Neither goes into an MPEG-TS** (`ErrUnsupportedCodec`). ATSC A/52 defines
+AC-3 and Enhanced AC-3 and no TrueHD; the stream type `0x83` of a Blu-ray TrueHD
+stream belongs to a specification that is not published, which FFmpeg's
+`mpegtsenc.c` writes anyway; no text maps ALAC onto a transport stream. A
+transport stream's `0x83` stream is not read either.
+
+⛔ The Dolby specification could not be opened (developer.dolby.com did not
+resolve while this was written): the `mlpa`/`dmlp` layout is the one FFmpeg's
+`movenc.c` writes, and is checked by FFmpeg 9.0.2 reading what this package
+writes, below.
+
+Checked against FFmpeg 9.0.2: ALAC (stereo 48 kHz, stereo 96 kHz, 5.1) and TrueHD
+written by FFmpeg into MP4, QuickTime and Matroska, remuxed through `Remux`,
+`Muxer`, `ProgressiveMuxer` and `WebMMuxer` into each of MP4 and Matroska, probe as
+the same codec, rate, channel count and extradata, and hold the same packets
+(`framemd5`). What FFmpeg read is recorded in `container/testdata/oracle.json`,
+next to a hash of the bytes written, so the comparison is made without FFmpeg
+too; `go test -update-oracle` records it again.
 
 ## VP9 out of Matroska
 

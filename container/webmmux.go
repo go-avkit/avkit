@@ -641,6 +641,8 @@ type webmCodecPrivate struct {
 // thing here and Muxer and WebMMuxer can be swapped for one another.
 var webmCodecs = map[string]webmCodec{
 	"flac": {id: "A_FLAC", kind: Audio, describe: webmFLACPrivate},
+	"alac": {id: "A_ALAC", kind: Audio, describe: webmALACPrivate},
+	"mlpa": {id: "A_TRUEHD", kind: Audio, describe: webmTrueHDPrivate},
 	"mp1":  {id: "A_MPEG/L1", kind: Audio, describe: webmFramesOnly("A_MPEG/L1")},
 	"mp2":  {id: "A_MPEG/L2", kind: Audio, describe: webmFramesOnly("A_MPEG/L2")},
 	"mp3":  {id: "A_MPEG/L3", kind: Audio, describe: webmFramesOnly("A_MPEG/L3")},

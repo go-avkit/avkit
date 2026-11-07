@@ -457,6 +457,10 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 		}
 	case flacSampleEntry(stsd) != nil:
 		flacTrackConfig(&cfg, flacSampleEntry(stsd).DfLa)
+	case alacSampleEntry(stsd) != nil:
+		alacTrackConfig(&cfg, alacSampleEntry(stsd))
+	case mlpaSampleEntry(stsd) != nil:
+		trueHDTrackConfig(&cfg, mlpaSampleEntry(stsd))
 	case stsd.Mp4a != nil && stsd.Mp4a.Esds != nil:
 		// A record this cannot read leaves the track described as the sample
 		// entry described it, which is what this did before the record was
