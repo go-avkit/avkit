@@ -44,6 +44,11 @@
 // IDs, in a file whose DocType is "matroska". Vorbis is refused in an MP4,
 // which has no registered sample entry for it.
 //
+// Apple Lossless and Dolby TrueHD travel between MP4 and Matroska both ways: ALAC
+// as an alac sample entry with its magic cookie and as A_ALAC, TrueHD as an mlpa
+// entry with its dmlp and as A_TRUEHD. No MPEG-TS carries either, and the
+// transport stream writer refuses them.
+//
 // Subtitles travel the same way, in one form: a WebVTT or SRT track of a
 // Matroska file, and a WebVTT track of an MP4, read as the samples of an
 // ISO/IEC 14496-30 wvtt track, which Muxer, ProgressiveMuxer and WebMMuxer all

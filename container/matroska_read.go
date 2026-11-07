@@ -230,8 +230,19 @@ func mkvReadTrackOf(te mkvTrackEntry, timescale uint32, scale uint64,
 	for _, s := range t.samples {
 		t.track.Duration += uint64(s.Duration)
 	}
+	if t.configErr == nil && t.samplesErr == nil && t.config.Codec == mlpaEntry && len(t.config.CodecConfig) == 0 {
+		// A_TRUEHD states nothing but its Audio element; the dmlp is in the
+		// access units. A track none of them describes keeps the config as the
+		// container stated it, and the muxers report what is missing.
+		if got, err := trueHDFromSamples(t.config, t.samples); err == nil {
+			t.config = got
+		}
+	}
 	if t.configErr == nil && t.samplesErr == nil && t.config.Kind == Audio {
 		t.config.EditList = mkvEndTrim(t.config, blocks, t.samples, int64(scale))
+	}
+	if t.config.Codec == mlpaEntry && t.config.EditList == nil {
+		trueHDTiming(&t.config, t.samples)
 	}
 	return t
 }
@@ -582,6 +593,8 @@ var mkvCodecs = map[string]string{
 	"A_OPUS":           "Opus",
 	"A_VORBIS":         "vorb",
 	"A_FLAC":           "fLaC",
+	"A_ALAC":           "alac",
+	"A_TRUEHD":         mlpaEntry,
 	// Both text mappings become WebVTT: SRT's cue text is a subset of
 	// WebVTT's, and ISO/IEC 14496-30 defines no SRT sample entry to carry it
 	// as it is.
@@ -779,6 +792,19 @@ func mkvCodecPrivate(cfg *TrackConfig, te mkvTrackEntry) error {
 		}
 		cfg.CodecConfig = te.CodecPrivate
 		cfg.SampleRate, cfg.Channels = format.SampleRate, format.Channels
+	case "alac":
+		// The cookie is the normative statement of the format, and the track
+		// is described by it rather than by the Audio element.
+		cookie := alacMatroskaCookie(te.CodecPrivate)
+		f, err := parseALACCookie(cookie)
+		if err != nil {
+			return fmt.Errorf("%w (%s CodecPrivate)", err, te.CodecID)
+		}
+		cfg.CodecConfig = cookie
+		cfg.SampleRate, cfg.Channels = f.SampleRate, f.Channels
+	case mlpaEntry:
+		// A_TRUEHD has no CodecPrivate: the format is in the access units, and
+		// mkvReadTrackOf takes it from there.
 	default:
 		// AC-3, Enhanced AC-3 and Vorbis state their configuration in their
 		// own form, which travels as it stands: AC-3 usually states none at

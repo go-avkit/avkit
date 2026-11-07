@@ -99,5 +99,16 @@ func applySampleEntry(tr *Track, stsd *mp4.StsdBox) {
 	case *mp4.AudioSampleEntryBox:
 		tr.Channels = int(e.ChannelCount)
 		tr.SampleRate = int(e.SampleRate)
+		// The cookie states the rate in full, where the entry's field has
+		// sixteen bits.
+		if cookie := alacSampleEntry(stsd); cookie != nil {
+			if f, err := parseALACCookie(cookie); err == nil {
+				tr.Channels, tr.SampleRate = f.Channels, f.SampleRate
+			}
+		}
+	case *mp4.UnknownBox:
+		if f := mlpaSampleEntry(stsd); f != nil {
+			tr.Channels, tr.SampleRate = f.channels, f.rate
+		}
 	}
 }

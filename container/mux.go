@@ -81,6 +81,7 @@ type TrackConfig struct {
 	Kind Kind
 	// Codec is the sample entry to write: "avc1", "avc3", "hvc1", "hev1",
 	// "av01", "vp08", "vp09", "mjpg", "mp4a", "Opus", "ac-3", "ec-3", "fLaC",
+	// "alac" (Apple Lossless), "mlpa" (Dolby TrueHD),
 	// and "mp1", "mp2" or "mp3" for MPEG audio, which an MP4 writes as mp4a;
 	// and for timed text "wvtt" (WebVTT, ISO/IEC 14496-30) and "stpp" (TTML).
 	//
@@ -123,7 +124,11 @@ type TrackConfig struct {
 	// without one they build a record from AudioObjectType, Channels and
 	// SampleRate. For FLAC it is the
 	// "fLaC" signature and every metadata block, STREAMINFO first, as
-	// Matroska's CodecPrivate holds them. For WebVTT it is the header of the
+	// Matroska's CodecPrivate holds them. For ALAC it is the magic cookie (the 24
+	// bytes of ALACSpecificConfig, and the 24 of ALACChannelLayoutInfo when the
+	// track has them), and for TrueHD the ten-byte payload of its dmlp box; Reader
+	// states both, and a TrueHD track read from Matroska has its dmlp taken from
+	// the first major sync by Remux and the other copies. For WebVTT it is the header of the
 	// WebVTT file, the text of the vttC box (left empty, the bare "WEBVTT"
 	// signature is written); for TTML it is the content of the stpp sample
 	// entry, which is carried as it stands.
@@ -518,6 +523,14 @@ func describe(trak *mp4.TrakBox, cfg TrackConfig) error {
 		}
 	case "flac":
 		if err := describeFLAC(trak, cfg); err != nil {
+			return err
+		}
+	case "alac":
+		if err := describeALAC(trak, cfg); err != nil {
+			return err
+		}
+	case mlpaEntry:
+		if err := describeTrueHD(trak, cfg); err != nil {
 			return err
 		}
 	case "vorb":

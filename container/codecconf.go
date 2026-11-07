@@ -175,6 +175,10 @@ func ConfigFromSamples(codec string, samples []Sample, opts ...ConfigOption) (St
 		return refuse(name, "the TTML namespace and schema are stated by the stpp sample entry, not by its documents")
 	case "mp1", "mp2", "mp3":
 		cfg, err = mpaStreamConfig(name, samples)
+	case "alac":
+		return refuse(name, "an ALAC frame holds no format: the sample size, rate and channel layout are in the magic cookie, which only the container holds")
+	case mlpaEntry:
+		return refuse(name, "a TrueHD access unit states its sampling frequency but not how many channels a decoder is to output, which the container states")
 	case "flac":
 		// RFC 9639 9.1.2 and 9.1.4: a frame header may leave its sample
 		// rate and bit depth to STREAMINFO, and the block and frame size

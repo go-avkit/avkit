@@ -263,6 +263,14 @@ func (t *tsMuxTrack) describe(cfg TrackConfig) (astits.StreamType, []*astits.Des
 		}
 		t.kind, t.form, t.streamID = Audio, tsMuxMPEGAudio, tsAudioStream0
 		return streamType, nil, nil
+	case "alac", mlpaEntry:
+		// ⛔ Not an omission. ATSC A/52 defines AC-3 and Enhanced AC-3 and no
+		// TrueHD; the stream type 0x83 a Blu-ray TrueHD stream carries is that
+		// specification's, which is not published; and no text maps Apple
+		// Lossless onto a transport stream. FFmpeg writes 0x83 for TrueHD; this
+		// package writes what a published specification defines.
+		return 0, nil, fmt.Errorf("%w: %s: no published specification carries it in an MPEG-TS "+
+			"(MP4 and Matroska do)", ErrUnsupportedCodec, codec)
 	case "opus":
 		// ⛔ Not an omission. The only text that maps Opus onto a transport
 		// stream is a draft ETSI specification, "TS 1xx xxx V0.1.3

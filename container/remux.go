@@ -376,6 +376,11 @@ func describeFromSamples(cfg TrackConfig, samples []Sample) (TrackConfig, error)
 		}
 		return out, nil
 	}
+	// TrueHD in Matroska has no CodecPrivate at all; the first major sync is
+	// what an MP4 entry's dmlp is made from.
+	if cfg.Codec == mlpaEntry && len(cfg.CodecConfig) == 0 {
+		return trueHDFromSamples(cfg, samples)
+	}
 	if cfg.Codec != "vp09" || cfg.VPx == nil || cfg.VPx.Level != 0 {
 		return cfg, nil
 	}
