@@ -940,7 +940,12 @@ func webmAACPrivate(cfg TrackConfig) (webmCodecPrivate, error) {
 		ObjectType:           objectType,
 		ChannelConfiguration: configuration,
 		SamplingFrequency:    cfg.SampleRate,
-		ExtensionFrequency:   cfg.SampleRate,
+	}
+	// The extension sampling frequency is a field of the explicit SBR signalling
+	// only (ISO/IEC 14496-3 Table 1.19: audioObjectType 5 or 29); an AAC Main or
+	// AAC-LC configuration has none, and mp4ff 0.62.0 refuses one stated anyway.
+	if objectType == aac.HEAACv1 || objectType == aac.HEAACv2 {
+		asc.ExtensionFrequency = cfg.SampleRate
 	}
 	var buf bytes.Buffer
 	if err := asc.Encode(&buf); err != nil {

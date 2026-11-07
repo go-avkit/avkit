@@ -489,11 +489,14 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 			cfg.CodecConfig = []byte(stsd.Wvtt.VttC.Config)
 		}
 	case tx3gEntry(stsd) != nil:
-		// 3GPP timed text: mp4ff has no box for it and keeps the entry as an
-		// unknown box, whose payload is the whole description -- the font
-		// table, the justification and the default style -- and travels as it
-		// stands.
-		cfg.CodecConfig = bytes.Clone(tx3gEntry(stsd).Payload())
+		// 3GPP timed text: the payload of the entry is the whole description
+		// -- the font table, the justification and the default style -- and
+		// travels as it stands.
+		// An entry that cannot be written back leaves the field empty, as the
+		// other records here do.
+		if payload, err := tx3gPayload(tx3gEntry(stsd)); err == nil {
+			cfg.CodecConfig = payload
+		}
 	case stsd.Stpp != nil:
 		// The whole sample entry travels, because it is the whole
 		// description: the TTML namespace, the schema location and the MIME

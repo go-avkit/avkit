@@ -58,7 +58,7 @@ func TestWebMWritesTheAudioSpecificConfigItIsGiven(t *testing.T) {
 // A record that leaves the layout to the bitstream (configuration 0) is still
 // written as it is, and the track's own count is the one stated.
 func TestWebMTakesTheChannelsFromTheTrackWhenTheRecordLeavesThem(t *testing.T) {
-	record := []byte{0x11, 0x80}
+	record := pceASC
 	back := webmRoundTrip(t, TrackConfig{
 		Kind: Audio, Codec: "mp4a", Timescale: 1000, SampleRate: 48000,
 		Channels: 3, CodecConfig: record,

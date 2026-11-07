@@ -22,7 +22,10 @@ package container
 // configuration, with a syncExtensionType of 0x2B7, extensionAudioObjectType 5
 // and sbrPresentFlag set, then the extension sampling frequency. The second is
 // what Apple's encoders write -- 13 90 56 e5 a0 is AAC-LC at 22050 Hz, then SBR
-// at 44100 -- and the one mp4ff's decoder does not read.
+// at 44100 -- and the one mp4ff's decoder did not read before 0.62.0. It reads
+// it now, but only at the bit where the extension must start; ffmpeg searches
+// for it bit by bit and reads past the end as zeros, so records that differ
+// between the two keep this reader.
 //
 // This reads both the way ffmpeg's ff_mpeg4audio_get_config_gb does, because
 // ffmpeg is what the result is measured against: the header fields, then for a

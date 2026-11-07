@@ -1054,7 +1054,7 @@ func TestWebMAddTrackRefusesWhatItCannotDescribe(t *testing.T) {
 		},
 		"aac whose record leaves the channels to a track that states none": {
 			cfg: TrackConfig{Kind: Audio, Codec: "A_AAC", Timescale: 48000,
-				SampleRate: 48000, CodecConfig: []byte{0x11, 0x80}},
+				SampleRate: 48000, CodecConfig: pceASC},
 			want: ErrTrackConfig,
 		},
 		"aac of a profile nothing supports": {
