@@ -111,9 +111,9 @@ func checkTx3gEntry(payload []byte) error {
 // describeTx3g writes the tx3g sample entry a caller hands over as it stands, or
 // the default one when it hands over none.
 //
-// mp4ff has no tx3g box -- 0.61.0 decodes one as an unknown box and writes it
-// back byte for byte, which is all a pass-through needs -- so the entry is an
-// unknown box holding the payload.
+// The entry is written as an unknown box holding the payload, which is written
+// back byte for byte and is read back as mp4ff's own tx3g box, which is all a
+// pass-through needs.
 func describeTx3g(trak *mp4.TrakBox, cfg TrackConfig) error {
 	payload := cfg.CodecConfig
 	if len(payload) == 0 {
@@ -128,15 +128,39 @@ func describeTx3g(trak *mp4.TrakBox, cfg TrackConfig) error {
 
 // tx3gEntry is the tx3g sample entry of a track, or nil when its first sample
 // description is not one.
-func tx3gEntry(stsd *mp4.StsdBox) *mp4.UnknownBox {
+//
+// mp4ff 0.62.0 reads a well-formed entry as a *mp4.TextSampleEntryBox and
+// keeps one it cannot decode -- a payload shorter than the 38 fixed bytes, or
+// children that are not whole boxes -- as an *mp4.UnknownBox; both are entries.
+func tx3gEntry(stsd *mp4.StsdBox) mp4.Box {
 	if len(stsd.Children) == 0 {
 		return nil
 	}
-	entry, _ := stsd.Children[0].(*mp4.UnknownBox)
-	if entry == nil || entry.Type() != codecTx3g {
-		return nil
+	switch entry := stsd.Children[0].(type) {
+	case *mp4.TextSampleEntryBox:
+		if entry.Type() == codecTx3g {
+			return entry
+		}
+	case *mp4.UnknownBox:
+		if entry.Type() == codecTx3g {
+			return entry
+		}
 	}
-	return entry
+	return nil
+}
+
+// tx3gPayload is the content of a tx3g sample entry returned by tx3gEntry --
+// everything after its box header -- which is the whole description and
+// travels as it stands.
+func tx3gPayload(entry mp4.Box) ([]byte, error) {
+	if u, ok := entry.(*mp4.UnknownBox); ok {
+		return bytes.Clone(u.Payload()), nil
+	}
+	var buf bytes.Buffer
+	if err := entry.Encode(&buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes()[8:], nil
 }
 
 // dropTx3gEndMarkers leaves out the samples that show nothing for no time.

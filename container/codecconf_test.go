@@ -631,8 +631,11 @@ func TestConfigFromAACRefusesWhatIsNotADTS(t *testing.T) {
 		"a channel configuration of zero": {
 			patch(func(b []byte) { b[2] &= 0xfe; b[3] &= 0x3f }), ErrNoConfiguration, "configuration 0",
 		},
+		// Profile 2 of the ADTS header is object type 3, AAC SSR, which no
+		// AudioSpecificConfig is written for. Profile 0, AAC Main, was refused
+		// here until mp4ff 0.62.0 learned to write it.
 		"an object type with no AudioSpecificConfig": {
-			patch(func(b []byte) { b[2] &= 0x3f }), ErrUnsupportedCodec, "object type 1",
+			patch(func(b []byte) { b[2] = b[2]&0x3f | 2<<6 }), ErrUnsupportedCodec, "object type 3",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -18,6 +18,29 @@ import (
 // three of which a record rebuilt from the track's fields would not carry.
 var monoASC = []byte{0x11, 0x88, 0x56, 0xe5, 0x00}
 
+// pceASC is an AAC-LC AudioSpecificConfig at 48 kHz whose channelConfiguration
+// is 0: the layout is a program_config_element, here a front single channel
+// element and a front channel pair element, three channels.
+//
+// ISO/IEC 14496-3 Table 4.1 (GASpecificConfig) reads the element whenever
+// channelConfiguration is 0, so a record of only the header and the three
+// GASpecificConfig flags -- {0x11, 0x80}, which mp4ff before 0.62.0 accepted --
+// is truncated, not a record that "leaves the layout to the bitstream".
+var pceASC = func() []byte {
+	asc := aac.AudioSpecificConfig{
+		ObjectType: aac.AAClc, SamplingFrequency: 48000,
+		PCE: &aac.ProgramConfigElement{
+			ObjectType: aac.AAClc - 1, SamplingFrequencyIndex: 3,
+			FrontElements: []aac.PCEChannelElement{{TagSelect: 0}, {IsCPE: true, TagSelect: 0}},
+		},
+	}
+	var buf bytes.Buffer
+	if err := asc.Encode(&buf); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}()
+
 // writeOneProgressiveTrack is writeOneTrack for the progressive muxer.
 func writeOneProgressiveTrack(t *testing.T, cfg TrackConfig) []byte {
 	t.Helper()
@@ -138,7 +161,7 @@ func TestMP4MuxersStateTheChannelCountOfTheTrackFields(t *testing.T) {
 // the record is still written as it is, and the sample entry states the count
 // the caller gave.
 func TestMP4MuxersTakeTheChannelCountFromTheTrackWhenTheRecordLeavesIt(t *testing.T) {
-	record := []byte{0x11, 0x80} // AAC-LC, 48 kHz, configuration 0
+	record := pceASC // AAC-LC, 48 kHz, configuration 0 and a program config element
 	entry, asc := aacEntryOf(t, writeOneTrack(t, TrackConfig{
 		Kind: Audio, Codec: "mp4a", Timescale: 48000, SampleRate: 48000,
 		Channels: 3, CodecConfig: record,
@@ -158,14 +181,21 @@ func TestMP4MuxersRefuseAnAACTrackTheyCannotDescribe(t *testing.T) {
 	cases := map[string]TrackConfig{
 		"no sample rate":    with(func(c *TrackConfig) { c.SampleRate = 0 }),
 		"a record unread":   with(func(c *TrackConfig) { c.CodecConfig = []byte{0xff} }),
-		"no channel at all": with(func(c *TrackConfig) { c.CodecConfig = []byte{0x11, 0x80} }),
+		"no channel at all": with(func(c *TrackConfig) { c.CodecConfig = pceASC }),
+		// The truncated record of configuration 0 without its element is refused
+		// for what it is, a record that does not decode.
+		"a record of configuration 0 without its element": with(func(c *TrackConfig) {
+			c.CodecConfig, c.Channels = []byte{0x11, 0x80}, 3
+		}),
 		"more channels than a sample entry holds": with(func(c *TrackConfig) {
-			c.CodecConfig, c.Channels = []byte{0x11, 0x80}, 0x10000
+			c.CodecConfig, c.Channels = pceASC, 0x10000
 		}),
 		// Seven channels is no row of Table 1.19: configuration 7 is EIGHT.
 		"seven channels and no record": with(func(c *TrackConfig) { c.Channels = 7 }),
 		"a profile no record is built for": with(func(c *TrackConfig) {
-			c.Channels, c.AudioObjectType = 2, 1
+			// Object type 1, AAC Main, was one until mp4ff 0.62.0 wrote it; SSR
+			// is still none (see TestMP4MuxersBuildAnAACMainRecord).
+			c.Channels, c.AudioObjectType = 2, 3
 		}),
 	}
 	for name, cfg := range cases {
