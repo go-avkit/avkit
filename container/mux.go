@@ -272,6 +272,10 @@ type Muxer struct {
 	index    *segmentIndex
 	metadata *Metadata // what SetMetadata was given, nil for nothing
 	chapters []Chapter // what SetChapters was given
+	// chapterTrack is the QuickTime chapter track, added with the first sample,
+	// and chapterPlan the last sample it still needs.
+	chapterTrack *muxTrack
+	chapterPlan  chapterPlan
 }
 
 // muxTrack is one track's writing state.
@@ -1037,6 +1041,9 @@ func (m *Muxer) WriteSample(trackID uint32, s Sample) error {
 	if err != nil {
 		return err
 	}
+	if !m.started {
+		m.addChapterTrack()
+	}
 	m.started = true
 	if !t.written {
 		// Recorded before a flush the sample may trigger, so a header written
@@ -1146,6 +1153,7 @@ func (m *Muxer) Close() error {
 		m.closed = true
 		return ErrNoTracks
 	}
+	m.finishChapterTrack()
 	if err := m.writeHeader(); err != nil {
 		m.closed = true
 		return err

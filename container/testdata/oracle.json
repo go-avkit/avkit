@@ -1,6 +1,6 @@
 {
  "chapters fragmented": {
-  "output_sha256": "e02519509b55698a456f03c919bc605ddf216581f848d5fd69d21294c28e3f16",
+  "output_sha256": "b736bdb90b2717660ad568c62ecf4af6db0003c389766176423b67fb7445621e",
   "ours": {
    "chapters": [
     {
@@ -106,7 +106,7 @@
   }
  },
  "chapters progressive": {
-  "output_sha256": "8e93e8b435b12f019b0a9304d116101b01f585ba56bd15ac2c7749b056035d85",
+  "output_sha256": "bc8efab054ab03afe1c1007990ecf8ebb93895844ad11b8338d0811bf55c0697",
   "ours": {
    "chapters": [
     {
@@ -126,7 +126,7 @@
     },
     {
      "start": 2.9,
-     "end": 4,
+     "end": 4.021333,
      "title": "Outro"
     }
    ],
@@ -159,7 +159,7 @@
   }
  },
  "concat": {
-  "output_sha256": "63c09d536230b98f50533f0fe2e6856eb5fb12073d57e3779c33d01379f37325",
+  "output_sha256": "f805c85228e6926fa9afdbff324702a12aa2491015d1bfabaf214489a851de43",
   "ours": {
    "chapters": [
     {
@@ -179,26 +179,26 @@
     },
     {
      "start": 2.9,
-     "end": 4.021333,
+     "end": 4.021312,
      "title": "Outro"
     },
     {
-     "start": 4.021333,
-     "end": 5.021333,
+     "start": 4.021312,
+     "end": 5.021312,
      "title": "Intro"
     },
     {
-     "start": 5.021333,
-     "end": 5.621333,
+     "start": 5.021312,
+     "end": 5.621313,
      "title": "Second é 日本"
     },
     {
-     "start": 5.621333,
-     "end": 6.921333,
+     "start": 5.621313,
+     "end": 6.921312,
      "title": "Third"
     },
     {
-     "start": 6.921333,
+     "start": 6.921312,
      "end": 8.042667,
      "title": "Outro"
     }
@@ -252,7 +252,7 @@
   }
  },
  "cut begins at the end ffmpeg-chapters.mkv": {
-  "output_sha256": "f57e6c89870f029b7cde8da3e197965999f7471f02f89ff6b78adb1b0965b5ac",
+  "output_sha256": "7fd8109187e2dbce1bf712d75f199790ee3d70840fbc829d70a820cdc8d86cf3",
   "ours": {
    "chapters": [
     {
@@ -295,7 +295,7 @@
   }
  },
  "cut begins at the end ffmpeg-chapters.mp4": {
-  "output_sha256": "f0f031ef4e375d407c3ed53f6e4f2990e40dd3e3d720580b4b64132250b8ef50",
+  "output_sha256": "a690c2e43fda8e533fa3a3612b1f993c5e5a114170cb330377909fcee6e4406d",
   "ours": {
    "chapters": [
     {
@@ -338,12 +338,12 @@
   }
  },
  "cut ends on the cut ffmpeg-chapters.mkv": {
-  "output_sha256": "cc94072348b5da7ea8884f0fe606f306facc6810aa165555c51bf93977914091",
+  "output_sha256": "217bc54addfa37e02f4904950eeed64845ebd7f8966921f6868d497aaac05ae6",
   "ours": {
    "chapters": [
     {
      "start": 0,
-     "end": 1.6,
+     "end": 0,
      "title": "Second é 日本"
     },
     {
@@ -381,12 +381,12 @@
   }
  },
  "cut ends on the cut ffmpeg-chapters.mp4": {
-  "output_sha256": "18f913a84d53fc3413d8ecb5980e8ee6fed47313c08a0aaca7dc5766aed0510f",
+  "output_sha256": "f2fbeb7a3e336487140f3d3665adc4dd25fb24a9f4a033b5ffa64953a7f09461",
   "ours": {
    "chapters": [
     {
      "start": 0,
-     "end": 1.6,
+     "end": 0,
      "title": "Second é 日本"
     },
     {
@@ -424,7 +424,7 @@
   }
  },
  "cut inside ffmpeg-chapters.mkv": {
-  "output_sha256": "ea00c289cf15a127a252c062d21702485d606b99ac81410f18401551edf23baa",
+  "output_sha256": "e37900194dd2067d111578c02c529842166e001deae4245715e2132eef056ca4",
   "ours": {
    "chapters": [
     {
@@ -467,7 +467,7 @@
   }
  },
  "cut inside ffmpeg-chapters.mp4": {
-  "output_sha256": "55f92d6842f3160948971deb8e868caf995a4fa1301c4681cc22cbd4c4b31caf",
+  "output_sha256": "3eac6f2f8f0638eae21e85ae4be0188501c7f6048df4bb8cbd3b2a83e93f625c",
   "ours": {
    "chapters": [
     {
@@ -10770,7 +10770,7 @@
   }
  },
  "remux ffmpeg-chapters-track.mp4": {
-  "output_sha256": "e02519509b55698a456f03c919bc605ddf216581f848d5fd69d21294c28e3f16",
+  "output_sha256": "b736bdb90b2717660ad568c62ecf4af6db0003c389766176423b67fb7445621e",
   "ours": {
    "chapters": [
     {
@@ -10823,7 +10823,7 @@
   }
  },
  "remux ffmpeg-chapters.mkv": {
-  "output_sha256": "c67c5ddf1913bae9b8d322cfdcdc2f33e380eee06df73f595985742f67845fc4",
+  "output_sha256": "941af7c17901aa44f8832e64f9dd55ea9acce8deddd3b1fc3826540593df6230",
   "ours": {
    "chapters": [
     {
@@ -10876,7 +10876,7 @@
   }
  },
  "remux ffmpeg-chapters.mov": {
-  "output_sha256": "94fd08df631fdd1fb0a1ba9076190b206feecd07a38af85945699bb25102438e",
+  "output_sha256": "3334260fcbb25034970cf2dbd8b9042c202f4f13f10533c4b91d5f4dd5fb44f1",
   "ours": {
    "chapters": [
     {
@@ -10929,7 +10929,7 @@
   }
  },
  "remux ffmpeg-chapters.mp4": {
-  "output_sha256": "e02519509b55698a456f03c919bc605ddf216581f848d5fd69d21294c28e3f16",
+  "output_sha256": "b736bdb90b2717660ad568c62ecf4af6db0003c389766176423b67fb7445621e",
   "ours": {
    "chapters": [
     {

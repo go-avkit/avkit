@@ -34,10 +34,9 @@ import (
 //     to the chpl in an MP4, and its mov_read_chapters reads it. It is read, and
 //     when a file has one it is what the chapters are: it states the ends.
 //
-// ⛔ The chapter track is not written. A chpl alone is read by FFmpeg, GPAC and
-// VLC; Apple's players look for the track. Writing one means a text track with
-// its own sample entry beside the media, which none of the muxers have a place
-// for yet.
+// Both are written, as FFmpeg's movenc does: the chpl, which FFmpeg, GPAC and VLC
+// read and which holds the starts to 100 ns, and the chapter track Apple's
+// players look for, which holds the ends (see chaptertrack.go).
 //
 // Matroska. RFC 9559 §5.1.7: Chapters holds EditionEntry elements, each holding
 // ChapterAtom elements with a ChapterUID, a ChapterTimeStart and optionally a

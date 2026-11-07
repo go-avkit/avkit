@@ -183,6 +183,10 @@ func checkOracle(t *testing.T, key, ext string, ours []byte, what int, reference
 // other end is the next chapter's start, or stated.
 const chapterEndSlack = 0.025
 
+// chapterTick is the resolution of a chapter track at 48 kHz, which is what a
+// time is rounded to when an MP4 states it.
+const chapterTick = 25e-6
+
 func compareViews(t *testing.T, key string, ours, ref oracleView, what int) {
 	t.Helper()
 	if ours.Streams != ref.Streams {
@@ -193,14 +197,14 @@ func compareViews(t *testing.T, key string, ours, ref oracleView, what int) {
 	} else {
 		for i, c := range ours.Chapters {
 			want := ref.Chapters[i]
-			slack := 1e-6
+			slack := chapterTick
 			if i == len(ours.Chapters)-1 {
 				slack = chapterEndSlack
 			}
 			if what&oracleEnds == 0 {
 				slack = math.Inf(1)
 			}
-			if c.Title != want.Title || math.Abs(c.Start-want.Start) > 1e-6 || math.Abs(c.End-want.End) > slack {
+			if c.Title != want.Title || math.Abs(c.Start-want.Start) > chapterTick || math.Abs(c.End-want.End) > slack {
 				t.Errorf("%s: FFmpeg reads chapter %d as %+v where the reference reads %+v", key, i+1, c, want)
 			}
 		}
