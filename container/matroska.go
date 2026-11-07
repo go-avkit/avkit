@@ -35,6 +35,7 @@ type mkvHeader struct {
 type mkvSegment struct {
 	Info        mkvInfo          `ebml:"Info"`
 	Tracks      mkvTracks        `ebml:"Tracks"`
+	Chapters    []mkvChapters    `ebml:"Chapters,omitempty"`
 	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
 	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
 }
@@ -166,6 +167,7 @@ func demuxMatroska(data []byte) (*File, error) {
 		Timescale: uint32(1_000_000_000 / scale),
 		Duration:  uint64(doc.Segment.Info.Duration),
 		Metadata:  mkvMetadata(doc.Segment.Info.Title, doc.Segment.Tags, doc.Segment.Attachments),
+		Chapters:  mkvReadChapters(doc.Segment.Chapters),
 	}
 	for _, te := range doc.Segment.Tracks.TrackEntry {
 		f.Tracks = append(f.Tracks, mkvTrack(te, f.Timescale, f.Duration))

@@ -67,6 +67,13 @@
 // and Remux, Cut, Concat and Join carry their first input's unless
 // ReplaceMetadata says otherwise. A transport stream has none.
 //
+// File.Chapters are a file's chapters: an MP4's chpl box or QuickTime chapter
+// track, a Matroska file's default edition. Muxer, ProgressiveMuxer and
+// WebMMuxer write them with SetChapters (an MP4 as a chpl, Matroska as a Chapters
+// element), and Remux, Cut, Concat and Join carry them unless ReplaceChapters
+// says otherwise: Cut shifts and trims them to the clip, Concat puts each input's
+// after the length of the ones before.
+//
 // Every MP4 entry point decodes the same way, so a file one of them accepts the
 // others accept too. That includes two shapes mp4ff refuses on its own: media
 // in several adjacent mdat boxes, and bytes after a complete movie box.
@@ -132,6 +139,10 @@ type File struct {
 	// artist and cover. It is empty for an MPEG transport stream, which has no
 	// place for any of it.
 	Metadata Metadata
+	// Chapters are the file's chapters, in start order: an MP4's chpl box or
+	// QuickTime chapter track, a Matroska file's default edition. It is empty
+	// for a file that has none, and for an MPEG transport stream, which cannot.
+	Chapters []Chapter
 }
 
 // DurationSeconds returns the overall duration in seconds (0 if unknown).

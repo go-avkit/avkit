@@ -229,11 +229,27 @@ func ilstPicture(body []byte) *Picture {
 	return nil
 }
 
-// mp4Udta is the udta box stating md: a meta box with an mdir handler and the
-// ilst that holds the items, which is the shape ffmpeg writes for an MP4
-// (movenc.c, mov_write_udta_tag and mov_write_meta_tag) and the one Apple
-// specifies. It is nil when md states nothing an MP4 can carry.
-func mp4Udta(md *Metadata) *mp4.UdtaBox {
+// mp4Udta is the udta box stating md and the chapters: a meta box with an mdir
+// handler and the ilst that holds the items, which is the shape ffmpeg writes for
+// an MP4 (movenc.c, mov_write_udta_tag and mov_write_meta_tag) and the one Apple
+// specifies, then the chpl of the chapters, in that order as ffmpeg writes them.
+// It is nil when neither states anything an MP4 can carry.
+func mp4Udta(md *Metadata, chapters []Chapter) *mp4.UdtaBox {
+	udta := &mp4.UdtaBox{}
+	if meta := mp4Meta(md); meta != nil {
+		udta.AddChild(meta)
+	}
+	if len(chapters) > 0 {
+		udta.AddChild(chplOf(chapters))
+	}
+	if len(udta.Children) == 0 {
+		return nil
+	}
+	return udta
+}
+
+// mp4Meta is the meta box stating md, or nil when md states nothing.
+func mp4Meta(md *Metadata) *mp4.MetaBox {
 	if md == nil {
 		return nil
 	}
@@ -256,9 +272,7 @@ func mp4Udta(md *Metadata) *mp4.UdtaBox {
 	hdlr := &mp4.HdlrBox{HandlerType: mdirHandler, Reserved: [3]uint32{applManufacturer}}
 	meta := mp4.CreateMetaBox(0, hdlr)
 	meta.AddChild(ilst)
-	udta := &mp4.UdtaBox{}
-	udta.AddChild(meta)
-	return udta
+	return meta
 }
 
 // ilstItem is one item holding one data box: the type indicator, a locale of
@@ -282,7 +296,7 @@ func ilstItem(name string, typ uint32, value []byte) mp4.Box {
 // attempt's udta would put a second one beside it.
 func (m *Muxer) encodeInit() error {
 	children := len(m.init.Moov.Children)
-	if udta := mp4Udta(m.metadata); udta != nil {
+	if udta := mp4Udta(m.metadata, m.chapters); udta != nil {
 		m.init.Moov.AddChild(udta)
 	}
 	err := m.init.Encode(m.w)

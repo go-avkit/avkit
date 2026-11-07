@@ -1,9 +1,518 @@
 {
+ "chapters fragmented": {
+  "output_sha256": "e02519509b55698a456f03c919bc605ddf216581f848d5fd69d21294c28e3f16",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4.021333,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "chapters matroska": {
+  "output_sha256": "465d91f54d4d136a95e2b3fee4d966bb780fbffa7a1e9a76885ad3b28d032fcc",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "chapters progressive": {
+  "output_sha256": "8e93e8b435b12f019b0a9304d116101b01f585ba56bd15ac2c7749b056035d85",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "concat": {
+  "output_sha256": "63c09d536230b98f50533f0fe2e6856eb5fb12073d57e3779c33d01379f37325",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4.021333,
+     "title": "Outro"
+    },
+    {
+     "start": 4.021333,
+     "end": 5.021333,
+     "title": "Intro"
+    },
+    {
+     "start": 5.021333,
+     "end": 5.621333,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 5.621333,
+     "end": 6.921333,
+     "title": "Third"
+    },
+    {
+     "start": 6.921333,
+     "end": 8.042667,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4.021333,
+     "title": "Outro"
+    },
+    {
+     "start": 4.021333,
+     "end": 5.021333,
+     "title": "Intro"
+    },
+    {
+     "start": 5.021333,
+     "end": 5.621333,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 5.621333,
+     "end": 6.921333,
+     "title": "Third"
+    },
+    {
+     "start": 6.921333,
+     "end": 8.042667,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "cut begins at the end ffmpeg-chapters.mkv": {
+  "output_sha256": "f57e6c89870f029b7cde8da3e197965999f7471f02f89ff6b78adb1b0965b5ac",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 1.6,
+     "title": "Third"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 1.6,
+     "title": "Third"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "cut begins at the end ffmpeg-chapters.mp4": {
+  "output_sha256": "f0f031ef4e375d407c3ed53f6e4f2990e40dd3e3d720580b4b64132250b8ef50",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 1.6,
+     "title": "Third"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 1.6,
+     "title": "Third"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "cut ends on the cut ffmpeg-chapters.mkv": {
+  "output_sha256": "cc94072348b5da7ea8884f0fe606f306facc6810aa165555c51bf93977914091",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 0,
+     "end": 1.3,
+     "title": "Third"
+    },
+    {
+     "start": 1.3,
+     "end": 1.6,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 0,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 0,
+     "end": 1.3,
+     "title": "Third"
+    },
+    {
+     "start": 1.3,
+     "end": 1.6,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "cut ends on the cut ffmpeg-chapters.mp4": {
+  "output_sha256": "18f913a84d53fc3413d8ecb5980e8ee6fed47313c08a0aaca7dc5766aed0510f",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 0,
+     "end": 1.3,
+     "title": "Third"
+    },
+    {
+     "start": 1.3,
+     "end": 1.6,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 0,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 0,
+     "end": 1.3,
+     "title": "Third"
+    },
+    {
+     "start": 1.3,
+     "end": 1.6,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "cut inside ffmpeg-chapters.mkv": {
+  "output_sha256": "ea00c289cf15a127a252c062d21702485d606b99ac81410f18401551edf23baa",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 0.36,
+     "title": "Intro"
+    },
+    {
+     "start": 0.36,
+     "end": 0.96,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 0.96,
+     "end": 1.92,
+     "title": "Third"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 0.36,
+     "title": "Intro"
+    },
+    {
+     "start": 0.36,
+     "end": 0.96,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 0.96,
+     "end": 1.92,
+     "title": "Third"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "cut inside ffmpeg-chapters.mp4": {
+  "output_sha256": "55f92d6842f3160948971deb8e868caf995a4fa1301c4681cc22cbd4c4b31caf",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 0.36,
+     "title": "Intro"
+    },
+    {
+     "start": 0.36,
+     "end": 0.96,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 0.96,
+     "end": 1.92,
+     "title": "Third"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 0.36,
+     "title": "Intro"
+    },
+    {
+     "start": 0.36,
+     "end": 0.96,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 0.96,
+     "end": 1.92,
+     "title": "Third"
+    }
+   ],
+   "duration": 0
+  }
+ },
  "ffmpeg-alac-6ch.m4a through Remux": {
   "output_sha256": "86ca9695212bd9c5a2d74601e1d16b6d2e63f14cb633e5e80e6c30619675b988",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=6\nchannel_layout=5.1\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e06 0000 0000 c004 0046 5000  ..(..........FP.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1703 f2c593100238bec7596988c0bd8e8538",
     "1702 4fe133c944676f341d8235d49eabd8b5",
@@ -14,7 +523,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=6\nchannel_layout=5.1\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e06 0000 0000 c004 0046 5000  ..(..........FP.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1703 f2c593100238bec7596988c0bd8e8538",
     "1702 4fe133c944676f341d8235d49eabd8b5",
@@ -28,7 +536,6 @@
   "output_sha256": "86ca9695212bd9c5a2d74601e1d16b6d2e63f14cb633e5e80e6c30619675b988",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=6\nchannel_layout=5.1\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e06 0000 0000 c004 0046 5000  ..(..........FP.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1703 f2c593100238bec7596988c0bd8e8538",
     "1702 4fe133c944676f341d8235d49eabd8b5",
@@ -39,7 +546,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=6\nchannel_layout=5.1\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e06 0000 0000 c004 0046 5000  ..(..........FP.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1703 f2c593100238bec7596988c0bd8e8538",
     "1702 4fe133c944676f341d8235d49eabd8b5",
@@ -53,7 +559,6 @@
   "output_sha256": "39d821ac42b466d60ee15214e444b7924cfc392115e53a56d56384ed433ff021",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=6\nchannel_layout=5.1\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e06 0000 0000 c004 0046 5000  ..(..........FP.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1703 f2c593100238bec7596988c0bd8e8538",
     "1702 4fe133c944676f341d8235d49eabd8b5",
@@ -64,7 +569,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=6\nchannel_layout=5.1\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e06 0000 0000 c004 0046 5000  ..(..........FP.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1703 f2c593100238bec7596988c0bd8e8538",
     "1702 4fe133c944676f341d8235d49eabd8b5",
@@ -78,7 +582,6 @@
   "output_sha256": "af8106bee98e2d7c1a5f58036cc610e5c967783cd73c058055ebae323c725b1c",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=6\nchannel_layout=5.1\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e06 0000 0000 c004 0046 5000  ..(..........FP.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1703 f2c593100238bec7596988c0bd8e8538",
     "1702 4fe133c944676f341d8235d49eabd8b5",
@@ -89,7 +592,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=6\nchannel_layout=5.1\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e06 0000 0000 c004 0046 5000  ..(..........FP.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1703 f2c593100238bec7596988c0bd8e8538",
     "1702 4fe133c944676f341d8235d49eabd8b5",
@@ -103,7 +605,6 @@
   "output_sha256": "bf692912a5222d58f7f1f2a26c34d56452b3fdf5a2f3cd499f199aa905837594",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=96000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 002e e000  ..(.......@.....\n00000020: 0001 7700                                ..w.\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1503 8096f52426e5a0f42c7a44153ac1eb8f",
     "1507 bf65402243c4cf4ef443585fd2ea53f6",
@@ -118,7 +619,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=96000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 002e e000  ..(.......@.....\n00000020: 0001 7700                                ..w.\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1503 8096f52426e5a0f42c7a44153ac1eb8f",
     "1507 bf65402243c4cf4ef443585fd2ea53f6",
@@ -136,7 +636,6 @@
   "output_sha256": "bf692912a5222d58f7f1f2a26c34d56452b3fdf5a2f3cd499f199aa905837594",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=96000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 002e e000  ..(.......@.....\n00000020: 0001 7700                                ..w.\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1503 8096f52426e5a0f42c7a44153ac1eb8f",
     "1507 bf65402243c4cf4ef443585fd2ea53f6",
@@ -151,7 +650,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=96000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 002e e000  ..(.......@.....\n00000020: 0001 7700                                ..w.\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1503 8096f52426e5a0f42c7a44153ac1eb8f",
     "1507 bf65402243c4cf4ef443585fd2ea53f6",
@@ -169,7 +667,6 @@
   "output_sha256": "5fb93522b4476ec21f0888d9af852e07b0c6b7c663aa7479588aacca2609a839",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=96000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 002e e000  ..(.......@.....\n00000020: 0001 7700                                ..w.\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1503 8096f52426e5a0f42c7a44153ac1eb8f",
     "1507 bf65402243c4cf4ef443585fd2ea53f6",
@@ -184,7 +681,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=96000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 002e e000  ..(.......@.....\n00000020: 0001 7700                                ..w.\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1503 8096f52426e5a0f42c7a44153ac1eb8f",
     "1507 bf65402243c4cf4ef443585fd2ea53f6",
@@ -202,7 +698,6 @@
   "output_sha256": "ec4cb4d1aabb5e612dfb3d1410987a9323a9907b7fe1822ea1f8489acf784ad6",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=96000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 002e e000  ..(.......@.....\n00000020: 0001 7700                                ..w.\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1503 8096f52426e5a0f42c7a44153ac1eb8f",
     "1507 bf65402243c4cf4ef443585fd2ea53f6",
@@ -217,7 +712,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=96000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 002e e000  ..(.......@.....\n00000020: 0001 7700                                ..w.\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1503 8096f52426e5a0f42c7a44153ac1eb8f",
     "1507 bf65402243c4cf4ef443585fd2ea53f6",
@@ -235,7 +729,6 @@
   "output_sha256": "ace2a28645aee282d811a2461eb4fe9bc4e55c6fa842995f9f0a27860871c5aa",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -248,7 +741,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -264,7 +756,6 @@
   "output_sha256": "ace2a28645aee282d811a2461eb4fe9bc4e55c6fa842995f9f0a27860871c5aa",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -277,7 +768,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -293,7 +783,6 @@
   "output_sha256": "ddf0f5c89b2819c9294124e754bbf4187babb7905e0105c0ac065063bf67189d",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -306,7 +795,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -322,7 +810,6 @@
   "output_sha256": "39f89c49f357a42ca4b52825514b2ba98f48cef06a031943b6ff274cec90f765",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -335,7 +822,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -351,7 +837,6 @@
   "output_sha256": "0faa9a937e4145985b9ce83c876a9a4b681391fb7318c1ef9ff901886a3fc63e",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -364,7 +849,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -380,7 +864,6 @@
   "output_sha256": "0faa9a937e4145985b9ce83c876a9a4b681391fb7318c1ef9ff901886a3fc63e",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -393,7 +876,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -409,7 +891,6 @@
   "output_sha256": "ddf0f5c89b2819c9294124e754bbf4187babb7905e0105c0ac065063bf67189d",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -422,7 +903,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -438,7 +918,6 @@
   "output_sha256": "1262792f70a41d099e4682bee6ceed0710d86e33ceaebbb9521d2b4e902a0099",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -451,7 +930,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -467,7 +945,6 @@
   "output_sha256": "91789b8bac80380a9a4aea1960bda1341ce00455f6b7e90dcfeb4e12b0ff1053",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -480,7 +957,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -496,7 +972,6 @@
   "output_sha256": "91789b8bac80380a9a4aea1960bda1341ce00455f6b7e90dcfeb4e12b0ff1053",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -509,7 +984,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -525,7 +999,6 @@
   "output_sha256": "053a347bdb5994b9ee3953c0371417db8ca7432a7862b8a311d25faf19c1c856",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -538,7 +1011,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -554,7 +1026,6 @@
   "output_sha256": "b250d6365b1fea8033845889ef1412cdbb547121acfe3d92a5d26478baadc177",
   "ours": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -567,7 +1038,6 @@
   },
   "reference": {
    "streams": "codec_name=alac\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=16\nextradata=\n00000000: 0000 0024 616c 6163 0000 0000 0000 1000  ...$alac........\n00000010: 0010 280a 0e02 0000 0000 4004 0017 7000  ..(.......@...p.\n00000020: 0000 bb80                                ....\n\nextradata_size=36\n",
-   "chapters": "",
    "sums": [
     "1562 4eabe4f91e147fac4b70214d1eafea8d",
     "1559 0c0a3829f423e5a9f11a48fd1b518db4",
@@ -583,7 +1053,6 @@
   "output_sha256": "2a06b972d0fdde652045db66a582304437adf706ba6c4e1c615d53ee4c6095c1",
   "ours": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -1190,7 +1659,6 @@
   },
   "reference": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -1800,7 +2268,6 @@
   "output_sha256": "2a06b972d0fdde652045db66a582304437adf706ba6c4e1c615d53ee4c6095c1",
   "ours": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -2407,7 +2874,6 @@
   },
   "reference": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -3017,7 +3483,6 @@
   "output_sha256": "4aae358469c075f466de9998fec270bc1cccbda09f5f2aab61625846b216a7fd",
   "ours": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -3624,7 +4089,6 @@
   },
   "reference": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -4234,7 +4698,6 @@
   "output_sha256": "cb3a6d53010e675b1de13c78c16b6daf3f193e40deead05069e8a426a1f3a00d",
   "ours": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -4841,7 +5304,6 @@
   },
   "reference": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -5451,7 +5913,6 @@
   "output_sha256": "869262581ec79efa459201c5b9ed014615965171346910d3eaa1d189b576c27b",
   "ours": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -6058,7 +6519,6 @@
   },
   "reference": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -6668,7 +7128,6 @@
   "output_sha256": "869262581ec79efa459201c5b9ed014615965171346910d3eaa1d189b576c27b",
   "ours": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -7275,7 +7734,6 @@
   },
   "reference": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -7885,7 +8343,6 @@
   "output_sha256": "4aae358469c075f466de9998fec270bc1cccbda09f5f2aab61625846b216a7fd",
   "ours": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -8492,7 +8949,6 @@
   },
   "reference": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -9102,7 +9558,6 @@
   "output_sha256": "1025f17c7aa39677dac34c6f5f0e095d5579c7bd966c1ce723037bd9be2955ee",
   "ours": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -9709,7 +10164,6 @@
   },
   "reference": {
    "streams": "codec_name=truehd\nsample_rate=48000\nchannels=2\nchannel_layout=stereo\nbits_per_raw_sample=24\nextradata=\n\n",
-   "chapters": "",
    "sums": [
     "116 924d2856eb86a65fae7cd2b55c6d9773",
     "28 49197665c4bb54f0a3475ec1d42dae28",
@@ -10313,6 +10767,218 @@
     "24 022ba2579024071322ea65ec1ba39cb7"
    ],
    "duration": 0.5
+  }
+ },
+ "remux ffmpeg-chapters-track.mp4": {
+  "output_sha256": "e02519509b55698a456f03c919bc605ddf216581f848d5fd69d21294c28e3f16",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4.021333,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "remux ffmpeg-chapters.mkv": {
+  "output_sha256": "c67c5ddf1913bae9b8d322cfdcdc2f33e380eee06df73f595985742f67845fc4",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4.021,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "remux ffmpeg-chapters.mov": {
+  "output_sha256": "94fd08df631fdd1fb0a1ba9076190b206feecd07a38af85945699bb25102438e",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4.021333,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  }
+ },
+ "remux ffmpeg-chapters.mp4": {
+  "output_sha256": "e02519509b55698a456f03c919bc605ddf216581f848d5fd69d21294c28e3f16",
+  "ours": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4.021333,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
+  },
+  "reference": {
+   "chapters": [
+    {
+     "start": 0,
+     "end": 1,
+     "title": "Intro"
+    },
+    {
+     "start": 1,
+     "end": 1.6,
+     "title": "Second é 日本"
+    },
+    {
+     "start": 1.6,
+     "end": 2.9,
+     "title": "Third"
+    },
+    {
+     "start": 2.9,
+     "end": 4,
+     "title": "Outro"
+    }
+   ],
+   "duration": 0
   }
  }
 }

@@ -171,7 +171,7 @@ func TestRemuxCarriesLosslessAudioBetweenContainers(t *testing.T) {
 				if kind == "matroska" {
 					ext = ".mkv"
 				}
-				checkOracle(t, fx.file+" to "+kind, ext, writeAudio(t, kind, cfg, samples), true, false,
+				checkOracle(t, fx.file+" to "+kind, ext, writeAudio(t, kind, cfg, samples), oracleStreams|oracleSums|oracleDuration,
 					func(string) string { return "testdata/" + fx.file })
 			})
 		}
@@ -184,7 +184,7 @@ func TestRemuxCarriesLosslessAudioBetweenContainers(t *testing.T) {
 			if err := Remux(&out, r); err != nil {
 				t.Fatalf("Remux: %v", err)
 			}
-			checkOracle(t, fx.file+" through Remux", ".mp4", out.Bytes(), true, false,
+			checkOracle(t, fx.file+" through Remux", ".mp4", out.Bytes(), oracleStreams|oracleSums|oracleDuration,
 				func(string) string { return "testdata/" + fx.file })
 		})
 	}

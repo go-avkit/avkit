@@ -19,7 +19,7 @@ model, and converts the payloads each container spells differently.
 
 | Package     | What it does |
 |-------------|--------------|
-| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS — and, read whole, ADTS, MPEG audio, native FLAC, Ogg, WAV and AVI — into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of any of them, one file or (MP4, MPEG-TS) a sequence of segments; mux a fragmented or a progressive MP4, a Matroska/WebM file, or an MPEG-TS, from tracks delivered separately; carry WebVTT, SRT, TTML and 3GPP `tx3g` subtitle tracks (and PGS in Matroska), with `SubtitlesAs` converting between `tx3g` and `wvtt` in MP4; extract one audio track as an audio-only file (ADTS, MP3/MP2, FLAC, Ogg, WAV) with `NewAudioWriter` or the `AudioOutput` option; copy, cut, join, concatenate and drop tracks with `Remux`, `Cut`, `Join` and `Concat`; read and write file metadata and cover art; and rewrite an HEVC track's sample entry to `hvc1` with `ConformHVC1`. No re-encoding anywhere. |
+| `container` | Sniff and demux MP4/ISO-BMFF, Matroska/WebM and MPEG-TS — and, read whole, ADTS, MPEG audio, native FLAC, Ogg, WAV and AVI — into a unified `File`/`Track` model (kind, codec, dimensions, channels, timing); read the samples and per-track configuration of any of them, one file or (MP4, MPEG-TS) a sequence of segments; mux a fragmented or a progressive MP4, a Matroska/WebM file, or an MPEG-TS, from tracks delivered separately; carry WebVTT, SRT, TTML and 3GPP `tx3g` subtitle tracks (and PGS in Matroska), with `SubtitlesAs` converting between `tx3g` and `wvtt` in MP4; extract one audio track as an audio-only file (ADTS, MP3/MP2, FLAC, Ogg, WAV) with `NewAudioWriter` or the `AudioOutput` option; copy, cut, join, concatenate and drop tracks with `Remux`, `Cut`, `Join` and `Concat`; read and write file metadata and cover art; read, write and carry chapters (MP4 `chpl` and QuickTime chapter track, Matroska `Chapters`), cut and concatenated with their times moved; and rewrite an HEVC track's sample entry to `hvc1` with `ConformHVC1`. No re-encoding anywhere. |
 
 ### Why `ConformHVC1` is there
 
@@ -176,6 +176,42 @@ those entries yet. FLAC and MPEG audio go into MP4 and Matroska as
 | MPEG-TS | none | none | none |
 
 See [File metadata](#file-metadata-1) for what each field is called where.
+
+### Chapters
+
+`File.Chapters` lists a file's chapters in start order (`Chapter`: `Start`,
+`End`, `Title`, `Language`); `SetChapters` on `Muxer`, `ProgressiveMuxer` and
+`WebMMuxer` writes them, and `Remux`, `Cut`, `Concat` and `Join` carry them unless
+`ReplaceChapters` says otherwise.
+
+| | read | written |
+|---|---|---|
+| MP4 | Nero's `chpl` in `moov/udta`, and a QuickTime chapter track (a `chap` track reference to a text track whose samples are the titles, each lasting its duration); the track wins when a file has both, since it states the ends | `chpl` only: version 1, starts in 100 ns units, no ends; at most 255 chapters and titles of 255 bytes, more is refused (`ErrChapters`) |
+| Matroska | `Chapters`/`EditionEntry`/`ChapterAtom` (RFC 9559 §5.1.7), the default edition's, else the first's; an **ordered** edition is skipped (it is a timeline of its own), nested atoms and displays after the first are not read | one edition, one atom per chapter, `ChapterTimeStart` and, when known, `ChapterTimeEnd` in nanoseconds, `ChapString` and `ChapLanguage` ("und" when none); after the Tracks, as FFmpeg writes it |
+| MPEG-TS | none | none |
+
+`Remux` copies the chapters as they are. `Cut` moves them by where the cut
+landed (the sync sample it snapped back to), drops the ones outside, and clips
+those that straddle an edge. `Concat` puts each input's chapters after the length
+of the inputs before it. A QuickTime chapter track is not copied as a track — its
+samples are the chapters — so a file from FFmpeg that has one copies cleanly,
+where it used to be refused for its `text` track.
+
+⛔ **The chapter track is not written**, only the `chpl`: FFmpeg, GPAC and VLC read
+that, Apple's players look for the track. The `chpl` box is in no published
+specification (mp4ff's `ChplBox` says so); the QuickTime chapter track format is
+Apple's. An MP4 loses the ends of the chapters on the way in, and FFmpeg reads each
+chapter as ending where the next begins.
+
+⛔ FFmpeg's own cut (`-ss`/`-to` as output options, with `-c copy`) keeps a chapter
+that ends exactly on the cut as a chapter of no length at 0; `Cut` drops it.
+
+Checked against FFmpeg 9.0.2: the chapters of fixtures it wrote (an MP4 with `chpl`
+and a chapter track, one with the track alone, QuickTime, Matroska) are read as
+`ffprobe` reads them, remuxed through each muxer they probe as the same starts, ends
+and titles, and a `Cut` and a `Concat` give the chapters FFmpeg's own cut and an
+`ffmetadata` of the same chapters give. What FFmpeg read is recorded in
+`container/testdata/oracle.json`, so the comparison is made without FFmpeg too.
 
 ### What is deliberately absent
 

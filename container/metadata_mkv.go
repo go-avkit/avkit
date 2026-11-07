@@ -234,12 +234,13 @@ func mkvAttachmentsOf(md *Metadata, docType string) []mkvAttachments {
 }
 
 // segmentHead is what precedes the clusters inside the segment: Info, Tracks,
-// and the attachments and tags the metadata calls for, in the order ffmpeg
+// the chapters, and the attachments and tags the metadata calls for, in the order ffmpeg
 // writes them (matroskaenc.c, mkv_write_header).
 func (m *WebMMuxer) segmentHead(duration float64) webmHeadDoc {
 	return webmHeadDoc{
 		Info:        m.info(duration),
 		Tracks:      webmTracks{TrackEntry: m.trackEntries()},
+		Chapters:    mkvChaptersOf(m.chapters),
 		Attachments: mkvAttachmentsOf(m.metadata, m.ebmlHeader().DocType),
 		Tags:        mkvTagsOf(m.metadata),
 	}

@@ -54,6 +54,7 @@ type mkvReadDoc struct {
 type mkvReadSegment struct {
 	Info        mkvInfo          `ebml:"Info"`
 	Tracks      mkvTracks        `ebml:"Tracks"`
+	Chapters    []mkvChapters    `ebml:"Chapters,omitempty"`
 	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
 	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
 	Cluster     []mkvCluster     `ebml:"Cluster"`
@@ -184,7 +185,8 @@ func newMatroskaReader(data []byte) (*Reader, error) {
 	}
 	r := &Reader{data: data, mkv: map[uint32]*mkvReadTrack{}, truncated: truncated}
 	file := &File{Format: matroskaFormat(doc.Header.DocType), Timescale: timescale,
-		Metadata: mkvMetadata(doc.Segment.Info.Title, doc.Segment.Tags, doc.Segment.Attachments)}
+		Metadata: mkvMetadata(doc.Segment.Info.Title, doc.Segment.Tags, doc.Segment.Attachments),
+		Chapters: mkvReadChapters(doc.Segment.Chapters)}
 	segDuration := int64(doc.Segment.Info.Duration)
 	for _, te := range doc.Segment.Tracks.TrackEntry {
 		t := mkvReadTrackOf(te, timescale, scale, segDuration, blocks[te.TrackNumber])

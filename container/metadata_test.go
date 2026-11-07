@@ -308,7 +308,7 @@ func TestNoMetadataWritesTheBytesItAlwaysDid(t *testing.T) {
 	}
 	// And names a Matroska output can keep but an MP4 cannot write no udta.
 	only := Metadata{mkvTags: []mkvSimpleTag{{TagName: "X", TagString: []string{"y"}}}}
-	if mp4Udta(&only) != nil || only.IsZero() {
+	if mp4Udta(&only, nil) != nil || only.IsZero() {
 		t.Fatal("tags only Matroska carries made an MP4 udta, or counted as nothing")
 	}
 }

@@ -175,6 +175,7 @@ type WebMMuxer struct {
 	started  bool
 	closed   bool
 	metadata *Metadata // what SetMetadata was given, nil for nothing
+	chapters []Chapter // what SetChapters was given
 
 	clusterOpen  bool
 	clusterStart uint64
@@ -296,6 +297,7 @@ type webmSegment struct {
 	Void        []byte           `ebml:"Void,omitempty"`
 	Info        webmInfo         `ebml:"Info"`
 	Tracks      webmTracks       `ebml:"Tracks"`
+	Chapters    []mkvChapters    `ebml:"Chapters,omitempty"`
 	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
 	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
 	Cluster     []webmCluster    `ebml:"Cluster"`
@@ -309,6 +311,7 @@ type webmSegment struct {
 type webmHeadDoc struct {
 	Info        webmInfo         `ebml:"Info"`
 	Tracks      webmTracks       `ebml:"Tracks"`
+	Chapters    []mkvChapters    `ebml:"Chapters,omitempty"`
 	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
 	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
 }
@@ -328,6 +331,7 @@ type webmOpenSegment struct {
 	Void        []byte           `ebml:"Void,omitempty"`
 	Info        webmInfo         `ebml:"Info"`
 	Tracks      webmTracks       `ebml:"Tracks"`
+	Chapters    []mkvChapters    `ebml:"Chapters,omitempty"`
 	Attachments []mkvAttachments `ebml:"Attachments,omitempty"`
 	Tags        []mkvTagsElement `ebml:"Tags,omitempty"`
 }
@@ -335,7 +339,8 @@ type webmOpenSegment struct {
 // open is the segment's opening with no SeekHead yet: what head holds,
 // unchanged.
 func (head webmHeadDoc) open() webmOpenSegment {
-	return webmOpenSegment{Info: head.Info, Tracks: head.Tracks, Attachments: head.Attachments, Tags: head.Tags}
+	return webmOpenSegment{Info: head.Info, Tracks: head.Tracks, Chapters: head.Chapters,
+		Attachments: head.Attachments, Tags: head.Tags}
 }
 
 type webmInfo struct {
@@ -1455,6 +1460,7 @@ func (m *WebMMuxer) Close() error {
 			Void:        void,
 			Info:        segmentHead.Info,
 			Tracks:      segmentHead.Tracks,
+			Chapters:    segmentHead.Chapters,
 			Attachments: segmentHead.Attachments,
 			Tags:        segmentHead.Tags,
 			Cluster:     m.clusters,

@@ -40,9 +40,10 @@ type remuxSettings struct {
 	strictSync     bool
 	conformHVC1    bool
 	allowTruncated bool
-	metadata       *Metadata // ReplaceMetadata's, nil to copy the input's
-	subtitles      string    // SubtitlesAs's, empty to copy each track as it is
-	audio          Format    // AudioOutput's, FormatUnknown for a fragmented MP4
+	metadata       *Metadata  // ReplaceMetadata's, nil to copy the input's
+	chapters       *[]Chapter // ReplaceChapters', nil to carry the input's
+	subtitles      string     // SubtitlesAs's, empty to copy each track as it is
+	audio          Format     // AudioOutput's, FormatUnknown for a fragmented MP4
 	audioOpts      []AudioOption
 }
 
@@ -192,7 +193,8 @@ func Cut(w io.Writer, src *Reader, start, end time.Duration, opts ...RemuxOption
 	for i, t := range tracks {
 		full[i] = t.samples
 	}
-	if err := trim(tracks, start, end, set.strictSync); err != nil {
+	from, err := trim(tracks, start, end, set.strictSync)
+	if err != nil {
 		return err
 	}
 	for i, t := range tracks {
@@ -204,7 +206,13 @@ func Cut(w io.Writer, src *Reader, start, end time.Duration, opts ...RemuxOption
 			return err
 		}
 	}
-	return writeCopy(w, set, set.outputMetadata([]*Reader{src}), [][]sourceTrack{tracks})
+	// The output starts where the cut did, which is the sync sample it snapped
+	// back to and not the time asked for, so that is what the chapters move by.
+	chapters := set.outputChapters([]*Reader{src})
+	if set.chapters == nil {
+		chapters = cutChapters(chapters, from, end)
+	}
+	return writeCopy(w, set, set.outputMetadata([]*Reader{src}), chapters, [][]sourceTrack{tracks})
 }
 
 // Concat writes srcs one after another into a single fragmented MP4, tracks
@@ -274,10 +282,31 @@ func Concat(w io.Writer, srcs []*Reader, opts ...RemuxOption) error {
 			}
 		}
 	}
+	chapters := set.outputChapters(srcs)
+	if set.chapters == nil {
+		// Each input's chapters begin where the inputs before it end.
+		chapters = nil
+		var offset time.Duration
+		for i, in := range inputs {
+			chapters = append(chapters, shiftChapters(srcs[i].File().Chapters, offset)...)
+			offset += inputLength(in)
+		}
+		sortChapters(chapters)
+	}
 	for _, in := range inputs[:len(inputs)-1] {
 		padTimedText(in)
 	}
-	return writeCopy(w, set, set.outputMetadata(srcs), inputs)
+	return writeCopy(w, set, set.outputMetadata(srcs), chapters, inputs)
+}
+
+// inputLength is how long one input's tracks last: the longest of them, which is
+// where the next input's media begins.
+func inputLength(tracks []sourceTrack) time.Duration {
+	var longest time.Duration
+	for _, t := range tracks {
+		longest = max(longest, time.Duration(scaleDuration(trackLength(t), t.cfg.Timescale, nsScale)))
+	}
+	return longest
 }
 
 // trackConfig exists so the failure it guards can be tested: every identifier
@@ -302,7 +331,9 @@ func readSource(src *Reader, set *remuxSettings) ([]sourceTrack, error) {
 	}
 	out := make([]sourceTrack, 0, len(ids))
 	for _, id := range ids {
-		if set.drop[id] {
+		// A chapter track is not copied: its samples are the chapters, which
+		// the output states in its own way (File.Chapters).
+		if set.drop[id] || src.isChapterTrack(id) {
 			continue
 		}
 		cfg, err := trackConfig(src, id)
@@ -400,12 +431,15 @@ func describeFromSamples(cfg TrackConfig, samples []Sample) (TrackConfig, error)
 
 // writeCopy declares the first input's tracks, then writes every input's
 // samples behind one another.
-func writeCopy(w io.Writer, set *remuxSettings, md Metadata, inputs [][]sourceTrack) error {
+func writeCopy(w io.Writer, set *remuxSettings, md Metadata, chapters []Chapter, inputs [][]sourceTrack) error {
 	if set.audio != FormatUnknown {
 		return writeAudioCopy(w, set, inputs)
 	}
 	m := NewMuxer(w, set.mux...)
 	if err := m.SetMetadata(md); err != nil {
+		return err
+	}
+	if err := m.SetChapters(chapters); err != nil {
 		return err
 	}
 	// Every track is declared before the first sample: the initialisation
@@ -517,16 +551,17 @@ func sameParameters(a, b TrackConfig) bool {
 		bytes.Equal(a.CodecConfig, b.CodecConfig)
 }
 
-// trim keeps in every track the samples the cut asks for.
-func trim(tracks []sourceTrack, start, end time.Duration, strict bool) error {
+// trim keeps in every track the samples the cut asks for, and returns where the
+// cut landed: the decode time of the sync sample the primary track starts at.
+func trim(tracks []sourceTrack, start, end time.Duration, strict bool) (time.Duration, error) {
 	primary := primaryIndex(tracks)
 	_, cutAt, err := syncStart(tracks[primary], uint64(start), nsScale)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	scale := tracks[primary].cfg.Timescale
 	if strict && compareTimes(cutAt, scale, uint64(start), nsScale) != 0 {
-		return fmt.Errorf("%w: track %d has none at %v, the nearest usable one is at %.3fs",
+		return 0, fmt.Errorf("%w: track %d has none at %v, the nearest usable one is at %.3fs",
 			ErrNoSyncSample, tracks[primary].id, start, float64(cutAt)/float64(scale))
 	}
 	for i := range tracks {
@@ -534,17 +569,17 @@ func trim(tracks []sourceTrack, start, end time.Duration, strict bool) error {
 		// itself: the answer is the same sample, and the loop stays one.
 		from, at, err := syncStart(tracks[i], cutAt, scale)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		kept := cutRange(tracks[i], from, end)
 		if isTimedText(tracks[i].cfg.Codec) {
 			if kept, err = cutCues(tracks[i], kept, at, cutAt, scale); err != nil {
-				return err
+				return 0, err
 			}
 		}
 		tracks[i].samples = kept
 	}
-	return nil
+	return time.Duration(scaleDuration(cutAt, scale, nsScale)), nil
 }
 
 // cutCues starts a timed-text track exactly where the cut does.

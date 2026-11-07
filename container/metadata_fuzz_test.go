@@ -37,7 +37,7 @@ func FuzzIlstItem(f *testing.F) {
 		if err := md.validate(); err != nil {
 			t.Fatalf("read metadata the muxers refuse: %v", err)
 		}
-		_ = mp4Udta(&md)
+		_ = mp4Udta(&md, nil)
 	})
 }
 
