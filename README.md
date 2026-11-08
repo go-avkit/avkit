@@ -1203,6 +1203,31 @@ segment it is displayed in: draft-pantos-hls-rfc8216bis §3.1.4 says a segment
 "MUST contain all subtitle cues that are intended to be displayed during the
 period" of that segment.
 
+## Common Encryption (clear key)
+
+`container.EncryptSegments(container.Encryption{...})` makes `Segment` emit
+encrypted initialisation and media segments (ISO/IEC 23001-7, wrapping mp4ff's
+encryption): scheme `cenc` (AES-128 CTR, 8- or 16-byte per-sample IVs) or `cbcs`
+(AES-128 CBC, constant IV, 1:9 pattern for video, whole samples for audio).
+Video is encrypted in subsamples that keep the NAL unit headers and the slice
+headers clear (the `cbcs` protected range starts after the slice header); audio is
+encrypted whole. The init segment gets `sinf` (`frma`, `schm`, `schi`/`tenc`) and
+the caller's `pssh` boxes as given (no licence logic, no key server); each media
+segment gets `senc`, `saiz` and `saio`. With `IndexedSegments` the `sidx` is
+written after encryption. Each `SegmentedTrack.Protection` states the scheme, KID
+and `pssh` boxes for a manifest. `container.Encrypt`, `Decrypt` and `DecryptFile`
+work on segments and files from any packager. Keys are `ContentKey` values that
+print as `ContentKey(redacted)` under every verb and in `log/slog`, and no error
+holds key bytes; IVs other than 8 or 16 bytes and unknown schemes are refused, as
+are a `tenc` with an IV size, constant IV or pattern outside the specification
+and subsample maps that overrun their sample.
+
+Oracle: ffmpeg 9.0.2 decrypts our `cenc` and `cbcs` files (`-decryption_key`) to the
+packet hashes of the clear source, and our `Decrypt` reads ffmpeg's own
+`cenc-aes-ctr` output (the only scheme its muxer writes) to the same hashes; the
+files and the recorded `framemd5` are in `container/testdata/cenc`. The playlists
+and manifests (`media`) do not yet state the key: see the tracking issue.
+
 ## Guarantees
 
 - **Pure Go, CGO=0.** No `libav`, no `exec` to `ffmpeg`.

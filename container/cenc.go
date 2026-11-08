@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 
 	"github.com/Eyevinn/mp4ff/mp4"
@@ -193,11 +194,19 @@ func newTrackEncryptor(init []byte, p *protection) ([]byte, *trackEncryptor, err
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %v", ErrEncrypt, err)
 	}
-	var out bytes.Buffer
-	if err := f.Init.Encode(&out); err != nil {
+	out, err := encodeMemory(f.Init)
+	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %v", ErrEncrypt, err)
 	}
-	return out.Bytes(), &trackEncryptor{ipd: ipd, p: p, iv: p.iv}, nil
+	return out, &trackEncryptor{ipd: ipd, p: p, iv: p.iv}, nil
+}
+
+// encodeMemory writes a box or segment to memory; it is a variable so that the
+// failure of an encoding, which a memory buffer never reports, can be tested.
+var encodeMemory = func(e interface{ Encode(io.Writer) error }) ([]byte, error) {
+	var b bytes.Buffer
+	err := e.Encode(&b)
+	return b.Bytes(), err
 }
 
 // segment encrypts a media segment, a moof and an mdat, and returns the new
@@ -217,11 +226,11 @@ func (e *trackEncryptor) segment(seg []byte) ([]byte, error) {
 		}
 	}
 	e.iv = enc.IV()
-	var out bytes.Buffer
-	if err := f.Segments[0].Encode(&out); err != nil {
+	out, err := encodeMemory(f.Segments[0])
+	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrEncrypt, err)
 	}
-	return out.Bytes(), nil
+	return out, nil
 }
 
 // Encrypt protects one track of a fragmented MP4: its initialisation segment
@@ -309,11 +318,11 @@ func newDecryptor(init *mp4.InitSegment, key ContentKey) ([]byte, *decryptor, er
 	if err := checkInfo(di); err != nil {
 		return nil, nil, err
 	}
-	var out bytes.Buffer
-	if err := init.Encode(&out); err != nil {
+	out, err := encodeMemory(init)
+	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %v", ErrDecrypt, err)
 	}
-	return out.Bytes(), &decryptor{di: di, key: key.b}, nil
+	return out, &decryptor{di: di, key: key.b}, nil
 }
 
 // segment decrypts the fragments of s in place.
@@ -349,11 +358,9 @@ func Decrypt(init []byte, segments [][]byte, key ContentKey) ([]byte, [][]byte, 
 		if err := d.segment(g.Segments[0]); err != nil {
 			return nil, nil, fmt.Errorf("segment %d: %w", i, err)
 		}
-		var buf bytes.Buffer
-		if err := g.Segments[0].Encode(&buf); err != nil {
+		if out[i], err = encodeMemory(g.Segments[0]); err != nil {
 			return nil, nil, fmt.Errorf("%w: segment %d: %v", ErrDecrypt, i, err)
 		}
-		out[i] = buf.Bytes()
 	}
 	return outInit, out, nil
 }
@@ -374,11 +381,11 @@ func DecryptFile(data []byte, key ContentKey) ([]byte, error) {
 			return nil, err
 		}
 	}
-	var out bytes.Buffer
-	if err := f.Encode(&out); err != nil {
+	out, err := encodeMemory(f)
+	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrDecrypt, err)
 	}
-	return out.Bytes(), nil
+	return out, nil
 }
 
 // Protection is what a packaging manifest states about an encrypted track: the
