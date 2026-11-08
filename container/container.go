@@ -78,6 +78,10 @@
 // others accept too. That includes two shapes mp4ff refuses on its own: media
 // in several adjacent mdat boxes, and bytes after a complete movie box.
 //
+// Segment cuts a file into the initialisation and media segments of an HLS or
+// DASH presentation (CMAF/fMP4, WebVTT for subtitles), aligned across tracks;
+// the playlists and manifests that name them are go-streamkit's.
+//
 // Codec bitstream decoding lives in sibling packages.
 package container
 

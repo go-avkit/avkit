@@ -1,0 +1,3 @@
+# ffmpeg's output is the oracle byte for byte; a checkout must not rewrite its
+# line endings (Windows did, and a WebVTT cue then differed by a carriage return).
+container/testdata/segment/** -text
