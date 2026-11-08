@@ -179,7 +179,7 @@ func TestSegmentSurfacesTheFailuresOfWritingATrack(t *testing.T) {
 	r := segmentSource(t, "source.mp4")
 	// A codec with no codecs string.
 	bad := syntheticSource(Video, 1000, "xxxx", 1000)
-	if _, err := cutMedia(bad, bad, refCuts{ts: 1000}, false); !errors.Is(err, ErrSegmentTrack) {
+	if _, err := cutMedia(bad, bad, refCuts{ts: 1000}, false, nil); !errors.Is(err, ErrSegmentTrack) {
 		t.Errorf("codecs: %v", err)
 	}
 	// A track the muxer cannot describe: FLAC without its STREAMINFO.
@@ -188,7 +188,7 @@ func TestSegmentSurfacesTheFailuresOfWritingATrack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cutMedia(opus, opus, refCuts{ts: 48000}, false); !errors.Is(err, ErrNotInSamples) && !errors.Is(err, ErrTrackConfig) {
+	if _, err := cutMedia(opus, opus, refCuts{ts: 48000}, false, nil); !errors.Is(err, ErrNotInSamples) && !errors.Is(err, ErrTrackConfig) {
 		t.Errorf("add track: %v", err)
 	}
 	// A sample with no data.
@@ -199,13 +199,13 @@ func TestSegmentSurfacesTheFailuresOfWritingATrack(t *testing.T) {
 	empty := *good
 	empty.samples = []Sample{{Duration: 1, Sync: true}}
 	empty.starts, empty.end = []uint64{0}, 1
-	if _, err := cutMedia(&empty, &empty, refCuts{ts: good.cfg.Timescale}, false); !errors.Is(err, ErrSample) {
+	if _, err := cutMedia(&empty, &empty, refCuts{ts: good.cfg.Timescale}, false, nil); !errors.Is(err, ErrSample) {
 		t.Errorf("write sample: %v", err)
 	}
 	// A write that fails.
 	segmentSink = func(*bytes.Buffer) io.Writer { return failingWriter{} }
 	defer func() { segmentSink = func(b *bytes.Buffer) io.Writer { return b } }()
-	if _, err := cutMedia(good, good, refCuts{ts: good.cfg.Timescale}, false); err == nil {
+	if _, err := cutMedia(good, good, refCuts{ts: good.cfg.Timescale}, false, nil); err == nil {
 		t.Error("flush error not reported")
 	}
 }
@@ -225,7 +225,7 @@ func TestASegmentTooLongToIndexIsRefused(t *testing.T) {
 		{Data: good.samples[0].Data, Duration: 3_000_000_000},
 	}
 	src.starts, src.end = []uint64{0, 3_000_000_000}, 6_000_000_000
-	if _, err := cutMedia(&src, &src, refCuts{ts: good.cfg.Timescale}, true); !errors.Is(err, ErrMediaTooLarge) {
+	if _, err := cutMedia(&src, &src, refCuts{ts: good.cfg.Timescale}, true, nil); !errors.Is(err, ErrMediaTooLarge) {
 		t.Errorf("%v", err)
 	}
 	if _, err := segmentIndexBox(good, 0, 1, maxReferencedSize+1, 1); !errors.Is(err, ErrMediaTooLarge) {
