@@ -68,6 +68,17 @@ type segmentSettings struct {
 	target  time.Duration
 	tracks  []uint32
 	indexed bool
+	enc     *Encryption
+}
+
+// EncryptSegments protects every video and audio track with Common Encryption
+// (see Encryption): the initialisation segments carry sinf, tenc and any pssh,
+// the media segments senc, saiz and saio, and each SegmentedTrack states its
+// Protection. Subtitle tracks are WebVTT text and stay clear. With
+// IndexedSegments the sidx is written after encryption, so it describes the
+// bytes that are served.
+func EncryptSegments(enc Encryption) SegmentOption {
+	return func(s *segmentSettings) { s.enc = &enc }
 }
 
 // SegmentDuration sets the target length of a segment. The first video track's
@@ -123,6 +134,8 @@ type SegmentedTrack struct {
 	// Bandwidth is the peak and AverageBandwidth the mean bit rate of the
 	// media segments, in bits per second; 0 for a subtitle track.
 	Bandwidth, AverageBandwidth uint64
+	// Protection is nil for a track in the clear.
+	Protection *Protection
 }
 
 // InitName is the file name of the initialisation segment.
@@ -201,6 +214,13 @@ func segment(r segReader, opts []SegmentOption) (*Segmentation, error) {
 	if r.Truncated() {
 		return nil, fmt.Errorf("container: refusing to segment a truncated file: %w", ErrTruncated)
 	}
+	var prot *protection
+	if set.enc != nil {
+		var err error
+		if prot, err = set.enc.check(); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrSegmentOption, err)
+		}
+	}
 	ids := set.tracks
 	if len(ids) == 0 {
 		ids = r.TrackIDs()
@@ -230,7 +250,11 @@ func segment(r segReader, opts []SegmentOption) (*Segmentation, error) {
 		if src.track.Kind == Subtitle {
 			st, err = cutText(src, ref, cuts)
 		} else {
-			st, err = cutMedia(src, ref, cuts, set.indexed)
+			var tp *protection
+			if prot != nil {
+				tp = prot.forTrack(len(out.Tracks))
+			}
+			st, err = cutMedia(src, ref, cuts, set.indexed, tp)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("track %d: %w", src.track.ID, err)
@@ -379,7 +403,7 @@ func cutIndexes(src *segSource, cuts refCuts, ref *segSource) []int {
 }
 
 // cutMedia writes a video or audio track's segments.
-func cutMedia(src *segSource, ref *segSource, cuts refCuts, indexed bool) (SegmentedTrack, error) {
+func cutMedia(src *segSource, ref *segSource, cuts refCuts, indexed bool, prot *protection) (SegmentedTrack, error) {
 	st := SegmentedTrack{Timescale: src.cfg.Timescale, MIME: "video/mp4"}
 	if src.track.Kind == Audio {
 		st.MIME = "audio/mp4"
@@ -400,6 +424,7 @@ func cutMedia(src *segSource, ref *segSource, cuts refCuts, indexed bool) (Segme
 	bounds := append([]int{0}, cutIndexes(src, cuts, ref)...)
 	bounds = append(bounds, len(src.samples))
 	var total, peak uint64
+	var te *trackEncryptor
 	for k := 0; k+1 < len(bounds); k++ {
 		lo, hi := bounds[k], bounds[k+1]
 		buf.Reset()
@@ -425,12 +450,24 @@ func cutMedia(src *segSource, ref *segSource, cuts refCuts, indexed bool) (Segme
 				off = b.end
 			}
 			st.Init = bytes.Clone(body[:off])
+			if prot != nil {
+				if st.Init, te, err = newTrackEncryptor(st.Init, prot); err != nil {
+					return st, err
+				}
+				st.Protection = &Protection{Scheme: EncryptionScheme(prot.scheme), PSSH: prot.raw}
+				copy(st.Protection.KID[:], prot.kid)
+			}
 		}
 		start, dur := src.starts[lo], src.end-src.starts[lo]
 		if hi < len(src.samples) {
 			dur = src.starts[hi] - src.starts[lo]
 		}
 		seg := bytes.Clone(body[off:])
+		if te != nil {
+			if seg, err = te.segment(seg); err != nil {
+				return st, err
+			}
+		}
 		if indexed {
 			sidx, err := segmentIndexBox(src, lo, hi, uint64(len(seg)), dur)
 			if err != nil {
