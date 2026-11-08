@@ -123,6 +123,63 @@ func TestSegmentMatchesFFmpegHLSVideoSegmentForSegment(t *testing.T) {
 	}
 }
 
+// fragSamples is how many samples a media segment holds, as its trun says.
+func fragSamples(t *testing.T, init, seg []byte) int {
+	t.Helper()
+	f, err := mp4.DecodeFile(bytes.NewReader(append(bytes.Clone(init), seg...)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(f.Segments[0].Fragments[0].Moof.Traf.Trun.Samples)
+}
+
+func TestSegmentKeepsEverySampleOfEveryTrack(t *testing.T) {
+	r := segmentSource(t, "source.mp4")
+	seg, err := Segment(r, SegmentDuration(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range r.TrackIDs() {
+		src, err := r.Samples(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wantDur uint64
+		for _, s := range src {
+			wantDur += uint64(s.Duration)
+		}
+		var gotDur uint64
+		var gotN int
+		tr := seg.Tracks[i]
+		for _, s := range tr.Segments {
+			gotDur += s.Duration
+			gotN += fragSamples(t, tr.Init, s.Data)
+		}
+		if gotN != len(src) || gotDur != wantDur {
+			t.Errorf("%s: %d samples / %d ticks in the segments, %d / %d in the source", tr.Name, gotN, gotDur, len(src), wantDur)
+		}
+	}
+	// ffmpeg's five audio segments cover the same ticks as the source (the
+	// last, one frame long, is its flush of a frame it had held back).
+	aref := segFile(t, "hls/init_audio.mp4")
+	var ffTotal, ffN uint64
+	for i := 0; i < 5; i++ {
+		s := segFile(t, "hls/seg_audio_00"+string(rune('0'+i))+".m4s")
+		_, d := fragSpan(t, aref, s)
+		ffTotal += d
+		ffN += uint64(fragSamples(t, aref, s))
+	}
+	var ours uint64
+	var oursN int
+	for _, s := range seg.Tracks[1].Segments {
+		ours += s.Duration
+		oursN += fragSamples(t, seg.Tracks[1].Init, s.Data)
+	}
+	if ours != ffTotal || uint64(oursN) != ffN {
+		t.Errorf("audio: %d samples / %d ticks, ffmpeg %d / %d", oursN, ours, ffN, ffTotal)
+	}
+}
+
 func TestSegmentInitSegmentsNameTheSameTrackBoxesAsFFmpeg(t *testing.T) {
 	seg, err := Segment(segmentSource(t, "source.mp4"), SegmentDuration(2*time.Second))
 	if err != nil {

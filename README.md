@@ -1167,7 +1167,12 @@ The oracle is ffmpeg's `hls` (`-hls_segment_type fmp4`) and `dash` muxers, whose
 output for `container/testdata/segment/source.mp4` is committed. Measured
 against it: video segment boundaries, start times and durations are identical;
 the first three audio segments are identical, and ffmpeg ends its audio with a
-one-frame segment where this stops at the end of the track; init segments name
+one-frame segment where this stops at the end of the track (no sample is lost:
+sample count and total duration equal the source's and ffmpeg's; the extra
+segment comes from `hls_write_packet` in libavformat/hlsenc.c, which splits on
+any audio packet crossing `recording_time * number` counted from a start that
+includes the priming, and `hls_write_trailer`, which closes whatever is open
+with no minimum length); init segments name
 the same handler, timescale, sample entry, `avcC` and AudioSpecificConfig;
 codecs strings equal ffmpeg's (it states none for `hvc1`; `Opus` and `fLaC` use
 the registered spelling where ffmpeg writes `opus` and `flac`). ffmpeg writes a
