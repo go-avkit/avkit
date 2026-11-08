@@ -3,8 +3,8 @@ module github.com/go-avkit/avkit/media
 go 1.27.1
 
 require (
-	github.com/go-avkit/avkit v0.14.0
-	github.com/go-streamkit/streamkit v0.1.0
+	github.com/go-avkit/avkit v0.15.0
+	github.com/go-streamkit/streamkit v0.1.1-0.20261108142022-09a81000196b
 )
 
 require (

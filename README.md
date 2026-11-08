@@ -1225,8 +1225,23 @@ and subsample maps that overrun their sample.
 Oracle: ffmpeg 9.0.2 decrypts our `cenc` and `cbcs` files (`-decryption_key`) to the
 packet hashes of the clear source, and our `Decrypt` reads ffmpeg's own
 `cenc-aes-ctr` output (the only scheme its muxer writes) to the same hashes; the
-files and the recorded `framemd5` are in `container/testdata/cenc`. The playlists
-and manifests (`media`) do not yet state the key: see the tracking issue.
+files and the recorded `framemd5` are in `container/testdata/cenc`.
+
+`media.HLS`, `media.DASH` and `media.WriteDir` take a `media.Keys(...)` option
+for an encrypted segmentation. HLS: each encrypted track's playlist gets one
+`EXT-X-KEY` per key system (`METHOD=SAMPLE-AES-CTR` for `cenc`, `SAMPLE-AES` for
+`cbcs`, with the caller's `URI`, `KEYFORMAT` from the system's UUID and
+`KEYFORMATVERSIONS`) before its `EXT-X-MAP`, and the master the same tags as
+`EXT-X-SESSION-KEY` (draft-pantos-hls-rfc8216bis §4.4.4.4, §4.4.6.5); an
+encrypted segmentation without keys is refused, as playlists nobody can play.
+DASH: each encrypted adaptation set gets the `urn:mpeg:dash:mp4protection:2011`
+element (scheme and `cenc:default_KID`) and, per key system, a `ContentProtection`
+with its `cenc:pssh`, taken from the `pssh` boxes passed to `EncryptSegments` by
+system ID unless the key carries its own. No content key ever enters `media`.
+ffmpeg cannot write either (its HLS muxer refuses encrypted fMP4, its DASH muxer
+has no `ContentProtection`), so the end-to-end test is the oracle: the directory
+`WriteDir` writes is read back through the playlists it wrote, and the segments
+they name decrypt with the key to the clear segmentation's samples.
 
 ## Guarantees
 

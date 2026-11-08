@@ -16,8 +16,9 @@
 //
 // A presentation is VOD, with one video track at most, any number of audio
 // tracks (each an alternative rendition) and WebVTT subtitle tracks. Audio-only
-// presentations, several video tracks (an encoding ladder), live and encryption
-// are not covered.
+// presentations, several video tracks (an encoding ladder) and live are not
+// covered. An encrypted segmentation (container.EncryptSegments) is described
+// with the Keys option; the content key itself never enters this package.
 package media
 
 import (
@@ -89,13 +90,31 @@ type HLSFiles struct {
 // default) and each subtitle track a SUBTITLES rendition. The variant's
 // BANDWIDTH is the video's peak plus the largest audio peak, its codecs those of
 // the video and of every audio track.
-func HLS(seg *container.Segmentation) (*HLSFiles, error) {
+//
+// An encrypted segmentation (container.EncryptSegments) needs Keys: each
+// encrypted track's playlist then carries EXT-X-KEY (SAMPLE-AES-CTR for cenc,
+// SAMPLE-AES for cbcs) and the master the same as EXT-X-SESSION-KEY.
+func HLS(seg *container.Segmentation, opts ...Option) (*HLSFiles, error) {
 	video, err := check(seg)
 	if err != nil {
 		return nil, err
 	}
+	set := newSettings(opts)
+	sch, encrypted, err := scheme(seg)
+	if err != nil {
+		return nil, err
+	}
+	if err := refuseKeysWithoutEncryption(encrypted, set); err != nil {
+		return nil, err
+	}
+	var keys []hls.EncryptionKey
+	if encrypted {
+		if keys, err = hlsKeys(sch, set.keys); err != nil {
+			return nil, err
+		}
+	}
 	out := &HLSFiles{Media: map[string][]byte{}}
-	master := hls.MasterPlaylist{IndependentSegments: true}
+	master := hls.MasterPlaylist{IndependentSegments: true, SessionKeys: keys}
 	inf := hls.StreamInf{
 		URI: PlaylistName(video), Width: video.Config.Width, Height: video.Config.Height,
 		Codecs: []string{video.Codecs},
@@ -108,6 +127,9 @@ func HLS(seg *container.Segmentation) (*HLSFiles, error) {
 		mp := hls.MediaPlaylist{IndependentSegments: t.Kind == container.Video}
 		if t.Init != nil {
 			mp.InitURI = t.InitName()
+		}
+		if t.Protection != nil {
+			mp.Keys = keys
 		}
 		for k, s := range t.Segments {
 			mp.Segments = append(mp.Segments, hls.MediaSegment{URI: t.SegmentName(k), Duration: seconds(s.Duration, t.Timescale)})
@@ -185,8 +207,20 @@ func renditionName(t *container.SegmentedTrack) string {
 // DASH writes the static MPD: one adaptation set per track, each with a
 // SegmentTemplate over the track's file names and a SegmentTimeline of its
 // segments.
-func DASH(seg *container.Segmentation) ([]byte, error) {
+//
+// An encrypted track's adaptation set carries the mp4protection element (scheme
+// and default_KID) and, for each Key with a SystemID, a ContentProtection element
+// of that system with its pssh.
+func DASH(seg *container.Segmentation, opts ...Option) ([]byte, error) {
 	if _, err := check(seg); err != nil {
+		return nil, err
+	}
+	set := newSettings(opts)
+	_, encrypted, err := scheme(seg)
+	if err != nil {
+		return nil, err
+	}
+	if err := refuseKeysWithoutEncryption(encrypted, set); err != nil {
 		return nil, err
 	}
 	var p dash.Presentation
@@ -230,10 +264,17 @@ func DASH(seg *container.Segmentation) ([]byte, error) {
 		if t.Kind == container.Subtitle {
 			rep.Codecs = "" // plain WebVTT files state none
 		}
-		p.AdaptationSets = append(p.AdaptationSets, dash.AdaptationSet{
+		as := dash.AdaptationSet{
 			ContentType: contentType(t.Kind), MimeType: t.MIME, Lang: language(t),
 			Representations: []dash.Representation{rep},
-		})
+		}
+		if t.Protection != nil {
+			var err error
+			if as.ContentProtection, err = dashProtection(t, set.keys); err != nil {
+				return nil, err
+			}
+		}
+		p.AdaptationSets = append(p.AdaptationSets, as)
 	}
 	var b bytesBuffer
 	if err := p.Write(&b); err != nil {
@@ -260,12 +301,12 @@ func contentType(k container.Kind) string {
 // Segmentation.WriteDir, which cannot leave dir), the playlists and the MPD. The
 // manifest and every playlist are built before the first file is written, so a
 // segmentation that cannot be described leaves dir untouched.
-func WriteDir(dir string, seg *container.Segmentation) error {
-	files, err := HLS(seg)
+func WriteDir(dir string, seg *container.Segmentation, opts ...Option) error {
+	files, err := HLS(seg, opts...)
 	if err != nil {
 		return err
 	}
-	mpd, err := DASH(seg)
+	mpd, err := DASH(seg, opts...)
 	if err != nil {
 		return err
 	}
