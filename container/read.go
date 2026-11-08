@@ -430,6 +430,12 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 			track = t
 		}
 	}
+	// A movie header is what the movie timescale of an edit list is read from;
+	// found by fuzzing Segment, a file may have a track and no mvhd.
+	mvhd := movieBox(r.mp4).Mvhd
+	if mvhd == nil {
+		return TrackConfig{}, fmt.Errorf("%w: the movie box has no mvhd", ErrTrackConfig)
+	}
 	cfg := TrackConfig{
 		Kind:       track.Kind,
 		Codec:      track.Codec,
@@ -440,7 +446,7 @@ func (r *Reader) TrackConfig(trackID uint32) (TrackConfig, error) {
 		SampleRate: track.SampleRate,
 		Language:   track.Language,
 		StartDelay: mp4StartDelay(trak, track.Timescale, r.firstCompositionOffset(trak)),
-		EditList:   mp4EditList(trak, movieBox(r.mp4).Mvhd.Timescale, r.firstDecodeTime(trak)),
+		EditList:   mp4EditList(trak, mvhd.Timescale, r.firstDecodeTime(trak)),
 	}
 	stsd := trak.Mdia.Minf.Stbl.Stsd
 	switch {

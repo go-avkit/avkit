@@ -1144,6 +1144,38 @@ trimmed last packet, a duration of 194783 s, so Vorbis is compared with the
 original file instead; and a Matroska source states durations in milliseconds,
 so the end of its last Opus or Vorbis packet is exact to the millisecond only.
 
+## Segments for HLS and DASH
+
+`container.Segment(reader)` cuts a file into what a CMAF/fMP4 packaging serves:
+for each track an initialisation segment (`ftyp` + `moov`) and media segments
+(`moof` + `mdat`), never touching a sample. The first video track's keyframes
+decide the cuts (a segment ends at the first keyframe at or after
+`SegmentDuration`, 6 s by default), and every other track is cut at the first
+sample at or after the same instant, so segment *n* covers the same span in each
+track. A WebVTT (`wvtt`) track becomes WebVTT documents with
+`X-TIMESTAMP-MAP`, each repeating the cues that cross into it. `IndexedSegments()`
+puts a `styp` and a `sidx` in front of each segment (DASH indexed addressing).
+`Segmentation.WriteDir` writes generated file names (`video1_init.mp4`,
+`video1_00001.m4s`, `text1_00001.vtt`) through `os.Root`, so nothing leaves the
+directory. Each `SegmentedTrack` carries the RFC 6381 codecs string, MIME type,
+timescale, per-segment start and duration, and peak and average bandwidth that
+a playlist or manifest states; writing those is go-streamkit's job.
+
+Live, multi-bitrate ladders and encryption are not covered yet.
+
+The oracle is ffmpeg's `hls` (`-hls_segment_type fmp4`) and `dash` muxers, whose
+output for `container/testdata/segment/source.mp4` is committed. Measured
+against it: video segment boundaries, start times and durations are identical;
+the first three audio segments are identical, and ffmpeg ends its audio with a
+one-frame segment where this stops at the end of the track; init segments name
+the same handler, timescale, sample entry, `avcC` and AudioSpecificConfig;
+codecs strings equal ffmpeg's (it states none for `hvc1`; `Opus` and `fLaC` use
+the registered spelling where ffmpeg writes `opus` and `flac`). ffmpeg writes a
+WebVTT cue once, in the segment where it starts; this repeats it in every
+segment it is displayed in: draft-pantos-hls-rfc8216bis §3.1.4 says a segment
+"MUST contain all subtitle cues that are intended to be displayed during the
+period" of that segment.
+
 ## Guarantees
 
 - **Pure Go, CGO=0.** No `libav`, no `exec` to `ffmpeg`.
