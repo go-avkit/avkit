@@ -1163,6 +1163,28 @@ a playlist or manifest states; writing those is go-streamkit's job.
 
 Live, multi-bitrate ladders and encryption are not covered yet.
 
+### Playlists and MPD: the `media` module
+
+`github.com/go-avkit/avkit/media` turns a `container.Segmentation` into the whole
+presentation: `media.HLS` (master playlist plus a media playlist per track),
+`media.DASH` (static MPD) and `media.WriteDir` (segments, playlists and
+`manifest.mpd` in one directory). The writers are go-streamkit/streamkit's `hls`
+and `dash` packages (v0.1.0).
+
+It is a module of its own, in this repository, so that neither side takes the
+other as a dependency: this module stays free of streamkit's HTTP client, utls
+and x/net, and streamkit, a transport kit, stays free of every container parser.
+One video track at most, any number of audio tracks (AUDIO renditions) and WebVTT
+subtitle tracks (SUBTITLES renditions); audio-only presentations and encoding
+ladders are refused. The variant's `BANDWIDTH` is the video's peak segment rate
+plus the largest audio peak (ffmpeg states the video's alone, though the variant
+plays the audio too); the MPD lasts as long as its longest track, which with
+AAC's priming frame is one frame longer than ffmpeg's. Compared with ffmpeg's
+output for `testdata/segment/source.mp4`: same tags and durations in the video
+playlist, same video timeline entry for entry, same codecs, resolution, rendition
+attributes and audio total as ffmpeg's playlist. `go get
+github.com/go-avkit/avkit/media`.
+
 The oracle is ffmpeg's `hls` (`-hls_segment_type fmp4`) and `dash` muxers, whose
 output for `container/testdata/segment/source.mp4` is committed. Measured
 against it: video segment boundaries, start times and durations are identical;

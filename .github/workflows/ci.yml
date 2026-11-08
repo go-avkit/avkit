@@ -54,6 +54,38 @@ jobs:
           awk -v t="$cov" 'BEGIN { exit !(t+0 >= 100.0) }' || {
             echo "::error::coverage ${cov}% < 100%"; exit 1; }
 
+  # The media module (HLS/DASH presentations) is a module of its own, so the jobs
+  # above, which run from the root, never see it: `./...` stops at a go.mod.
+  # It needs the released avkit and streamkit, so it is built the way a user does.
+  media:
+    name: media (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: media
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.27.3'
+      - run: go vet ./...
+      - name: Test + 100% coverage gate
+        shell: bash
+        run: |
+          go test -race -coverprofile=cover.out ./...
+          go tool cover -func=cover.out | tail -n 25
+          cov=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "coverage: ${cov}%"
+          awk -v t="$cov" 'BEGIN { exit !(t+0 >= 100.0) }' || {
+            echo "::error::coverage ${cov}% < 100%"; exit 1; }
+      - name: 32-bit
+        if: runner.os == 'Linux'
+        run: GOARCH=386 go vet ./... && GOARCH=386 go test ./...
+
   # Run the suite on the six supported 64-bit targets. amd64/arm64 run natively;
   # the rest run under qemu-user. Container parsing reads multi-byte fields with
   # explicit byte order, so this is also the big-/little-endian correctness gate
