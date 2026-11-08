@@ -16,10 +16,10 @@ github.com/barkimedes/go-deepcopy v0.0.0-20220514131651-17c30cfc62df h1:GSoSVRLo
 github.com/barkimedes/go-deepcopy v0.0.0-20220514131651-17c30cfc62df/go.mod h1:hiVxq5OP2bUGBRNS3Z/bt/reCLFNbdcST6gISi1fiOM=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/go-avkit/avkit v0.14.0 h1:5CcpXvBXNJrIAl66JBE3heeUlDKlITPJFqhn257c5dY=
-github.com/go-avkit/avkit v0.14.0/go.mod h1:e6vXhNYj/ccY7454oZNTeSuKA7C4cBPA3usz3d6jxjA=
-github.com/go-streamkit/streamkit v0.1.0 h1:r7wZhLhnhNoNHoCQrnvVXhMGXhKDZUluhn1X+43YwBs=
-github.com/go-streamkit/streamkit v0.1.0/go.mod h1:58dE5UkcgmkLcNu3jRye+z3IYnH5UxM09KaPbwZEN/o=
+github.com/go-avkit/avkit v0.15.0 h1:8lZ3JfcyMRqoqyp17n0+ouXEghEECP8PCpo5Qczi4Ms=
+github.com/go-avkit/avkit v0.15.0/go.mod h1:e6vXhNYj/ccY7454oZNTeSuKA7C4cBPA3usz3d6jxjA=
+github.com/go-streamkit/streamkit v0.2.0 h1:Cj2KTZVSa7kgSa0mcI/J8VyGLQkP9linajfif6IkLwk=
+github.com/go-streamkit/streamkit v0.2.0/go.mod h1:58dE5UkcgmkLcNu3jRye+z3IYnH5UxM09KaPbwZEN/o=
 github.com/go-test/deep v1.1.0 h1:WOcxcdHcvdgThNXjw0t76K42FXTU7HpNQWHpA2HHNlg=
 github.com/go-test/deep v1.1.0/go.mod h1:5C2ZWiW0ErCdrYzpqxLbTX7MG14M9iiw8DgHncVwcsE=
 github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=

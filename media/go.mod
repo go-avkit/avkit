@@ -3,12 +3,12 @@ module github.com/go-avkit/avkit/media
 go 1.27.1
 
 require (
-	github.com/go-avkit/avkit v0.14.0
-	github.com/go-streamkit/streamkit v0.1.0
+	github.com/Eyevinn/dash-mpd v0.19.0
+	github.com/go-avkit/avkit v0.15.0
+	github.com/go-streamkit/streamkit v0.2.0
 )
 
 require (
-	github.com/Eyevinn/dash-mpd v0.19.0 // indirect
 	github.com/Eyevinn/hls-m3u8 v0.6.5 // indirect
 	github.com/Eyevinn/mp4ff v0.62.0 // indirect
 	github.com/asticode/go-astikit v0.30.0 // indirect
