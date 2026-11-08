@@ -261,7 +261,8 @@ func loadSegSource(r segReader, id uint32) (*segSource, error) {
 	if err != nil {
 		return nil, fmt.Errorf("track %d: %w", id, err)
 	}
-	return newSegSource(*track, cfg, samples)}
+	return newSegSource(*track, cfg, samples)
+}
 
 // newSegSource checks a track can be segmented and lays its samples on a
 // timeline.
@@ -390,7 +391,7 @@ func cutMedia(src *segSource, ref *segSource, cuts refCuts, indexed bool) (Segme
 	st.Codecs = codecs
 	var buf bytes.Buffer
 	// A fragment is closed by Flush alone: the limit is out of reach.
-	m := NewMuxer(segmentSink(&buf),FragmentDuration(MaxSegmentDuration*1000), Brand(segmentBrand))
+	m := NewMuxer(segmentSink(&buf), FragmentDuration(MaxSegmentDuration*1000), Brand(segmentBrand))
 	cfg := src.cfg
 	id, err := m.AddTrack(cfg)
 	if err != nil {

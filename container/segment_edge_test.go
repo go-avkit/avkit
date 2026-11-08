@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -544,7 +545,7 @@ func TestWriteDirReportsFilesystemFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chmod(locked, 0o755)
-	if os.Geteuid() != 0 {
+	if os.Geteuid() > 0 && runtime.GOOS != "windows" { // neither root nor Windows honours mode 000
 		if _, err := s.WriteDir(locked); err == nil {
 			t.Error("an unreadable directory")
 		}
