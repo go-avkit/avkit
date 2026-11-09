@@ -27,6 +27,21 @@ jobs:
             exit 1
           fi
 
+  # The readers take files nobody here wrote. The seeds and testdata/fuzz run as
+  # ordinary tests in the jobs below; this job also mutates them for a while, under
+  # a memory limit (GOMEMLIMIT for the Go heap, ulimit -v for the rest) so that a
+  # bound that fails to refuse is a crash here. A crash prints the input to commit.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.27.3'
+      - run: ulimit -v 8388608 && GOMEMLIMIT=1GiB go test -run='^$' -fuzz='^FuzzNewReader$' -fuzztime=60s ./container
+      - run: ulimit -v 8388608 && GOMEMLIMIT=1GiB go test -run='^$' -fuzz='^FuzzNewFileReader$' -fuzztime=30s ./container
+      - run: ulimit -v 8388608 && GOMEMLIMIT=1GiB go test -run='^$' -fuzz='^FuzzDemux$' -fuzztime=30s ./container
+
   # Build, vet, race-test, and enforce 100% statement coverage on three OSes.
   test:
     name: test (${{ matrix.os }})
