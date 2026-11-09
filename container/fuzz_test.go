@@ -28,7 +28,7 @@ import (
 func fuzzSeeds(f *testing.F) {
 	f.Helper()
 	var paths []string
-	for _, pattern := range []string{"testdata/*.mp4", "testdata/*.mkv", "testdata/fuzzseed/*"} {
+	for _, pattern := range []string{"testdata/*.mp4", "testdata/*.mkv", "testdata/*.webm", "testdata/fuzzseed/*"} {
 		found, err := filepath.Glob(pattern)
 		if err != nil {
 			f.Fatalf("glob %s: %v", pattern, err)
