@@ -41,6 +41,8 @@ jobs:
       - run: ulimit -v 8388608 && GOMEMLIMIT=1GiB go test -run='^$' -fuzz='^FuzzNewReader$' -fuzztime=60s ./container
       - run: ulimit -v 8388608 && GOMEMLIMIT=1GiB go test -run='^$' -fuzz='^FuzzNewFileReader$' -fuzztime=30s ./container
       - run: ulimit -v 8388608 && GOMEMLIMIT=1GiB go test -run='^$' -fuzz='^FuzzDemux$' -fuzztime=30s ./container
+      - run: ulimit -v 8388608 && GOMEMLIMIT=1GiB go test -run='^$' -fuzz='^FuzzGapless$' -fuzztime=20s ./container
+      - run: ulimit -v 8388608 && GOMEMLIMIT=1GiB go test -run='^$' -fuzz='^FuzzIlstItem$' -fuzztime=20s ./container
 
   # Build, vet, race-test, and enforce 100% statement coverage on three OSes.
   test:

@@ -1091,6 +1091,15 @@ every reader looks. The cover is the attachment named `cover.jpg` or
 `cover.png`, as the Matroska attachments section names the normal cover, or
 else the first JPEG, PNG or BMP attached.
 
+An MP4's `iTunSMPB` freeform item (`----`, name `iTunSMPB`), which iTunes and
+`afconvert` write, is also read, into `Metadata.Gapless`: the encoder delay, the
+end padding and the original sample count, counted in ticks of the track's media
+timescale. It is what ffmpeg uses to cut an AAC file to its original length when
+no edit list does. The text must be four hexadecimal fields of at most sixteen
+digits, the last three no larger than 2^40, as in ffmpeg; anything else leaves
+`Gapless` nil. It is read-only: the item itself is copied to an MP4 output byte
+for byte, and `ReplaceMetadata` writes none.
+
 What is **lost**, said plainly:
 
 - **WebM gets no cover.** The WebM guidelines admit no `Attachments`; ffmpeg's

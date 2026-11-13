@@ -131,6 +131,12 @@ func (md *Metadata) addIlstItem(raw []byte) {
 			return
 		}
 	}
+	if name == "----" && md.Gapless == nil {
+		// iTunSMPB is read and kept, so an MP4 output carries it as it was.
+		if key, value, ok := freeform(body); ok && key == "iTunSMPB" {
+			md.Gapless = parseGapless(string(value))
+		}
+	}
 	md.mp4Items = append(md.mp4Items, raw)
 }
 
