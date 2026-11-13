@@ -17,6 +17,7 @@ func FuzzIlstItem(f *testing.F) {
 	f.Add(box("\xa9nam", dataBox(ilstUTF8, []byte("title"))))
 	f.Add(box("covr", dataBox(ilstJPEG, []byte{0xff, 0xd8, 0xff})))
 	f.Add(box("\xa9ART", dataBox(ilstUTF16, []byte{0, 'a'})))
+	f.Add(freeformItem("com.apple.iTunes", "iTunSMPB", []byte(smpbText)))
 	f.Add([]byte{0, 0, 0, 1, 'c', 'o', 'v', 'r', 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
 	f.Add([]byte{0, 0, 0, 0, 'c', 'o', 'v', 'r', 0, 0, 0, 0, 'd', 'a', 't', 'a'})
 	f.Fuzz(func(t *testing.T, raw []byte) {

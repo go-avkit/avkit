@@ -58,6 +58,9 @@ type Metadata struct {
 	// Cover is the picture a player shows for the file, nil when there is
 	// none.
 	Cover *Picture
+	// Gapless is the iTunSMPB item of an MP4, nil when there is none or it does
+	// not read. It is read-only: see Gapless.
+	Gapless *Gapless
 
 	// mp4Items are the ilst items of an MP4 that none of the fields above
 	// states -- a track number, a sort name, a freeform iTunes item --
@@ -81,7 +84,7 @@ type Picture struct {
 func (md Metadata) IsZero() bool {
 	return md.Title == "" && md.Artist == "" && md.Album == "" && md.Date == "" &&
 		md.Comment == "" && md.Description == "" && md.Genre == "" && md.Encoder == "" &&
-		md.Cover == nil && len(md.mp4Items) == 0 && len(md.mkvTags) == 0
+		md.Cover == nil && md.Gapless == nil && len(md.mp4Items) == 0 && len(md.mkvTags) == 0
 }
 
 // metadataText pairs each text field with a name for the errors that refuse it.
