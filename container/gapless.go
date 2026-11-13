@@ -22,6 +22,11 @@ import (
 //
 //	Delay + Samples + Padding = the track's duration
 //
+// Metadata.Gapless is file-level, like the item: it does not say which track it
+// describes (an audio track; a file with several has to be told). ffmpeg attaches
+// it to the last stream it has parsed when it reads the item, so in a file whose
+// audio track comes first it lands on a later track and ffmpeg trims no audio.
+//
 // Metadata.Gapless is set from an MP4 only, and only when the item reads as
 // those four fields; a Matroska file, whose gapless information is a codec delay
 // and a discard padding, has none. It is read-only: an MP4 output carries the
@@ -42,8 +47,13 @@ const maxGapless = 1 << 40
 // parseGapless reads the text of an iTunSMPB item, or returns nil when it is
 // not four hexadecimal fields of at most sixteen digits each (anything after the
 // fourth is ignored, the text ends at its first NUL) with the last three within
-// maxGapless. ffmpeg reads the same and refuses the same: a field cut short at
-// sixteen digits would shift every field after it.
+// maxGapless. A field cut short at sixteen digits would shift every field after
+// it, so it is refused. This is stricter and wider than ffmpeg's MP4 reader, which
+// scans three 32-bit hexadecimal numbers (libavformat/mov.c, n9.0.2) and uses the
+// delay only when it is in (0, 16384) and the padding only when the track's
+// duration exceeds both it and the sample count; the bound here is that of ffmpeg's
+// shared parser (demux_utils.c), which the MP4 path does not call. The values are
+// kept as stated: what to do with them is the decoder's.
 func parseGapless(text string) *Gapless {
 	if i := strings.IndexByte(text, 0); i >= 0 {
 		text = text[:i]
