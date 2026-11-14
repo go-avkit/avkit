@@ -7,11 +7,15 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"testing"
 
 	"github.com/at-wat/ebml-go"
+	"github.com/go-avkit/avkit/internal/ebmlmasters"
 )
 
 // bombDoc is a document of one track and one cluster of blocks laced at their
@@ -19,6 +23,15 @@ import (
 // each block states a lace count of 255 and holds 256 frames of frameLen bytes
 // (zero or one), in the given lacing.
 func bombDoc(tb testing.TB, mode ebml.LacingMode, blocks, frameLen int) []byte {
+	tb.Helper()
+	return bombDocIn(tb, mode, blocks, frameLen, func(blocks []byte) []byte {
+		return ebmlElem(idCluster, 8, append(ebmlElem(idTimecode, 1, []byte{0}), blocks...))
+	})
+}
+
+// bombDocIn is bombDoc with the blocks put where place says: in a cluster, or
+// in a master element ebml-go unlaces in all the same.
+func bombDocIn(tb testing.TB, mode ebml.LacingMode, blocks, frameLen int, place func(blocks []byte) []byte) []byte {
 	tb.Helper()
 	doc := lacedDoc(mode, [][]byte{{1}, {1}}, 20_000_000, 0)
 	doc.Segment.Cluster = nil
@@ -50,12 +63,12 @@ func bombDoc(tb testing.TB, mode ebml.LacingMode, blocks, frameLen int) []byte {
 		}
 		block = append(block, make([]byte, 256*frameLen)...)
 	}
-	cluster := ebmlElem(idTimecode, 1, []byte{0})
+	var all []byte
 	one := ebmlElem([]byte{0xA3}, 2, block)
 	for i := 0; i < blocks; i++ {
-		cluster = append(cluster, one...)
+		all = append(all, one...)
 	}
-	segment := append(append([]byte{}, body...), ebmlElem(idCluster, 8, cluster)...)
+	segment := append(append([]byte{}, body...), place(all)...)
 	out := append([]byte{}, b[:headerEnd]...)
 	return append(out, ebmlElem(idSegment, 8, segment)...)
 }
@@ -107,8 +120,144 @@ func TestBombOfMaximalLaceCountsIsRefusedByTheFrameBudget(t *testing.T) {
 	for _, l := range lacings {
 		t.Run(l.name, func(t *testing.T) {
 			refusedSmall(t, bombDoc(t, l.mode, 1_000, 1), ReaderLimits{MaxTrackFrames: 100_000})
-			refusedSmall(t, bombDoc(t, l.mode, 10_000, 1), ReaderLimits{})
+			refusedSmall(t, bombDoc(t, l.mode, 10_000, 1), ReaderLimits{MaxTrackFrames: 1_000_000})
 		})
+	}
+}
+
+// The default itself: one frame past 1<<25 in one file, 131,073 blocks of 256.
+func TestBombPastTheDefaultFrameBudgetIsRefused(t *testing.T) {
+	data := bombDoc(t, ebml.LacingFixed, DefaultMaxFrames/256+1, 1)
+	refusedSmall(t, data, ReaderLimits{})
+}
+
+// idBlockAdditionMapping is a master ebml-go descends into although the walk
+// of the first version of this check did not: blocks put in it were unlaced
+// and never counted (review of go-avkit/avkit#121, 171 MiB from 140 KB).
+var idBlockAdditionMapping = []byte{0x41, 0xE4}
+
+func inBlockAdditionMapping(blocks []byte) []byte {
+	return ebmlElem(idBlockAdditionMapping, 8, blocks)
+}
+
+func TestBombInsideAMasterTheWalkOnceSkippedIsRefused(t *testing.T) {
+	for _, l := range lacings {
+		t.Run(l.name, func(t *testing.T) {
+			data := bombDocIn(t, l.mode, 10_000, 1, inBlockAdditionMapping)
+			refusedSmall(t, data, ReaderLimits{MaxTrackFrames: 1_000_000})
+		})
+	}
+	refusedSmall(t, bombDocIn(t, ebml.LacingFixed, 10_000, 0, inBlockAdditionMapping), ReaderLimits{})
+}
+
+// Every entry point that unmarshals Matroska applies the check: Demux read the
+// same bomb with no check at all.
+func TestEveryMatroskaEntryPointRefusesTheBomb(t *testing.T) {
+	old := debug.SetMemoryLimit(256 << 20)
+	defer debug.SetMemoryLimit(old)
+	dir := t.TempDir()
+	for name, place := range map[string]func([]byte) []byte{
+		"cluster": func(b []byte) []byte {
+			return ebmlElem(idCluster, 8, append(ebmlElem(idTimecode, 1, []byte{0}), b...))
+		},
+		"mapping": inBlockAdditionMapping,
+	} {
+		data := bombDocIn(t, ebml.LacingFixed, 10_000, 0, place)
+		path := filepath.Join(dir, name+".mkv")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		entries := map[string]func() error{
+			"Demux":           func() error { _, err := Demux(data); return err },
+			"DemuxWithLimits": func() error { _, err := DemuxWithLimits(data, ReaderLimits{MaxFrames: 10}); return err },
+			"NewReader":       func() error { _, err := NewReader(data); return err },
+			"OpenFile": func() error {
+				_, closer, err := OpenFile(path)
+				if err == nil {
+					closer()
+				}
+				return err
+			},
+			"OpenFileWithLimits": func() error {
+				_, closer, err := OpenFileWithLimits(path, ReaderLimits{MaxFrames: 10})
+				if err == nil {
+					closer()
+				}
+				return err
+			},
+			"NewFileReader": func() error {
+				_, err := NewFileReader(bytes.NewReader(data), int64(len(data)))
+				return err
+			},
+		}
+		for entry, call := range entries {
+			var before, after runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			err := call()
+			runtime.ReadMemStats(&after)
+			if got := after.TotalAlloc - before.TotalAlloc; got > 8<<20 {
+				t.Errorf("%s(%s): %d bytes allocated", entry, name, got)
+			}
+			// NewFileReader reads MP4 only, and refuses the format before it
+			// unmarshals anything; the others must name the limit, for the
+			// empty-frame bomb is refused whatever the bounds.
+			if entry == "NewFileReader" {
+				if err == nil {
+					t.Errorf("%s(%s) accepted a Matroska file", entry, name)
+				}
+			} else if !errors.Is(err, ErrReaderLimit) {
+				t.Errorf("%s(%s) = %v, want ErrReaderLimit", entry, name, err)
+			}
+		}
+	}
+}
+
+// The walk and ebml-go agree on every master: the sets generated into
+// matroska_masters.go are the ones in the module's own element table. A new
+// ebml-go that adds a master fails this until the file is regenerated with
+//
+//	AVKIT_REGEN=1 go test -run TestTheWalkDescendsIntoEveryMasterEbmlGoDoes ./container
+func TestTheWalkDescendsIntoEveryMasterEbmlGoDoes(t *testing.T) {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}} {{.Version}}", "github.com/at-wat/ebml-go").Output()
+	if err != nil {
+		t.Fatalf("go list: %v", err)
+	}
+	dir, version, _ := strings.Cut(strings.TrimSpace(string(out)), " ")
+	src, err := os.ReadFile(filepath.Join(dir, "elementtable.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("AVKIT_REGEN") != "" {
+		generated, err := ebmlmasters.Generate(src, version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile("matroska_masters.go", generated, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Skip("matroska_masters.go regenerated; run the tests again")
+	}
+	sets, err := ebmlmasters.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		want []uint64
+		got  map[uint64]bool
+	}{{"masters", sets.Masters, ebmlMasters}, {"blocks", sets.Blocks, ebmlBlocks}} {
+		if len(c.want) != len(c.got) {
+			t.Errorf("%s: ebml-go has %d, the generated set %d", c.name, len(c.want), len(c.got))
+		}
+		for _, id := range c.want {
+			if !c.got[id] {
+				t.Errorf("%s: 0x%X is missing from the generated set", c.name, id)
+			}
+		}
+	}
+	if !ebmlMasters[0x41E4] {
+		t.Error("BlockAdditionMapping is not a master")
 	}
 }
 

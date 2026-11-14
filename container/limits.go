@@ -13,14 +13,21 @@ import (
 // them is the ceiling again, so a caller can never be talked into more than the
 // reader was written to hold.
 const (
-	// DefaultMaxTrackFrames is how many frames one track may hold. A million is
-	// about four and a half hours of 60 fps video, or five and a half hours of
-	// 20 ms Opus, in one track.
-	DefaultMaxTrackFrames = 1 << 20
+	// DefaultMaxTrackFrames is how many frames one track may hold: 1<<24, about
+	// 1.85 times the largest track met in a library of 30 Matroska files,
+	// a 4K remux whose TrueHD track holds 9,064,256 frames (one access unit
+	// of 0.83 ms each). A lower default would refuse a real file.
+	DefaultMaxTrackFrames = 1 << 24
 	// DefaultMaxFrames is how many frames a whole file may hold, all tracks
-	// together.
-	DefaultMaxFrames = 1 << 21
+	// together: 1<<25, about 3.5 times the largest file of that library
+	// (9,493,297 frames).
+	DefaultMaxFrames = 1 << 25
 )
+
+// The worst case at these defaults is a file of one-byte laced frames: about 360
+// bytes are allocated per input byte, so a file of 34 MB can make a reader
+// allocate 12 GB. A caller with less memory than that, a wasm worker for one,
+// states ReaderLimits that fit it.
 
 // ErrReaderLimit means a file holds more than the reader is willing to unpack:
 // the refusal is made from the file's own counts, before anything is allocated

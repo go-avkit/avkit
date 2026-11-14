@@ -151,7 +151,11 @@ func mkvLeafLimit(n int) ebml.UnmarshalOption {
 // Unknown-element tolerance is deliberately off: ebml-go's ignore-unknown mode
 // swallows every read/size error and returns an empty document, so a corrupt file
 // would look like an empty one — surfacing the error is the safer contract.
-func demuxMatroska(data []byte) (*File, error) {
+func demuxMatroska(data []byte, limits ReaderLimits) (*File, error) {
+	// Before ebml-go unlaces a block it meets anywhere in the document.
+	if err := checkMatroskaFrames(data, limits); err != nil {
+		return nil, err
+	}
 	var doc mkvDoc
 	if err := ebml.Unmarshal(bytes.NewReader(data), &doc, mkvLeafLimit(len(data))); err != nil {
 		return nil, err

@@ -3,36 +3,13 @@
 
 package container
 
-// Matroska IDs the lacing check needs.
-const (
-	ebmlIDSimpleBlock = 0xA3
-	ebmlIDBlock       = 0xA1
-)
-
-// matroskaMaster says whether an element ID is a master element of the
-// Matroska schema, one whose body is more elements. checkMatroskaFrames walks
-// into these and steps over everything else.
-//
-// ebml-go decodes a block wherever it meets one, in a field of its document or
-// not, so a master the walk stepped over could hide a block it never counted.
-func matroskaMaster(id uint64) bool {
-	switch id {
-	case ebmlIDHeader, ebmlIDSegment,
-		0x114D9B74, 0x4DBB, // SeekHead, Seek
-		0x1549A966, 0x6924, // Info, ChapterTranslate
-		0x1F43B675, 0x5854, 0xA0, 0x75A1, 0xA6, 0x8E, 0xE8, 0xC8, // Cluster and below
-		0x1654AE6B, 0xAE, 0x6624, // Tracks, TrackEntry, TrackTranslate
-		0xE0, 0x55B0, 0x55D0, 0x7670, 0xE1, // Video, Colour, MasteringMetadata, Projection, Audio
-		0xE2, 0xE3, 0xE4, 0xE9, // TrackOperation and below
-		0x6D80, 0x6240, 0x5034, 0x5035, 0x47E7, // ContentEncodings and below
-		0x1C53BB6B, 0xBB, 0xB7, 0xDB, // Cues, CuePoint, CueTrackPositions, CueReference
-		0x1941A469, 0x61A7, // Attachments, AttachedFile
-		0x1043A770, 0x45B9, 0xB6, 0x8F, 0x80, 0x6944, 0x6911, // Chapters and below
-		0x1254C367, 0x7373, 0x63C0, 0x67C8: // Tags, Tag, Targets, SimpleTag
-		return true
-	}
-	return false
-}
+// The walk below descends into the elements in ebmlMasters and counts the
+// ones in ebmlBlocks. Both are GENERATED from ebml-go's own element table
+// (matroska_masters.go, by internal/ebmlmasters), and a test fails
+// when the module's table and the generated sets differ: the walk and the
+// unlacer must agree on every master, because ebml-go unlaces a block wherever
+// it meets one, and a master the walk stepped over would hide blocks it never
+// counted (BlockAdditionMapping did, in the first version of this check).
 
 // checkMatroskaFrames refuses a file whose blocks would unpack to more frames
 // than limits allow, reading nothing but the headers of its elements.
@@ -70,7 +47,7 @@ func countMatroskaFrames(data []byte, limits ReaderLimits) (map[uint64]int, erro
 			return perTrack, nil
 		}
 		body := i + idWidth + sizeWidth
-		if matroskaMaster(id) {
+		if ebmlMasters[id] {
 			i = body
 			continue
 		}
@@ -78,7 +55,7 @@ func countMatroskaFrames(data []byte, limits ReaderLimits) (map[uint64]int, erro
 			return perTrack, nil
 		}
 		end := body + int(size)
-		if id == ebmlIDSimpleBlock || id == ebmlIDBlock {
+		if ebmlBlocks[id] {
 			track, frames, err := blockFrames(data[body:end])
 			if err != nil {
 				return perTrack, err
