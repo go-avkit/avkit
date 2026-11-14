@@ -3,7 +3,9 @@
 
 // Package ebmlmasters reads which elements ebml-go treats as masters (bodies of
 // more elements) and which as blocks (bodies it unlaces) out of the source of
-// its element table, which it does not export.
+// its element table. The table variable is not exported, though ElementType's
+// Bytes and DataType methods are; the source is read because it lists every
+// element, where the methods answer only for a type one already holds.
 //
 // container's frame check must descend into exactly the masters ebml-go
 // descends into, so the set it uses is generated from this and a test fails

@@ -24,9 +24,9 @@ const (
 	DefaultMaxFrames = 1 << 25
 )
 
-// The worst case at these defaults is a file of one-byte laced frames: about 360
-// bytes are allocated per input byte, so a file of 34 MB can make a reader
-// allocate 12 GB. A caller with less memory than that, a wasm worker for one,
+// The worst case at these defaults is a file of one-byte laced frames: about 380
+// bytes are allocated per input byte (367 to 381 measured), so a file of 34 MB
+// can make a reader allocate 13 GB. A caller with less memory than that, a wasm worker for one,
 // states ReaderLimits that fit it.
 
 // ErrReaderLimit means a file holds more than the reader is willing to unpack:

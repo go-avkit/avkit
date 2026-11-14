@@ -20,8 +20,9 @@ package container
 // byte (go-avkit/avkit#120). The count is the byte after the block's flags, and
 // that byte is read here, before ebml-go sees the block, then weighed:
 //
-//   - a frame is at least one byte, so a block cannot hold more frames than it
-//     has bytes after its lace count. This alone bounds the frames of a file by
+//   - a block cannot state more frames than it has bytes after its lace count
+//     (zero-size frames included: Xiph lacing accepts 256 of them, because its
+//     lace-size bytes count as room). This alone bounds the frames of a file by
 //     its size, and refuses the empty frames that make a block a bomb;
 //   - the frames of one track, and of the whole file, are bounded by limits.
 //

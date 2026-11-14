@@ -1266,14 +1266,14 @@ of such blocks once made `NewReader` allocate 925 MiB. The reader now counts the
 frames from the block headers, before anything is unlaced, and refuses a file
 past a bound with `ErrReaderLimit` (use `errors.Is`).
 
-- **What is bounded.** A block cannot state more laced frames than it has bytes
-  after its lace count: a frame is at least one byte. The frames of one track
+- **What is bounded.** A block cannot state more frames than it has bytes
+  after its lace count (zero-size frames included). The frames of one track
   are bounded by `MaxTrackFrames`, and the frames of the whole file by
   `MaxFrames`.
 - **The defaults.** `DefaultMaxTrackFrames` is 1<<24 and `DefaultMaxFrames` is
   1<<25. They sit about 1.85 and 3.5 times above the largest file of a library of
   30 Matroska files, a 4K remux whose TrueHD track holds 9,064,256 frames, so a
-  real file is never refused. At the defaults the worst case is about 360 bytes
+  real file is never refused. At the defaults the worst case is about 380 B
   allocated per input byte of one-byte laced frames; a caller with less memory,
   a WebAssembly worker for one, passes lower limits.
 - **`ReaderLimits`.** `MaxTrackFrames` and `MaxFrames`; a value of zero, a
