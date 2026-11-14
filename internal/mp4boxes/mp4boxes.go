@@ -20,6 +20,8 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -232,8 +234,16 @@ func Probe(src []byte) (Forms, error) {
 }
 
 // Generate returns the source of container/mp4_containers.go.
-func Generate(src []byte, version string) ([]byte, error) {
+func Generate(dir string, version string) ([]byte, error) {
+	src, err := os.ReadFile(filepath.Join(dir, "box.go"))
+	if err != nil {
+		return nil, err
+	}
 	f, err := Probe(src)
+	if err != nil {
+		return nil, err
+	}
+	containers, err := Containers(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -241,24 +251,13 @@ func Generate(src []byte, version string) ([]byte, error) {
 	fmt.Fprintf(&b, "// Code generated from mp4ff %s by internal/mp4boxes; DO NOT EDIT.\n", version)
 	b.WriteString("// Regenerate with AVKIT_REGEN=1 go test -run TestTheWalkDescendsIntoEveryBoxMp4ffDoes ./container\n\n")
 	b.WriteString("package container\n\n")
-	b.WriteString("// mp4Containers are the boxes mp4ff decodes the children of, by type, with the\n")
-	b.WriteString("// bytes each may hold between its 8-byte header and them: every offset mp4ff\n")
-	b.WriteString("// reads children from (a QuickTime audio entry has one per version).\n")
-	b.WriteString("var mp4Containers = map[string][]int{\n")
-	types := make([]string, 0, len(f.Skips))
-	for typ := range f.Skips {
-		types = append(types, typ)
-	}
-	sort.Strings(types)
+	b.WriteString("// mp4Containers are the boxes whose decoder in mp4ff can decode other boxes, found\n")
+	b.WriteString("// by following the calls in its source from the decoder tables. Where in the\n")
+	b.WriteString("// box the children start is not recorded: it can depend on the box's bytes.\n")
+	b.WriteString("var mp4Containers = map[string]bool{\n")
+	types := Sorted(containers)
 	for _, typ := range types {
-		fmt.Fprintf(&b, "\t%s: {", strconv.Quote(typ))
-		for i, s := range f.Skips[typ] {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			fmt.Fprintf(&b, "%d", s)
-		}
-		b.WriteString("},\n")
+		fmt.Fprintf(&b, "\t%s: true,\n", strconv.Quote(typ))
 	}
 	b.WriteString("}\n\n")
 	b.WriteString("// mp4StringForms are the boxes that hold three NUL-terminated strings of any\n")

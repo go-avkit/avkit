@@ -1308,20 +1308,28 @@ allocates anything for it.
 - **Which boxes are walked.** The ones whose children `mp4ff` decodes: the
   movie, track, media and sample-table boxes, but also `dref`, `stsd` and every
   sample entry (`avc1`, `mp4a`, `tx3g`...), `trgr`, `ludt`, `vexu`, `wvtt` and
-  more. That table, with the bytes each box holds before its children, is not kept
-  by hand: `internal/mp4boxes` generates `container/mp4_containers.go` by putting
-  every box type of `mp4ff`'s decoder table to `mp4ff` itself, and a test fails
-  when `mp4ff` and the table differ. The walk does not decide where `mp4ff`
-  reads the children of a box from, for `mp4ff` chooses by the box's own bytes (a
-  QuickTime audio entry at 28, 44 or 64, a `meta` at 0 or 4, `stpp` after three
-  strings of any length) and a rule copied from it can drift, as two earlier
-  versions of this walk, bypassed by files built to make them choose otherwise,
-  showed. Every candidate offset is walked, the boxes found there are counted even
-  when they stop short of the end, and the box is charged the largest count: what
-  `mp4ff` decodes is never more than what was counted. It fails closed: strings
-  that run past 4 KiB leave the children of a `stpp` unplaced and the box is
-  refused, and so is a walk that takes more than 16 steps per box of the bound.
-  `FuzzMP4WalkCovers` checks the property against `mp4ff`'s own count.
+  more. That set is not kept by hand: `internal/mp4boxes` generates
+  `container/mp4_containers.go` by following the calls of every decoder in
+  `mp4ff`'s source to the lookup of another decoder, and a test fails when `mp4ff`
+  and the table differ.
+- **Where the children start is not modelled.** `mp4ff` reads them from an offset
+  the box's own bytes can choose (a QuickTime `text` entry after a font name of 0
+  to 255 bytes, an audio entry at 28, 44 or 64, a `meta` at 0 or 4, `stpp` after
+  three strings), and four versions of this walk that modelled it were each
+  bypassed by a file built to make them differ. The walk takes every offset in the
+  first 4 KiB of a box where a box header could be, follows the chain of boxes
+  from each, counts what it finds even when the chain stops short of the end of the
+  box, and charges the box the largest count: whichever offset `mp4ff` takes, what
+  it decodes is never more than what was counted. `FuzzMP4WalkCovers` checks that
+  against `mp4ff`'s own count and its allocations, and its seeds hold the content-
+  dependent headers. One assumption is made about a box whose start is a guess: its
+  type is printable ASCII, so a flood of boxes of a non-printable type inside a
+  `text`, audio or `meta` box is not counted (mp4ff decodes any four bytes as an
+  unknown box). Strings that run past 4 KiB leave the children of a `stpp`
+  unplaced, and the box is refused.
+- **CPU.** The walk is O(bytes): it is refused past 16 steps per box of the bound
+  plus 16 per byte of the file (and a constant), and the library of 3,466 files
+  takes at most 4.4 steps per byte.
 - **The worst case at the defaults** is the flood above, 1<<20 boxes of 8 bytes:
   33 bytes allocated per input byte (276 MB for 8 MiB; a test asserts the bound of
   400 bytes per input byte). A caller with less memory lowers `MaxBoxes`.

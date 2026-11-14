@@ -90,18 +90,145 @@ func TestStringLeadIsFoundForTheBoxesWithStrings(t *testing.T) {
 	}
 }
 
+func mp4ffDir(t *testing.T) (dir, version string) {
+	t.Helper()
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}} {{.Version}}", "github.com/Eyevinn/mp4ff").Output()
+	if err != nil {
+		t.Fatalf("go list: %v", err)
+	}
+	dir, version, _ = strings.Cut(strings.TrimSpace(string(out)), " ")
+	return filepath.Join(dir, "mp4"), version
+}
+
 func TestGenerateWritesTheTable(t *testing.T) {
-	src, version := mp4ffSource(t)
-	out, err := Generate(src, version)
+	dir, version := mp4ffDir(t)
+	out, err := Generate(dir, version)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"DO NOT EDIT", version, `"stsd":`, `{78}`, `{28, 44, 64}`, "mp4StringForms", `"stpp":`} {
+	for _, want := range []string{"DO NOT EDIT", version, `"stsd":`, "mp4StringForms", `"stpp":`, "mp4AnyKind", `"ilst":`, `"text":`} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("the generated file lacks %q", want)
 		}
 	}
-	if _, err := Generate([]byte("package"), version); err == nil {
-		t.Error("Generate accepted a source that is not Go")
+	// A directory with no box.go, and one whose box.go is not Go.
+	empty := t.TempDir()
+	if _, err := Generate(empty, version); err == nil {
+		t.Error("Generate accepted a directory with no box.go")
+	}
+	if err := os.WriteFile(filepath.Join(empty, "box.go"), []byte("package"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Generate(empty, version); err == nil {
+		t.Error("Generate accepted a box.go that is not Go")
+	}
+	// A box.go that does read, in a directory whose other sources do not.
+	src, _ := mp4ffSource(t)
+	if err := os.WriteFile(filepath.Join(empty, "box.go"), src, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(empty, "bad.go"), []byte("package"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Generate(empty, version); err == nil {
+		t.Error("Generate accepted a directory with a source that is not Go")
+	}
+}
+
+// fakePackage writes a package whose decoder table has n entries after the ones
+// given, and the functions given.
+func fakePackage(t *testing.T, entries, funcs string) string {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("package mp4\nvar decoders map[string]D\nfunc init() {\n\tdecoders = map[string]D{\n")
+	for i := range 120 {
+		fmt.Fprintf(&b, "\t\t\"t%03d\": Leaf,\n", i)
+	}
+	b.WriteString(entries)
+	b.WriteString("\t}\n}\n")
+	b.WriteString(funcs)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "box.go"), []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Tests and other directories are not read.
+	if err := os.WriteFile(filepath.Join(dir, "x_test.go"), []byte("package"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub.go"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestContainersFollowTheCallsToTheLookup(t *testing.T) {
+	dir := fakePackage(t, `
+		"box1": Direct,
+		"box2": Indirect,
+		"box3": pkg.Qualified,
+		"box4": func() {},
+		"box5": Unrelated,
+		7: Leaf,
+		Leaf,
+		name: Leaf,
+	`, `
+func Direct() { _ = decoders["x"] }
+func Indirect() { helper() }
+func helper() { Direct() }
+func Qualified() { Direct() }
+func Unrelated() {}
+func Leaf() {}
+type T struct{}
+func (T) Method()
+`)
+	got, err := Containers(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"box1", "box2", "box3", "box4"}
+	if s := Sorted(got); !slices.Equal(s, want) {
+		t.Errorf("Containers = %v, want %v", s, want)
+	}
+}
+
+func TestContainersRefuseWhatTheyCannotRead(t *testing.T) {
+	if _, err := Containers(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Error("a missing directory")
+	}
+	if _, err := Containers(fakePackage(t, "", "func Leaf() {}\n")); err == nil {
+		t.Error("a table with no container")
+	}
+	bad := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bad, "a.go"), []byte("package"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Containers(bad); err == nil {
+		t.Error("a source that is not Go")
+	}
+}
+
+func TestEveryBoxTheProbeSeesReadChildrenTheSourceSaysSo(t *testing.T) {
+	dir, _ := mp4ffDir(t)
+	static, err := Containers(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, _ := mp4ffSource(t)
+	probed, err := Probe(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for typ := range probed.Skips {
+		if !static[typ] {
+			t.Errorf("%q reads children when probed and not by its source", typ)
+		}
+	}
+	for _, typ := range []string{"text", "tx3g", "mp4a", "stpp", "ilst", "moov"} {
+		if !static[typ] {
+			t.Errorf("%q is not a container by its source", typ)
+		}
+	}
+	if static["mdat"] || static["free"] || static["stts"] {
+		t.Error("a leaf box is a container by its source")
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -34,12 +35,9 @@ func TestTheWalkDescendsIntoEveryBoxMp4ffDoes(t *testing.T) {
 		t.Fatalf("go list: %v", err)
 	}
 	dir, version, _ := strings.Cut(strings.TrimSpace(string(out)), " ")
-	src, err := os.ReadFile(filepath.Join(dir, "mp4", "box.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	dir = filepath.Join(dir, "mp4")
 	if os.Getenv("AVKIT_REGEN") != "" {
-		generated, err := mp4boxes.Generate(src, version)
+		generated, err := mp4boxes.Generate(dir, version)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -48,24 +46,33 @@ func TestTheWalkDescendsIntoEveryBoxMp4ffDoes(t *testing.T) {
 		}
 		t.Skip("mp4_containers.go regenerated; run the tests again")
 	}
-	want, err := mp4boxes.Probe(src)
+	src, err := os.ReadFile(filepath.Join(dir, "box.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for typ, skips := range want.Skips {
-		if got, ok := mp4Containers[typ]; !ok {
-			t.Errorf("mp4ff descends into %q (header bytes %v) and the walk does not", typ, skips)
-		} else if !slices.Equal(got, skips) {
-			t.Errorf("%q: mp4ff reads children after %v bytes, the walk after %v", typ, skips, got)
+	containers, err := mp4boxes.Containers(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(containers, mp4Containers) {
+		t.Errorf("mp4ff decodes children of %v, the walk of %v", mp4boxes.Sorted(containers), mp4boxes.Sorted(mp4Containers))
+	}
+	// What mp4ff is seen to do, put to the test, is within what its source can do:
+	// a box the probe saw read children is in the set the source gives.
+	probed, err := mp4boxes.Probe(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for typ := range probed.Skips {
+		if !mp4Containers[typ] {
+			t.Errorf("mp4ff was seen to read children of %q and the walk does not descend into it", typ)
 		}
 	}
-	for typ := range mp4Containers {
-		if _, ok := want.Skips[typ]; !ok {
-			t.Errorf("the walk descends into %q and mp4ff does not", typ)
-		}
+	if !maps.Equal(probed.Strings, mp4StringForms) {
+		t.Errorf("mp4ff holds strings before the children of %v, the walk knows %v", probed.Strings, mp4StringForms)
 	}
-	if !maps.Equal(want.Strings, mp4StringForms) {
-		t.Errorf("mp4ff holds strings before the children of %v, the walk knows %v", want.Strings, mp4StringForms)
+	if !maps.Equal(probed.AnyKind, mp4AnyKind) {
+		t.Errorf("mp4ff takes children of any type in %v, the walk in %v", probed.AnyKind, mp4AnyKind)
 	}
 	// The boxes the first version of the walk did not know of.
 	for _, typ := range []string{"stsd", "dref", "avc1", "mp4a", "trgr", "ludt", "vexu", "wvtt", "tx3g"} {
@@ -154,6 +161,11 @@ func audioEntryV1(children []byte) []byte {
 	return box("mp4a", head, children)
 }
 
+// bombBoxes is the flood of each bomb: 30,000 boxes, 240 KB, against a bound of
+// 1,000. The reviews measured 300,000 (2.4 MB, 46 to 74 MB decoded); the tests
+// keep a tenth of it, which is as much a bomb to a walk that does not count it.
+const bombBoxes = 30_000
+
 // The re-review of go-avkit/avkit#122: boxes whose children mp4ff reads from an
 // offset its own bytes choose, each built so that a walk that chose differently
 // counts almost nothing, and mp4ff decodes 300,000 boxes (46 to 74 MB) from 2.4 MB.
@@ -167,7 +179,7 @@ func metaTilingAtZero(flood []byte) []byte {
 }
 
 func chosenOffsetBombs() map[string][]byte {
-	flood := bytes.Repeat(box("free"), 300_000)
+	flood := bytes.Repeat(box("free"), bombBoxes)
 	audio := func(head []byte) []byte { return box("mp4a", head, flood) }
 	v1 := make([]byte, 44)
 	binary.BigEndian.PutUint16(v1[8:], 1)
@@ -179,7 +191,21 @@ func chosenOffsetBombs() map[string][]byte {
 	v2 := make([]byte, 64)
 	binary.BigEndian.PutUint16(v2[8:], 2)
 	binary.BigEndian.PutUint32(v2[44:], 0x7f000000)
+	// A QuickTime text entry puts its children after a font name of a length it
+	// states in one byte: 51 + n. A 3GPP one, recognised by an ftab box after its
+	// fields, puts them there. mp4ff decodes the same flood either way.
+	text := func(n int) []byte {
+		return box("text", make([]byte, 50), []byte{byte(n)}, bytes.Repeat([]byte("A"), n), flood)
+	}
 	return map[string][]byte{
+		"text, font name of 0":             text(0),
+		"text, font name of 1":             text(1),
+		"text, font name of 10":            text(10),
+		"text, font name of 200":           text(200),
+		"text, font name of 255":           text(255),
+		"text, ftab form":                  box("text", make([]byte, 38), box("ftab", make([]byte, 2)), flood),
+		"gmhd, text of 10":                 box("gmhd", text(10)),
+		"stsd, text of 10":                 box("stsd", []byte{0, 0, 0, 0, 0, 0, 0, 1}, text(10)),
 		"mp4a v1, a box fills from 28":     audio(filling),
 		"mp4a v2, children at 64":          audio(v2),
 		"mp4a v1, flood then garbage":      box("mp4a", v1, flood, []byte{1, 2, 3, 4, 5}),
@@ -207,7 +233,7 @@ func TestBombsThatChooseTheOffsetAreRefused(t *testing.T) {
 // The strings of a stpp that run past the window leave its children unplaced: the
 // box is refused, and one that ends within the window with no strings is not.
 func TestAStringTooLongToBePlacedIsRefused(t *testing.T) {
-	long := box("stpp", make([]byte, 8), bytes.Repeat([]byte("a"), 2*mp4StringWindow))
+	long := box("stpp", make([]byte, 8), bytes.Repeat([]byte("a"), 2*mp4OffsetWindow))
 	data := slices.Concat(mp4Ftyp(), long)
 	if err := checkMP4(bytes.NewReader(data), int64(len(data)), ReaderLimits{}.bounded()); !errors.Is(err, ErrReaderLimit) {
 		t.Errorf("strings past the window: %v, want ErrReaderLimit", err)
@@ -225,9 +251,37 @@ func TestAStringTooLongToBePlacedIsRefused(t *testing.T) {
 
 // The scan for the end of the strings spends steps too.
 func TestTheScanForStringsSpendsSteps(t *testing.T) {
-	w := &mp4Walk{at: bytes.NewReader(make([]byte, 100)), steps: 1}
+	w := &mp4Walk{at: bytes.NewReader(make([]byte, 100)), steps: 93}
+	// 93 steps look at the 93 offsets of a 100-byte payload; the 94th is the first
+	// byte of the strings.
 	if _, err := w.offsets("stpp", true, 0, 100); !errors.Is(err, ErrReaderLimit) {
-		t.Errorf("offsets with 1 step left = %v, want ErrReaderLimit", err)
+		t.Errorf("offsets with 93 steps = %v, want ErrReaderLimit", err)
+	}
+	if err := (&mp4Walk{at: bytes.NewReader(make([]byte, 100))}).level(0, 100, 1, false, nil, nil); !errors.Is(err, ErrReaderLimit) {
+		t.Errorf("level with no steps = %v, want ErrReaderLimit", err)
+	}
+	w = &mp4Walk{at: bytes.NewReader(make([]byte, 100)), steps: 10}
+	if _, err := w.offsets("stpp", true, 0, 100); !errors.Is(err, ErrReaderLimit) {
+		t.Errorf("offsets with 10 steps = %v, want ErrReaderLimit", err)
+	}
+}
+
+// Bytes that are not a box type end a chain from a guessed start without being
+// counted, and are not taken for a start.
+func TestAChainFromAGuessedStartEndsAtBytesThatAreNotABox(t *testing.T) {
+	data := slices.Concat(mp4Ftyp(), box("meta", box("free"), box("free"), binary.BigEndian.AppendUint32(nil, 8), make([]byte, 4)))
+	st, err := walkMP4(bytes.NewReader(data), int64(len(data)), ReaderLimits{MaxBoxes: 100, MaxBoxDepth: 64})
+	// ftyp, meta, and the two free boxes: the box of type 0 is not one.
+	if err != nil || st.boxes != 4 {
+		t.Errorf("walk = %+v, %v; want 4 boxes", st, err)
+	}
+	for _, c := range []struct {
+		t    [4]byte
+		want bool
+	}{{[4]byte{'m', 'o', 'o', 'v'}, true}, {[4]byte{0xa9, 'n', 'a', 'm'}, true}, {[4]byte{'a', 0xa9, 'n', 'm'}, false}, {[4]byte{0, 0, 0, 1}, false}, {[4]byte{'a', 'b', 'c', 0x7f}, false}} {
+		if printableType(c.t) != c.want {
+			t.Errorf("printableType(%q) = %v", c.t[:], !c.want)
+		}
 	}
 }
 
@@ -261,45 +315,76 @@ func TestAWalkThatTakesTooManyStepsIsRefused(t *testing.T) {
 	}
 }
 
-// mp4ffBoxCount is the boxes mp4ff decodes the file into, counted from its own
-// account of them; ok is false when it refuses the file.
-func mp4ffBoxCount(data []byte) (n int, ok bool) {
-	defer func() {
-		if recover() != nil {
-			n, ok = 0, false
+// The text bombs are bombs: mp4ff decodes the flood of every one of them, from
+// whichever offset its font name or its ftab puts the children at.
+func TestTheTextBombsAreDecodedByMp4ff(t *testing.T) {
+	for name, payload := range chosenOffsetBombs() {
+		if !strings.Contains(name, "text") && !strings.Contains(name, "ftab") {
+			continue
 		}
+		data := slices.Concat(mp4Ftyp(), payload)
+		if n, _ := mp4ffBoxCount(data); n < bombBoxes {
+			t.Errorf("%s: mp4ff decoded %d boxes", name, n)
+		}
+	}
+}
+
+// mp4ffBoxCount is the boxes mp4ff decodes the file into, counted from its own
+// account of them, and the objects it allocated to do it. The count is taken from
+// the tree it returns even when it returns an error with it, which leaves out the
+// boxes it was building when it failed; the allocations do not leave them out, and
+// are the second witness of a decode that outgrew the walk.
+func mp4ffBoxCount(data []byte) (n int, mallocs uint64) {
+	var f *mp4.File
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	func() {
+		defer func() { _ = recover() }()
+		f, _ = mp4.DecodeFile(bytes.NewReader(data))
 	}()
-	f, err := mp4.DecodeFile(bytes.NewReader(data))
-	if err != nil {
-		return 0, false
+	runtime.ReadMemStats(&after)
+	mallocs = after.Mallocs - before.Mallocs
+	if f == nil {
+		return 0, mallocs
 	}
 	// ftab is left out: mp4ff makes one up for a QuickTime text entry from the
 	// font name the entry holds, and it is in no box of the file.
 	line := regexp.MustCompile(`(?m)^\s*\[(.{4})\] size=`)
 	for _, child := range f.Children {
 		var info bytes.Buffer
-		if child.Info(&info, "all", "", "  ") != nil {
-			return 0, false
-		}
+		func() {
+			defer func() { _ = recover() }()
+			_ = child.Info(&info, "all", "", "  ")
+		}()
 		for _, m := range line.FindAllSubmatch(info.Bytes(), -1) {
 			if string(m[1]) != "ftab" {
 				n++
 			}
 		}
 	}
-	return n, true
+	return n, mallocs
 }
 
+// mp4ffAllocsPerBox bounds the objects mp4ff allocates for a box it decodes,
+// chosen far above what the testdata costs: a decode that outgrows the count by a
+// factor, and not by a few boxes, is what it catches.
+const mp4ffAllocsPerBox = 64
+
 // The property the walk exists for: whatever offset mp4ff picks, the boxes it
-// decodes are no more than the walk counted.
+// decodes are no more than the walk counted, and its allocations are no more
+// than a box costs it, even when it fails.
 func checkWalkCovers(t *testing.T, data []byte) {
 	t.Helper()
 	st, err := walkMP4(bytes.NewReader(data), int64(len(data)), ReaderLimits{MaxBoxes: 1 << 22, MaxBoxDepth: 64})
 	if err != nil {
 		return
 	}
-	if n, ok := mp4ffBoxCount(data); ok && n > st.boxes {
+	n, mallocs := mp4ffBoxCount(data)
+	if n > st.boxes {
 		t.Fatalf("mp4ff decoded %d boxes and the walk counted %d (%d input bytes)", n, st.boxes, len(data))
+	}
+	if limit := mp4ffAllocsPerBox*uint64(st.boxes) + 1<<14; mallocs > limit {
+		t.Fatalf("mp4ff allocated %d objects and the walk counted %d boxes (%d input bytes)", mallocs, st.boxes, len(data))
 	}
 }
 
@@ -310,7 +395,7 @@ func FuzzMP4WalkCovers(f *testing.F) {
 	}
 	f.Add(audioMaze(3))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		if len(data) > 1<<20 {
+		if len(data) > 4<<20 {
 			t.Skip()
 		}
 		checkWalkCovers(t, data)
@@ -334,11 +419,11 @@ func TestTheWalkCoversWhatMp4ffDecodes(t *testing.T) {
 	for name, payload := range chosenOffsetBombs() {
 		data := slices.Concat(mp4Ftyp(), payload)
 		st, err := walkMP4(bytes.NewReader(data), int64(len(data)), ReaderLimits{MaxBoxes: 1 << 22, MaxBoxDepth: 64})
-		n, ok := mp4ffBoxCount(data)
+		n, mallocs := mp4ffBoxCount(data)
 		// mp4ff may refuse the file after decoding its flood (garbage after it), and
 		// the walk counted the flood all the same.
-		if err != nil || (ok && n > st.boxes) || st.boxes < 300_000 {
-			t.Errorf("%s: walk %+v (%v), mp4ff %d (%v)", name, st, err, n, ok)
+		if err != nil || n > st.boxes || st.boxes < bombBoxes || mallocs > mp4ffAllocsPerBox*uint64(st.boxes) {
+			t.Errorf("%s: walk %+v (%v), mp4ff %d boxes, %d allocations", name, st, err, n, mallocs)
 		}
 	}
 }
