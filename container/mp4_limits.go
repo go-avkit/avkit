@@ -14,15 +14,19 @@ type mp4Stats struct {
 	depth int // the deepest nesting met; a top-level box is at depth 1
 }
 
-// mp4Containers are the boxes whose children the walk reads, by the payload
-// offset their children start at: plain containers at 0, meta (a full box) at 4.
-// They are the boxes mp4ff decodes into a tree; any other box is kept as bytes
-// and costs what it holds.
-var mp4Containers = map[string]int{
-	"moov": 0, "trak": 0, "mdia": 0, "minf": 0, "stbl": 0, "dinf": 0, "edts": 0,
-	"udta": 0, "mvex": 0, "moof": 0, "traf": 0, "mfra": 0, "sinf": 0, "schi": 0,
-	"ilst": 0, "meta": 4,
-}
+// The boxes whose children the walk reads, and the bytes each holds before them,
+// are mp4Containers (mp4_containers.go), generated from mp4ff by
+// internal/mp4boxes: a list kept by hand missed the sample entries, dref, stsd,
+// trgr, ludt and vexu, and 500,000 empty boxes inside any of them went past the
+// bound. A test fails when mp4ff and the table differ. Any other box is kept as
+// bytes by mp4ff and costs what it holds.
+//
+// ⛔ What the table cannot say is a header whose length the bytes choose: a box
+// with several forms (a QuickTime audio entry has one per version, a meta box is
+// ISO or QuickTime) lists them all and the walk takes the first whose children
+// tile the box; and stpp, stpc, which hold three NUL-terminated strings of any
+// length before their children, are known at the length they have when the
+// strings are empty.
 
 // ⛔ The table boxes (stts, stsc, stsz, stco, trun...) are NOT bounded by a count
 // of their own. A count is a claim, but mp4ff checks it against the bytes of the
@@ -113,12 +117,47 @@ func (w *mp4Walk) level(pos, end int64, depth int) error {
 		if boxSize < hdr || boxSize > end-pos {
 			return nil
 		}
-		if skip, ok := mp4Containers[string(typ[:])]; ok && boxSize-hdr >= int64(skip) {
-			if err := w.level(pos+hdr+int64(skip), pos+boxSize, depth+1); err != nil {
-				return err
+		if skips, ok := mp4Containers[string(typ[:])]; ok {
+			start, to := pos+hdr, pos+boxSize
+			skip := w.formOf(skips, start, to)
+			if to-start >= int64(skip) {
+				if err := w.level(start+int64(skip), to, depth+1); err != nil {
+					return err
+				}
 			}
 		}
 		pos += boxSize
 	}
 	return nil
+}
+
+// formOf chooses among the header lengths a box may have the first that leaves
+// children that tile the box exactly, as mp4ff's own tmcd decoder does, and the
+// first when none does: the walk then ends at the first header it cannot read.
+func (w *mp4Walk) formOf(skips []int, start, end int64) int {
+	if len(skips) > 1 {
+		for _, skip := range skips {
+			if w.tiles(start+int64(skip), end) {
+				return skip
+			}
+		}
+	}
+	return skips[0]
+}
+
+// tiles says whether boxes of a stated size, one after the other, fill
+// [pos, end) exactly. It reads their headers only.
+func (w *mp4Walk) tiles(pos, end int64) bool {
+	for pos < end {
+		head := w.peek(pos, 8)
+		if head == nil {
+			return false
+		}
+		size := int64(binary.BigEndian.Uint32(head))
+		if size < 8 || size > end-pos {
+			return false
+		}
+		pos += size
+	}
+	return pos == end
 }

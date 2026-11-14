@@ -1300,11 +1300,21 @@ allocates anything for it.
 
 - **`MaxBoxes`.** The boxes of the whole file, all levels together. The default,
   `DefaultMaxBoxes`, is 1<<20: about 1,900 times the largest of a library of 3,466
-  MP4, MOV and M4A files (552 boxes), and room for a day of one-second fragments
+  MP4, MOV and M4A files (557 boxes), and room for a day of one-second fragments
   of two tracks.
 - **`MaxBoxDepth`.** How deep boxes nest. The default, `DefaultMaxBoxDepth`, is
-  64, `mp4ff`'s own bound and ten times the deepest file of that library (6); a
+  64, `mp4ff`'s own bound and seven times the deepest file of that library (9); a
   lower bound refuses before `mp4ff` allocates the 0.8 MB it took to reach 64.
+- **Which boxes are walked.** The ones whose children `mp4ff` decodes: the
+  movie, track, media and sample-table boxes, but also `dref`, `stsd` and every
+  sample entry (`avc1`, `mp4a`, `tx3g`...), `trgr`, `ludt`, `vexu`, `wvtt` and
+  more. That table, with the bytes each box holds before its children, is not kept
+  by hand: `internal/mp4boxes` generates `container/mp4_containers.go` by putting
+  every box type of `mp4ff`'s decoder table to `mp4ff` itself, and a test fails
+  when `mp4ff` and the table differ. A box with several forms (a QuickTime audio
+  entry has one per version) is read in the form whose children tile it. One
+  gap is known: `stpp` and `stpc` hold three NUL-terminated strings of any length
+  before their children, and are walked only when the strings are short.
 - **The worst case at the defaults** is the flood above, 1<<20 boxes of 8 bytes:
   33 bytes allocated per input byte (276 MB for 8 MiB; a test asserts the bound of
   400 bytes per input byte). A caller with less memory lowers `MaxBoxes`.

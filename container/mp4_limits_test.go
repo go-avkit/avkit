@@ -259,7 +259,7 @@ func TestRealMP4FilesReadUnchanged(t *testing.T) {
 			t.Errorf("%s: %v", p, err)
 			continue
 		}
-		if st.boxes == 0 || st.boxes > DefaultMaxBoxes/1000 || st.depth > 8 {
+		if st.boxes == 0 || st.boxes > DefaultMaxBoxes/1000 || st.depth > 16 {
 			t.Errorf("%s: stats %+v are not those of an ordinary file", p, st)
 		}
 		r, err := NewReader(data)

@@ -199,7 +199,7 @@ func readableTraks(parsed *mp4.File) map[uint32]*mp4.TrakBox {
 // which have none, is walked in one pass.
 //
 // A file that holds more than the default bounds are willing to unpack (frames
-// of a Matroska file; boxes, nesting and table entries of an MP4) is
+// of a Matroska file; boxes and their nesting depth in an MP4) is
 // refused with ErrReaderLimit; NewReaderWithLimits lowers them.
 func NewReader(data []byte) (*Reader, error) {
 	return newReader(data, ReaderLimits{}.bounded())

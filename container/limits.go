@@ -24,11 +24,11 @@ const (
 	DefaultMaxFrames = 1 << 25
 	// DefaultMaxBoxes is how many boxes an MP4 may hold, all levels together:
 	// 1<<20, about 1,900 times the largest of a library of 3,466 MP4, MOV and
-	// M4A files (552 boxes), and room for a day of one-second fragments of two
+	// M4A files (557 boxes), and room for a day of one-second fragments of two
 	// tracks (about 10 boxes each).
 	DefaultMaxBoxes = 1 << 20
 	// DefaultMaxBoxDepth is how deep MP4 boxes may nest: 64, mp4ff's own bound,
-	// ten times the deepest file of that library (6).
+	// seven times the deepest file of that library (9).
 	DefaultMaxBoxDepth = 64
 )
 

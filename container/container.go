@@ -176,8 +176,8 @@ func (f *File) tracksOfKind(k Kind) []Track {
 // Demux sniffs data's container format and returns its demuxed structure. It
 // returns an error for an unrecognised or malformed container.
 //
-// A Matroska file that holds more frames, or an MP4 more boxes, nested deeper or
-// stating longer tables, than the default ReaderLimits allow is refused with
+// A Matroska file that holds more frames, or an MP4 that holds more boxes or
+// nests them deeper, than the default ReaderLimits allow is refused with
 // ErrReaderLimit; DemuxWithLimits lowers the bounds.
 func Demux(data []byte) (*File, error) {
 	return DemuxWithLimits(data, ReaderLimits{})
