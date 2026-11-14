@@ -8,6 +8,12 @@ Pure-Go (CGO=0) audio/video toolkit. It reads and writes time-based media
 containers with no `libav`/`ffmpeg` linkage and no external binaries, which is
 enough to remux — to move tracks between containers without re-encoding them.
 
+The organisation's pages: [go-avkit.github.io](https://go-avkit.github.io)
+(every module), [the documentation](https://go-avkit.github.io/docs/) and, for
+turning samples into pictures or sound, the separate
+[`decode`](https://github.com/go-avkit/decode) module — nothing in this one
+decodes.
+
 Container parsing is delegated to the maintained reference libraries
 ([Eyevinn/mp4ff](https://github.com/Eyevinn/mp4ff) for ISO-BMFF,
 [at-wat/ebml-go](https://github.com/at-wat/ebml-go) for EBML,
