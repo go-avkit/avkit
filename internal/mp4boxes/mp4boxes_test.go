@@ -72,11 +72,20 @@ func TestTypesRefuseWhatTheyCannotRead(t *testing.T) {
 
 func TestSkipsOfKnownBoxes(t *testing.T) {
 	for typ, want := range map[string][]int{
-		"moov": {0}, "stsd": {8}, "avc1": {78}, "mp4a": {28, 44}, "meta": {0, 4},
+		"moov": {0}, "stsd": {8}, "avc1": {78}, "mp4a": {28, 44, 64}, "meta": {0, 4},
 		"tx3g": {38}, "mvhd": nil, "free": nil, "stts": nil,
 	} {
 		if got := Skips(typ); !slices.Equal(got, want) {
 			t.Errorf("Skips(%q) = %v, want %v", typ, got, want)
+		}
+	}
+}
+
+// A box with strings before its children has them at no fixed offset.
+func TestStringLeadIsFoundForTheBoxesWithStrings(t *testing.T) {
+	for typ, want := range map[string]int{"stpp": 8, "stpc": 8, "moov": -1, "stsd": -1, "avc1": -1} {
+		if got := StringLead(typ, Skips(typ)); got != want {
+			t.Errorf("StringLead(%q) = %d, want %d", typ, got, want)
 		}
 	}
 }
@@ -87,7 +96,7 @@ func TestGenerateWritesTheTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"DO NOT EDIT", version, `"stsd":`, `{78}`, `{28, 44}`} {
+	for _, want := range []string{"DO NOT EDIT", version, `"stsd":`, `{78}`, `{28, 44, 64}`, "mp4StringForms", `"stpp":`} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("the generated file lacks %q", want)
 		}

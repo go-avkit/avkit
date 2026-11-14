@@ -7,12 +7,16 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/Eyevinn/mp4ff/mp4"
 
 	"github.com/go-avkit/avkit/internal/mp4boxes"
 )
@@ -48,7 +52,7 @@ func TestTheWalkDescendsIntoEveryBoxMp4ffDoes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for typ, skips := range want {
+	for typ, skips := range want.Skips {
 		if got, ok := mp4Containers[typ]; !ok {
 			t.Errorf("mp4ff descends into %q (header bytes %v) and the walk does not", typ, skips)
 		} else if !slices.Equal(got, skips) {
@@ -56,9 +60,12 @@ func TestTheWalkDescendsIntoEveryBoxMp4ffDoes(t *testing.T) {
 		}
 	}
 	for typ := range mp4Containers {
-		if _, ok := want[typ]; !ok {
+		if _, ok := want.Skips[typ]; !ok {
 			t.Errorf("the walk descends into %q and mp4ff does not", typ)
 		}
+	}
+	if !maps.Equal(want.Strings, mp4StringForms) {
+		t.Errorf("mp4ff holds strings before the children of %v, the walk knows %v", want.Strings, mp4StringForms)
 	}
 	// The boxes the first version of the walk did not know of.
 	for _, typ := range []string{"stsd", "dref", "avc1", "mp4a", "trgr", "ludt", "vexu", "wvtt", "tx3g"} {
@@ -92,13 +99,18 @@ func TestBombInsideEveryContainerMp4ffDecodesIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for typ, skips := range probed {
+	for typ, skips := range probed.Skips {
 		for _, skip := range skips {
 			data := slices.Concat(mp4Ftyp(), containerBomb(typ, skip, 1_000))
 			// A form of the header that mp4ff itself chooses by content (an audio
-			// entry's version) is reached by the walk through the tiling.
-			if skip == 44 {
-				binary.BigEndian.PutUint16(data[len(mp4Ftyp())+8+8:], 1)
+			// entry's version) is made to be the one it chooses.
+			at := len(mp4Ftyp()) + 8 + 8
+			switch skip {
+			case 44:
+				binary.BigEndian.PutUint16(data[at:], 1)
+			case 64:
+				binary.BigEndian.PutUint16(data[at:], 2)
+				binary.BigEndian.PutUint32(data[at+36:], 0x7f000000)
 			}
 			for name, call := range mp4EntryPoints(t, data, ReaderLimits{MaxBoxes: 100}) {
 				if name == "NewReader" || name == "Demux" || name == "NewFileReader" || name == "OpenFile" {
@@ -142,29 +154,191 @@ func audioEntryV1(children []byte) []byte {
 	return box("mp4a", head, children)
 }
 
-// A box with several forms is read in the one whose children tile it, and a
-// version of an audio entry that mp4ff reads at 44 is not read at 28.
-func TestAFormIsChosenByWhatTilesTheBox(t *testing.T) {
-	w := &mp4Walk{}
-	one := box("free")
-	data := slices.Concat(make([]byte, 16), one, one) // children after 16 bytes
-	w.at = bytes.NewReader(data)
-	if got := w.formOf([]int{0, 8, 16}, 0, int64(len(data))); got != 16 {
-		t.Errorf("formOf = %d, want 16", got)
+// The re-review of go-avkit/avkit#122: boxes whose children mp4ff reads from an
+// offset its own bytes choose, each built so that a walk that chose differently
+// counts almost nothing, and mp4ff decodes 300,000 boxes (46 to 74 MB) from 2.4 MB.
+// metaTilingAtZero is a payload that one box fills from 0, with [4:8] not hdlr,
+// so that mp4ff reads a meta box's children from 4, where an 8-byte free box
+// (the size 8 that is the box's type field, then "free") opens the flood.
+func metaTilingAtZero(flood []byte) []byte {
+	p := slices.Concat(make([]byte, 4), binary.BigEndian.AppendUint32(nil, 8), []byte("free"), flood)
+	binary.BigEndian.PutUint32(p, uint32(len(p)))
+	return p
+}
+
+func chosenOffsetBombs() map[string][]byte {
+	flood := bytes.Repeat(box("free"), 300_000)
+	audio := func(head []byte) []byte { return box("mp4a", head, flood) }
+	v1 := make([]byte, 44)
+	binary.BigEndian.PutUint16(v1[8:], 1)
+	// One box fills the payload from 28, so that the ISO layout tiles it; mp4ff
+	// prefers the version 1 layout, and the flood from 44.
+	filling := slices.Clone(v1)
+	binary.BigEndian.PutUint32(filling[28:], uint32(16+len(flood)))
+	copy(filling[32:], "junk")
+	v2 := make([]byte, 64)
+	binary.BigEndian.PutUint16(v2[8:], 2)
+	binary.BigEndian.PutUint32(v2[44:], 0x7f000000)
+	return map[string][]byte{
+		"mp4a v1, a box fills from 28":     audio(filling),
+		"mp4a v2, children at 64":          audio(v2),
+		"mp4a v1, flood then garbage":      box("mp4a", v1, flood, []byte{1, 2, 3, 4, 5}),
+		"meta, tiles at 0":                 box("meta", flood),
+		"meta, one box at 0, flood from 4": box("meta", metaTilingAtZero(flood)),
+		"meta, version and flags":          box("meta", make([]byte, 4), flood),
+		"stpp, a namespace":                box("stpp", make([]byte, 8), []byte("urn:example:ns\x00\x00\x00"), flood),
 	}
-	if got := w.formOf([]int{0, 8}, 0, int64(len(data))); got != 0 {
-		t.Errorf("formOf with no tiling form = %d, want the first, 0", got)
+}
+
+func TestBombsThatChooseTheOffsetAreRefused(t *testing.T) {
+	for name, payload := range chosenOffsetBombs() {
+		data := slices.Concat(mp4Ftyp(), payload)
+		for entry, call := range mp4EntryPoints(t, data, ReaderLimits{MaxBoxes: 1_000}) {
+			if entry == "NewReader" || entry == "Demux" || entry == "NewFileReader" || entry == "OpenFile" {
+				continue
+			}
+			if err := call(); !errors.Is(err, ErrReaderLimit) {
+				t.Errorf("%s(%s) = %v, want ErrReaderLimit", entry, name, err)
+			}
+		}
 	}
-	if got := w.formOf([]int{4}, 0, int64(len(data))); got != 4 {
-		t.Errorf("formOf of a single form = %d, want 4", got)
+}
+
+// The strings of a stpp that run past the window leave its children unplaced: the
+// box is refused, and one that ends within the window with no strings is not.
+func TestAStringTooLongToBePlacedIsRefused(t *testing.T) {
+	long := box("stpp", make([]byte, 8), bytes.Repeat([]byte("a"), 2*mp4StringWindow))
+	data := slices.Concat(mp4Ftyp(), long)
+	if err := checkMP4(bytes.NewReader(data), int64(len(data)), ReaderLimits{}.bounded()); !errors.Is(err, ErrReaderLimit) {
+		t.Errorf("strings past the window: %v, want ErrReaderLimit", err)
 	}
-	if w.tiles(int64(len(data))+8, int64(len(data))) {
-		t.Error("tiles accepted a start past the end")
+	short := slices.Concat(mp4Ftyp(), box("stpp", make([]byte, 8), []byte("aaaa")))
+	if err := checkMP4(bytes.NewReader(short), int64(len(short)), ReaderLimits{}.bounded()); err != nil {
+		t.Errorf("a box without its strings: %v", err)
 	}
-	if (&mp4Walk{at: shortAt{make([]byte, 4)}}).tiles(0, 100) {
-		t.Error("tiles accepted a header that cannot be read")
+	// The strings are cut off by the end of what the source holds.
+	cut := slices.Concat(mp4Ftyp(), box("stpp", make([]byte, 8), []byte("aaaa")))
+	if err := checkMP4(shortAt{cut[:len(cut)-2]}, int64(len(cut)), ReaderLimits{}.bounded()); err != nil {
+		t.Errorf("strings cut off: %v", err)
 	}
-	if w.tiles(0, int64(len(data))+100) {
-		t.Error("tiles accepted boxes that stop short of the end")
+}
+
+// The scan for the end of the strings spends steps too.
+func TestTheScanForStringsSpendsSteps(t *testing.T) {
+	w := &mp4Walk{at: bytes.NewReader(make([]byte, 100)), steps: 1}
+	if _, err := w.offsets("stpp", true, 0, 100); !errors.Is(err, ErrReaderLimit) {
+		t.Errorf("offsets with 1 step left = %v, want ErrReaderLimit", err)
+	}
+}
+
+// audioMaze is nested audio entries whose every candidate offset parses: a free
+// box over 28 to 44, another over 44 to 64, and the next entry at 64. A walk that
+// follows every offset of each would take 3^depth steps; the budget stops it.
+func audioMaze(depth int) []byte {
+	inner := []byte(nil)
+	for range depth {
+		head := make([]byte, 64)
+		binary.BigEndian.PutUint32(head[28:], 16)
+		copy(head[32:], "free")
+		binary.BigEndian.PutUint32(head[44:], 20)
+		copy(head[48:], "free")
+		inner = box("mp4a", head, inner)
+	}
+	return slices.Concat(mp4Ftyp(), inner)
+}
+
+func TestAWalkThatTakesTooManyStepsIsRefused(t *testing.T) {
+	data := audioMaze(30)
+	if err := checkMP4(bytes.NewReader(data), int64(len(data)), ReaderLimits{MaxBoxes: 1_000}.bounded()); !errors.Is(err, ErrReaderLimit) {
+		t.Errorf("the maze = %v, want ErrReaderLimit", err)
+	}
+	// A shallow one is within the budget, and counts what is there, not the sum of
+	// the paths.
+	shallow := audioMaze(4)
+	st, err := walkMP4(bytes.NewReader(shallow), int64(len(shallow)), ReaderLimits{MaxBoxes: 1_000, MaxBoxDepth: 64})
+	if err != nil || st.boxes != 1+4+4*2 {
+		t.Errorf("the shallow maze = %+v, %v; want %d boxes", st, err, 1+4+4*2)
+	}
+}
+
+// mp4ffBoxCount is the boxes mp4ff decodes the file into, counted from its own
+// account of them; ok is false when it refuses the file.
+func mp4ffBoxCount(data []byte) (n int, ok bool) {
+	defer func() {
+		if recover() != nil {
+			n, ok = 0, false
+		}
+	}()
+	f, err := mp4.DecodeFile(bytes.NewReader(data))
+	if err != nil {
+		return 0, false
+	}
+	// ftab is left out: mp4ff makes one up for a QuickTime text entry from the
+	// font name the entry holds, and it is in no box of the file.
+	line := regexp.MustCompile(`(?m)^\s*\[(.{4})\] size=`)
+	for _, child := range f.Children {
+		var info bytes.Buffer
+		if child.Info(&info, "all", "", "  ") != nil {
+			return 0, false
+		}
+		for _, m := range line.FindAllSubmatch(info.Bytes(), -1) {
+			if string(m[1]) != "ftab" {
+				n++
+			}
+		}
+	}
+	return n, true
+}
+
+// The property the walk exists for: whatever offset mp4ff picks, the boxes it
+// decodes are no more than the walk counted.
+func checkWalkCovers(t *testing.T, data []byte) {
+	t.Helper()
+	st, err := walkMP4(bytes.NewReader(data), int64(len(data)), ReaderLimits{MaxBoxes: 1 << 22, MaxBoxDepth: 64})
+	if err != nil {
+		return
+	}
+	if n, ok := mp4ffBoxCount(data); ok && n > st.boxes {
+		t.Fatalf("mp4ff decoded %d boxes and the walk counted %d (%d input bytes)", n, st.boxes, len(data))
+	}
+}
+
+func FuzzMP4WalkCovers(f *testing.F) {
+	fuzzSeeds(f)
+	for _, payload := range chosenOffsetBombs() {
+		f.Add(slices.Concat(mp4Ftyp(), payload))
+	}
+	f.Add(audioMaze(3))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 1<<20 {
+			t.Skip()
+		}
+		checkWalkCovers(t, data)
+	})
+}
+
+// The seeds run as a test, bombs included: what mp4ff decodes is within the count.
+func TestTheWalkCoversWhatMp4ffDecodes(t *testing.T) {
+	paths, _ := filepath.Glob("testdata/*.mp4")
+	more, _ := filepath.Glob("testdata/*.m4a")
+	paths = append(paths, more...)
+	more, _ = filepath.Glob("testdata/*.mov")
+	paths = append(paths, more...)
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkWalkCovers(t, data)
+	}
+	for name, payload := range chosenOffsetBombs() {
+		data := slices.Concat(mp4Ftyp(), payload)
+		st, err := walkMP4(bytes.NewReader(data), int64(len(data)), ReaderLimits{MaxBoxes: 1 << 22, MaxBoxDepth: 64})
+		n, ok := mp4ffBoxCount(data)
+		// mp4ff may refuse the file after decoding its flood (garbage after it), and
+		// the walk counted the flood all the same.
+		if err != nil || (ok && n > st.boxes) || st.boxes < 300_000 {
+			t.Errorf("%s: walk %+v (%v), mp4ff %d (%v)", name, st, err, n, ok)
+		}
 	}
 }

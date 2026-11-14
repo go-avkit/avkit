@@ -1311,10 +1311,17 @@ allocates anything for it.
   more. That table, with the bytes each box holds before its children, is not kept
   by hand: `internal/mp4boxes` generates `container/mp4_containers.go` by putting
   every box type of `mp4ff`'s decoder table to `mp4ff` itself, and a test fails
-  when `mp4ff` and the table differ. A box with several forms (a QuickTime audio
-  entry has one per version) is read in the form whose children tile it. One
-  gap is known: `stpp` and `stpc` hold three NUL-terminated strings of any length
-  before their children, and are walked only when the strings are short.
+  when `mp4ff` and the table differ. The walk does not decide where `mp4ff`
+  reads the children of a box from, for `mp4ff` chooses by the box's own bytes (a
+  QuickTime audio entry at 28, 44 or 64, a `meta` at 0 or 4, `stpp` after three
+  strings of any length) and a rule copied from it can drift, as two earlier
+  versions of this walk, bypassed by files built to make them choose otherwise,
+  showed. Every candidate offset is walked, the boxes found there are counted even
+  when they stop short of the end, and the box is charged the largest count: what
+  `mp4ff` decodes is never more than what was counted. It fails closed: strings
+  that run past 4 KiB leave the children of a `stpp` unplaced and the box is
+  refused, and so is a walk that takes more than 16 steps per box of the bound.
+  `FuzzMP4WalkCovers` checks the property against `mp4ff`'s own count.
 - **The worst case at the defaults** is the flood above, 1<<20 boxes of 8 bytes:
   33 bytes allocated per input byte (276 MB for 8 MiB; a test asserts the bound of
   400 bytes per input byte). A caller with less memory lowers `MaxBoxes`.
