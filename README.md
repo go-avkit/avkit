@@ -1276,18 +1276,74 @@ past a bound with `ErrReaderLimit` (use `errors.Is`).
   real file is never refused. At the defaults the worst case is about 380 B
   allocated per input byte of one-byte laced frames; a caller with less memory,
   a WebAssembly worker for one, passes lower limits.
-- **`ReaderLimits`.** `MaxTrackFrames` and `MaxFrames`; a value of zero, a
-  negative value or one above its default means the default, so a caller can only
-  lower a bound.
-- **Entry points that take limits.** `NewReaderWithLimits`, `DemuxWithLimits` and
-  `OpenFileWithLimits`; `NewReader`, `Demux` and `OpenFile` apply the defaults.
-  `NewFileReader` reads MP4 only and refuses a Matroska file before it parses it.
-- **Only Matroska is covered for now.** The MP4 box count
-  (go-avkit/avkit#113) will be bounded through the same `ReaderLimits`.
+- **`ReaderLimits`.** `MaxTrackFrames` and `MaxFrames` for Matroska, `MaxBoxes`
+  and `MaxBoxDepth` for MP4; a value of zero, a negative value or one above its
+  default means the default, so a caller can only lower a bound. Build it with
+  field names, for fields have been added since v0.17.0.
+- **Entry points that take limits.** `NewReaderWithLimits`, `DemuxWithLimits`,
+  `NewFileReaderWithLimits` and `OpenFileWithLimits`; `NewReader`, `Demux`,
+  `NewFileReader` and `OpenFile` apply the defaults. `NewFileReader` reads MP4
+  only and refuses a Matroska file before it parses it.
 
 The check walks the elements ebml-go itself descends into. That set is generated
 from ebml-go's element table (`internal/ebmlmasters`), and a test fails when a new
 ebml-go version changes it.
+
+### MP4 boxes
+
+`mp4ff` decodes every box into a Go value, so a file of empty 8-byte `free` boxes
+cost about 33 bytes of allocation per input byte: 8 MiB of them made `NewReader`
+allocate 270 MB before it said `MP4 has no moov box` (go-avkit/avkit#113). Every
+MP4 entry point now walks the box headers first, reading 8 or 16 bytes per box
+and nothing else, and refuses the file with `ErrReaderLimit` before `mp4ff`
+allocates anything for it.
+
+- **`MaxBoxes`.** The boxes of the whole file, all levels together. The default,
+  `DefaultMaxBoxes`, is 1<<20: about 1,900 times the largest of a library of 3,466
+  MP4, MOV and M4A files (557 boxes), and room for a day of one-second fragments
+  of two tracks.
+- **`MaxBoxDepth`.** How deep boxes nest. The default, `DefaultMaxBoxDepth`, is
+  64, `mp4ff`'s own bound and seven times the deepest file of that library (9); a
+  lower bound refuses before `mp4ff` allocates the 0.8 MB it took to reach 64.
+- **Which boxes are walked.** The ones whose children `mp4ff` decodes: the
+  movie, track, media and sample-table boxes, but also `dref`, `stsd` and every
+  sample entry (`avc1`, `mp4a`, `tx3g`...), `trgr`, `ludt`, `vexu`, `wvtt` and
+  more. That set is not kept by hand: `internal/mp4boxes` generates
+  `container/mp4_containers.go` by following the calls of every decoder in
+  `mp4ff`'s source to the lookup of another decoder, and a test fails when `mp4ff`
+  and the table differ.
+- **Where the children start.** Most boxes (`moov`, `trak`, `udta`, `stsd`, the
+  sample entries of video...) read them from one offset, and the walk counts every
+  child there, whatever its type: `mp4ff` decodes any four bytes as an unknown box.
+  The generator finds them by filling the bytes before the children with 0x01 and
+  with 0xFF and seeing the offset hold. The few others have an offset the box's own
+  bytes choose (a QuickTime `text` entry after a font name of 0 to 255 bytes, an
+  audio entry at 28, 44 or 64, a `meta` at 0 or 4, `stpp` after three strings), and
+  four versions of this walk that modelled it were each bypassed by a file built
+  to make them differ. For these the walk takes every offset in the first 4 KiB
+  where a box header could be, whatever the type, follows the chain of boxes from
+  each, counts what it finds even when the chain stops short of the end of the
+  box, and charges the box the largest count: whichever offset `mp4ff` takes, what
+  it decodes is never more than what was counted. The search runs in those boxes
+  alone, never in a table. `FuzzMP4WalkCovers` checks that against `mp4ff`'s own
+  tree and its allocations, and its seeds hold the content-dependent headers and
+  floods of non-printable types. Strings that run past 4 KiB leave the children of
+  a `stpp` unplaced, and the box is refused.
+- **CPU.** The walk is O(bytes): it is refused past 16 steps per box of the bound
+  plus 16 per byte of the file (and a constant); the library of 3,466 files takes
+  well under a step per byte and 2.7 seconds in all.
+- **The worst case at the defaults** is the flood above, 1<<20 boxes of 8 bytes:
+  33 bytes allocated per input byte (276 MB for 8 MiB; a test asserts the bound of
+  400 bytes per input byte). A caller with less memory lowers `MaxBoxes`.
+- **No bound on table entries.** A table box (`stts`, `stsc`, `stsz`, `stco`,
+  `trun`...) states a count, and `mp4ff` checks it against the bytes of its box
+  before it sizes anything: a 16-byte `stts` stating 2^32-1 entries is refused
+  after 4 KB. A uniform `stsz`, which states a count in 20 bytes, is checked against
+  the size of the file when the samples are listed. A table costs what holds it,
+  so a count of its own would bound nothing the file size does not; a test pins the
+  premise so that a `mp4ff` that stopped checking fails it.
+- **What is not covered.** The CENC functions, `DecryptFile` among them, decode
+  MP4 boxes of their own and take no `ReaderLimits`.
 
 ## Guarantees
 

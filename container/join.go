@@ -211,7 +211,7 @@ func HoldsFragments(src io.ReaderAt) (bool, error) {
 //
 // The returned function closes what was opened. It is not nil.
 //
-// A Matroska file is refused with ErrReaderLimit past the default ReaderLimits;
+// A file is refused with ErrReaderLimit past the default ReaderLimits;
 // OpenFileWithLimits lowers them.
 func OpenFile(path string) (*Reader, func() error, error) {
 	return OpenFileWithLimits(path, ReaderLimits{})
@@ -230,8 +230,14 @@ func OpenFileWithLimits(path string, limits ReaderLimits) (*Reader, func() error
 		fh.Close()
 		return nil, noClose, err
 	}
-	if r, err := NewFileReader(fh, info.Size()); err == nil {
+	r, err := NewFileReaderWithLimits(fh, info.Size(), limits)
+	if err == nil {
 		return r, fh.Close, nil
+	}
+	if errors.Is(err, ErrReaderLimit) {
+		// An MP4 past a bound: reading it whole would only refuse it again.
+		fh.Close()
+		return nil, noClose, err
 	}
 	// Read whole: the format cannot be addressed into.
 	fh.Close()
@@ -239,7 +245,7 @@ func OpenFileWithLimits(path string, limits ReaderLimits) (*Reader, func() error
 	if err != nil {
 		return nil, noClose, err
 	}
-	r, err := NewReaderWithLimits(data, limits)
+	r, err = NewReaderWithLimits(data, limits)
 	if err != nil {
 		return nil, noClose, err
 	}

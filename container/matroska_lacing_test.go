@@ -277,11 +277,16 @@ func TestFramesOfManyTracksAreBoundedInTotal(t *testing.T) {
 
 // A caller can only lower a bound: asking for more is the default again.
 func TestAReaderLimitCanOnlyBeLowered(t *testing.T) {
+	defaults := ReaderLimits{
+		MaxTrackFrames: DefaultMaxTrackFrames, MaxFrames: DefaultMaxFrames,
+		MaxBoxes: DefaultMaxBoxes, MaxBoxDepth: DefaultMaxBoxDepth,
+	}
+	const big = 1<<31 - 1
 	for _, c := range []struct{ in, want ReaderLimits }{
-		{ReaderLimits{}, ReaderLimits{DefaultMaxTrackFrames, DefaultMaxFrames}},
-		{ReaderLimits{-1, -1}, ReaderLimits{DefaultMaxTrackFrames, DefaultMaxFrames}},
-		{ReaderLimits{1<<31 - 1, 1<<31 - 1}, ReaderLimits{DefaultMaxTrackFrames, DefaultMaxFrames}},
-		{ReaderLimits{10, 20}, ReaderLimits{10, 20}},
+		{ReaderLimits{}, defaults},
+		{ReaderLimits{-1, -1, -1, -1}, defaults},
+		{ReaderLimits{big, big, big, big}, defaults},
+		{ReaderLimits{10, 20, 30, 4}, ReaderLimits{10, 20, 30, 4}},
 	} {
 		if got := c.in.bounded(); got != c.want {
 			t.Errorf("%+v.bounded() = %+v, want %+v", c.in, got, c.want)

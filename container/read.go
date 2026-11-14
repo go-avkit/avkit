@@ -128,7 +128,16 @@ func (r *Reader) sampleBytes(offset, end uint64) ([]byte, error) {
 // Only MP4 is served this way. A transport stream and a Matroska file are read
 // in one pass by their nature — a demuxer walks them from end to end — so they
 // are refused here rather than read twice as slowly.
+//
+// An MP4 that holds more than the default ReaderLimits allow is refused with
+// ErrReaderLimit; NewFileReaderWithLimits lowers the bounds.
 func NewFileReader(src FileSource, size int64) (*Reader, error) {
+	return NewFileReaderWithLimits(src, size, ReaderLimits{})
+}
+
+// NewFileReaderWithLimits is NewFileReader with the caller's bounds, which can
+// only be lower than the defaults.
+func NewFileReaderWithLimits(src FileSource, size int64, limits ReaderLimits) (*Reader, error) {
 	if src == nil {
 		return nil, fmt.Errorf("%w: no file to read", ErrUnsupportedFormat)
 	}
@@ -145,6 +154,9 @@ func NewFileReader(src FileSource, size int64) (*Reader, error) {
 	}
 	if _, err := src.Seek(0, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("container: rewind the file: %w", err)
+	}
+	if err := checkMP4(src, size, limits.bounded()); err != nil {
+		return nil, err
 	}
 	parsed, err := decodeMP4(src, src, size, mp4.WithDecodeMode(mp4.DecModeLazyMdat))
 	if err != nil {
@@ -186,7 +198,8 @@ func readableTraks(parsed *mp4.File) map[uint32]*mp4.TrakBox {
 // MP4's sample tables are indexed, and a transport stream or a Matroska file,
 // which have none, is walked in one pass.
 //
-// A file that holds more than the default bounds are willing to unpack is
+// A file that holds more than the default bounds are willing to unpack (frames
+// of a Matroska file; boxes and their nesting depth in an MP4) is
 // refused with ErrReaderLimit; NewReaderWithLimits lowers them.
 func NewReader(data []byte) (*Reader, error) {
 	return newReader(data, ReaderLimits{}.bounded())
@@ -210,6 +223,9 @@ func newReader(data []byte, limits ReaderLimits) (*Reader, error) {
 	// the other, and a file accepted on disk and refused in memory would be a
 	// defect of its own.
 	held := bytes.NewReader(data)
+	if err := checkMP4(held, int64(len(data)), limits); err != nil {
+		return nil, err
+	}
 	parsed, err := decodeMP4(held, held, int64(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("container: decode mp4: %w", err)
