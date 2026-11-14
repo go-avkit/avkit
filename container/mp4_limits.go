@@ -22,17 +22,18 @@ type mp4Stats struct {
 // mp4ff and the table differ. Any other box is kept as bytes by mp4ff and costs
 // what it holds, and the walk jumps over it.
 //
-// ⛔ The walk models NO offset. Where in a box mp4ff reads its children from can
-// depend on the box's own bytes (a QuickTime text entry after a font name of
-// 0 to 255 bytes, an audio entry at 28, 44 or 64, a meta box at 0 or 4, stpp
-// after three strings): four versions of this walk that modelled it were each
-// bypassed by a file built to make them differ from mp4ff. It takes as the
-// possible start of the children every offset in the first 4 KiB of the box where
-// a box header could be, walks the chain of boxes from each (a chain from the
-// true start is what mp4ff decodes), counts what it finds even when the chain
-// stops short of the end of the box, and charges the box the largest count and
-// the deepest nesting. Whichever offset mp4ff takes, what it decodes is no more
-// than what was counted.
+// ⛔ Where in a box mp4ff reads its children from can depend on the box's own
+// bytes (a QuickTime text entry after a font name of 0 to 255 bytes, an audio
+// entry at 28, 44 or 64, a meta box at 0 or 4, stpp after three strings), and
+// four versions of this walk that modelled it were each bypassed by a file built
+// to make them differ from mp4ff. So: a box that reads them from ONE offset
+// whatever its bytes are (mp4Fixed, found by filling its bytes) is walked at that
+// offset; any other container takes as the possible start of its children every
+// offset in the first 4 KiB where a box header could be, walks the chain of boxes
+// from each (a chain from the true start is what mp4ff decodes), counts what it
+// finds even when the chain stops short of the end of the box, and charges the box
+// the largest count and the deepest nesting. Whichever offset mp4ff takes, what it
+// decodes is no more than what was counted.
 //
 // ⛔ And it fails closed: a box whose offset cannot be bounded (strings that run
 // past the window) is refused, and so is a walk that takes more steps than any
@@ -46,25 +47,11 @@ type mp4Stats struct {
 // samples are listed (progressiveSamples). What a table costs is therefore
 // bounded by the bytes that hold it, and the number of boxes is what was left.
 
-// printableType says whether four bytes can be a box type as files write them:
-// printable ASCII, or the (c) sign of the iTunes tags (0xA9) first. A candidate
-// offset that holds anything else is not taken for the start of children, and a
-// chain from a guessed start ends at it: numbers in a table that happen to be a
-// plausible size would otherwise each start a chain through the table.
-//
-// ⛔ This is the one assumption the walk makes about a box it cannot place: that
-// its type is printable. mp4ff decodes any four bytes as the type of an unknown
-// box, so a flood of boxes of a non-printable type, inside a box whose children
-// start at a content-dependent offset (a QuickTime text entry, an audio entry),
-// is not counted; where the start is known (every other container) it is.
-func printableType(t [4]byte) bool {
-	for i, b := range t {
-		if (b < 0x20 || b > 0x7e) && !(i == 0 && b == 0xa9) {
-			return false
-		}
-	}
-	return true
-}
+// ⛔ No box is filtered by its type. mp4ff decodes any four bytes as the type of
+// an unknown box, and a flood of them costs as much as a flood of any other. An
+// earlier version that kept only printable types where the start of the children
+// is searched for let a flood of non-printable ones through, and applied the
+// search to every container, moov included.
 
 // mp4OffsetWindow is how far into a box the walk looks for where its children
 // start: every offset in it that opens a plausible box is a candidate, and in the
@@ -159,9 +146,6 @@ func (w *mp4Walk) level(pos, end int64, depth int, anyKind bool, cands []int64, 
 		}
 		boxSize, hdr := int64(binary.BigEndian.Uint32(head[:4])), int64(8)
 		typ := [4]byte(head[4:8])
-		if cands != nil && !printableType(typ) {
-			return nil // where the start is a guess, bytes that are not a box end the chain
-		}
 		w.stats.boxes++
 		if w.stats.boxes > w.limits.MaxBoxes {
 			return limitError("the file holds more than %d boxes", w.limits.MaxBoxes)
@@ -246,6 +230,17 @@ func (w *mp4Walk) offsets(typ string, listed bool, start, end int64) ([]int64, e
 	if !listed {
 		return []int64{start}, nil
 	}
+	// A box that reads its children from one offset whatever its bytes are: that
+	// offset, and every child counted whatever its type.
+	if skip, ok := mp4Fixed[typ]; ok {
+		if start+int64(skip) > end {
+			return nil, nil
+		}
+		return []int64{start + int64(skip)}, nil
+	}
+	// The few boxes whose bytes choose the offset: every offset where a box header
+	// could start, whatever the type, for a flood of boxes of any type is counted.
+	// The search runs in these boxes alone, small ones, and never in a table.
 	out := make([]int64, 0, 2)
 	for s := start; s+8 <= end && s < start+mp4OffsetWindow; s++ {
 		if err := w.step(); err != nil {
@@ -256,7 +251,7 @@ func (w *mp4Walk) offsets(typ string, listed bool, start, end int64) ([]int64, e
 			break
 		}
 		size := int64(binary.BigEndian.Uint32(head))
-		if (size == 1 || (size >= 8 && size <= end-s)) && printableType([4]byte(head[4:8])) {
+		if size == 1 || (size >= 8 && size <= end-s) {
 			out = append(out, s)
 		}
 	}

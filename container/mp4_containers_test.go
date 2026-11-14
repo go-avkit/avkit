@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -70,6 +69,19 @@ func TestTheWalkDescendsIntoEveryBoxMp4ffDoes(t *testing.T) {
 	}
 	if !maps.Equal(probed.Strings, mp4StringForms) {
 		t.Errorf("mp4ff holds strings before the children of %v, the walk knows %v", probed.Strings, mp4StringForms)
+	}
+	if !maps.Equal(probed.Fixed, mp4Fixed) {
+		t.Errorf("mp4ff reads children of %v from one offset, the walk knows %v", probed.Fixed, mp4Fixed)
+	}
+	for _, typ := range []string{"moov", "trak", "udta", "stbl", "stsd", "avc1"} {
+		if _, ok := mp4Fixed[typ]; !ok {
+			t.Errorf("%q has children at one offset and is not fixed", typ)
+		}
+	}
+	for _, typ := range []string{"text", "mp4a", "meta", "stpp", "tmcd"} {
+		if _, ok := mp4Fixed[typ]; ok {
+			t.Errorf("%q has children at an offset its bytes choose and is fixed", typ)
+		}
 	}
 	if !maps.Equal(probed.AnyKind, mp4AnyKind) {
 		t.Errorf("mp4ff takes children of any type in %v, the walk in %v", probed.AnyKind, mp4AnyKind)
@@ -266,21 +278,48 @@ func TestTheScanForStringsSpendsSteps(t *testing.T) {
 	}
 }
 
-// Bytes that are not a box type end a chain from a guessed start without being
-// counted, and are not taken for a start.
-func TestAChainFromAGuessedStartEndsAtBytesThatAreNotABox(t *testing.T) {
-	data := slices.Concat(mp4Ftyp(), box("meta", box("free"), box("free"), binary.BigEndian.AppendUint32(nil, 8), make([]byte, 4)))
+// A box too short to hold the header before its children has none to count.
+func TestABoxTooShortForItsHeaderHoldsNoChildren(t *testing.T) {
+	data := slices.Concat(mp4Ftyp(), box("avc1", make([]byte, 10)))
 	st, err := walkMP4(bytes.NewReader(data), int64(len(data)), ReaderLimits{MaxBoxes: 100, MaxBoxDepth: 64})
-	// ftyp, meta, and the two free boxes: the box of type 0 is not one.
-	if err != nil || st.boxes != 4 {
-		t.Errorf("walk = %+v, %v; want 4 boxes", st, err)
+	if err != nil || st.boxes != 2 {
+		t.Errorf("walk = %+v, %v; want 2 boxes", st, err)
 	}
-	for _, c := range []struct {
-		t    [4]byte
-		want bool
-	}{{[4]byte{'m', 'o', 'o', 'v'}, true}, {[4]byte{0xa9, 'n', 'a', 'm'}, true}, {[4]byte{'a', 0xa9, 'n', 'm'}, false}, {[4]byte{0, 0, 0, 1}, false}, {[4]byte{'a', 'b', 'c', 0x7f}, false}} {
-		if printableType(c.t) != c.want {
-			t.Errorf("printableType(%q) = %v", c.t[:], !c.want)
+}
+
+// The fourth review: a flood of boxes of a type that is not printable text
+// (\x01\x02\x03\x04) is decoded by mp4ff as unknown boxes, as costly as any, and
+// was counted by no walk that filtered the types it looked for. It is counted
+// where the children start at a fixed offset (moov, udta, stsd), and in the boxes
+// whose bytes choose where they start (mp4a v0 and v1, text with a font name of 1,
+// 10 or 200 bytes, meta).
+func oddTypeBombs() map[string][]byte {
+	odd := bytes.Repeat(binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, 8), 0x01020304), bombBoxes)
+	v1 := make([]byte, 44)
+	binary.BigEndian.PutUint16(v1[8:], 1)
+	text := func(n int) []byte {
+		return box("text", make([]byte, 50), []byte{byte(n)}, bytes.Repeat([]byte("A"), n), odd)
+	}
+	return map[string][]byte{
+		"moov":           box("moov", odd),
+		"moov>udta":      box("moov", box("udta", odd)),
+		"udta":           box("udta", odd),
+		"stsd":           box("moov", box("trak", box("mdia", box("minf", box("stbl", box("stsd", []byte{0, 0, 0, 0, 0, 0, 0, 1}, box("avc1", make([]byte, 78), odd))))))),
+		"mp4a v0":        box("mp4a", make([]byte, 28), odd),
+		"mp4a v1":        box("mp4a", v1, odd),
+		"meta":           box("meta", make([]byte, 4), odd),
+		"text, name 1":   text(1),
+		"text, name 10":  text(10),
+		"text, name 200": text(200),
+	}
+}
+
+func TestAFloodOfBoxesOfAnyTypeIsRefusedBeforeItIsDecoded(t *testing.T) {
+	for name, payload := range oddTypeBombs() {
+		data := slices.Concat(mp4Ftyp(), payload)
+		refusedEverywhere(t, data, ReaderLimits{MaxBoxes: 1_000}, false, 1<<20)
+		if n, _ := mp4ffBoxCount(data); n < bombBoxes/2 && name != "stsd" {
+			t.Errorf("%s: mp4ff decoded %d boxes: not a bomb", name, n)
 		}
 	}
 }
@@ -349,18 +388,23 @@ func mp4ffBoxCount(data []byte) (n int, mallocs uint64) {
 	}
 	// ftab is left out: mp4ff makes one up for a QuickTime text entry from the
 	// font name the entry holds, and it is in no box of the file.
-	line := regexp.MustCompile(`(?m)^\s*\[(.{4})\] size=`)
-	for _, child := range f.Children {
-		var info bytes.Buffer
-		func() {
-			defer func() { _ = recover() }()
-			_ = child.Info(&info, "all", "", "  ")
-		}()
-		for _, m := range line.FindAllSubmatch(info.Bytes(), -1) {
-			if string(m[1]) != "ftab" {
-				n++
+	//
+	// The boxes are counted from the tree, not from the text of Info: Info does not
+	// list the unknown boxes of a container, which is how a flood of them (the
+	// fourth review's) went by an oracle that counted lines.
+	var count func(b mp4.Box)
+	count = func(b mp4.Box) {
+		if b.Type() != "ftab" {
+			n++
+		}
+		if c, ok := b.(interface{ GetChildren() []mp4.Box }); ok {
+			for _, child := range c.GetChildren() {
+				count(child)
 			}
 		}
+	}
+	for _, child := range f.Children {
+		count(child)
 	}
 	return n, mallocs
 }
@@ -393,6 +437,9 @@ func FuzzMP4WalkCovers(f *testing.F) {
 	for _, payload := range chosenOffsetBombs() {
 		f.Add(slices.Concat(mp4Ftyp(), payload))
 	}
+	for _, payload := range oddTypeBombs() {
+		f.Add(slices.Concat(mp4Ftyp(), payload))
+	}
 	f.Add(audioMaze(3))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) > 4<<20 {
@@ -416,7 +463,9 @@ func TestTheWalkCoversWhatMp4ffDecodes(t *testing.T) {
 		}
 		checkWalkCovers(t, data)
 	}
-	for name, payload := range chosenOffsetBombs() {
+	bombs := chosenOffsetBombs()
+	maps.Copy(bombs, oddTypeBombs())
+	for name, payload := range bombs {
 		data := slices.Concat(mp4Ftyp(), payload)
 		st, err := walkMP4(bytes.NewReader(data), int64(len(data)), ReaderLimits{MaxBoxes: 1 << 22, MaxBoxDepth: 64})
 		n, mallocs := mp4ffBoxCount(data)

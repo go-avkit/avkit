@@ -208,6 +208,26 @@ type Forms struct {
 	Skips   map[string][]int
 	Strings map[string]int
 	AnyKind map[string]bool
+	// Fixed holds, for the boxes that read their children from one offset
+	// whatever their bytes are, that offset. A box with several, with strings
+	// before the children, or whose one offset moves when its bytes are filled
+	// with 0x01 or 0xFF (a QuickTime text entry's font name) is not in it.
+	Fixed map[string]int
+}
+
+// fixedSkip is the one offset a box reads its children from whatever its bytes
+// are, or -1: the box has several, or the one it has does not hold when the
+// bytes before the children are all 0x01, or all 0xFF.
+func fixedSkip(typ string, skips []int) int {
+	if len(skips) != 1 {
+		return -1
+	}
+	for _, fill := range []byte{1, 0xff} {
+		if !descends(typ, bytes.Repeat([]byte{fill}, skips[0])) {
+			return -1
+		}
+	}
+	return skips[0]
 }
 
 // Probe asks mp4ff about every type of box.go.
@@ -216,13 +236,16 @@ func Probe(src []byte) (Forms, error) {
 	if err != nil {
 		return Forms{}, err
 	}
-	f := Forms{Skips: map[string][]int{}, Strings: map[string]int{}, AnyKind: map[string]bool{}}
+	f := Forms{Skips: map[string][]int{}, Strings: map[string]int{}, AnyKind: map[string]bool{}, Fixed: map[string]int{}}
 	for _, typ := range types {
 		s := Skips(typ)
 		if len(s) == 0 {
 			continue
 		}
 		f.Skips[typ] = s
+		if skip := fixedSkip(typ, s); skip >= 0 && StringLead(typ, s) < 0 {
+			f.Fixed[typ] = skip
+		}
 		if lead := StringLead(typ, s); lead >= 0 {
 			f.Strings[typ] = lead
 		}
@@ -271,6 +294,19 @@ func Generate(dir string, version string) ([]byte, error) {
 	sort.Strings(types)
 	for _, typ := range types {
 		fmt.Fprintf(&b, "\t%s: %d,\n", strconv.Quote(typ), f.Strings[typ])
+	}
+	b.WriteString("}\n\n")
+	b.WriteString("// mp4Fixed are the boxes that read their children from one offset, by the bytes\n")
+	b.WriteString("// before them, whatever those bytes are. Every other container's children start\n")
+	b.WriteString("// where its own bytes say.\n")
+	b.WriteString("var mp4Fixed = map[string]int{\n")
+	types = types[:0]
+	for typ := range f.Fixed {
+		types = append(types, typ)
+	}
+	sort.Strings(types)
+	for _, typ := range types {
+		fmt.Fprintf(&b, "\t%s: %d,\n", strconv.Quote(typ), f.Fixed[typ])
 	}
 	b.WriteString("}\n\n")
 	b.WriteString("// mp4AnyKind are the boxes whose children are all containers, whatever their\n")
