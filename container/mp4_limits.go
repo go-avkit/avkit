@@ -55,18 +55,36 @@ type mp4Walk struct {
 	at     io.ReaderAt
 	limits ReaderLimits
 	stats  mp4Stats
-	header [16]byte
+	// window is the last 4 KiB read, so that a flood of 8-byte boxes costs one
+	// read per 512 of them: a file read at every header costs a system call
+	// each, and on Windows an allocation too (12.5 MB for a million boxes).
+	window    [4 << 10]byte
+	windowOff int64
+	windowLen int
+}
+
+// peek returns the n bytes at off, nil when the source does not hold them. The
+// slice is valid until the next peek.
+func (w *mp4Walk) peek(off int64, n int) []byte {
+	if off < w.windowOff || off+int64(n) > w.windowOff+int64(w.windowLen) {
+		w.windowLen, _ = w.at.ReadAt(w.window[:], off)
+		w.windowOff = off
+	}
+	if off+int64(n) > w.windowOff+int64(w.windowLen) {
+		return nil
+	}
+	return w.window[off-w.windowOff:][:n]
 }
 
 // level walks the boxes that fill [pos, end) at the given depth.
 func (w *mp4Walk) level(pos, end int64, depth int) error {
-	// One buffer for the whole walk: it is handed to an interface, so a local
-	// would be allocated at every level. Nothing of it is read after a descent.
-	header := &w.header
 	for end-pos >= 8 {
-		if _, err := w.at.ReadAt(header[:8], pos); err != nil {
+		head := w.peek(pos, 8)
+		if head == nil {
 			return nil
 		}
+		boxSize, hdr := int64(binary.BigEndian.Uint32(head[:4])), int64(8)
+		typ := [4]byte(head[4:8])
 		w.stats.boxes++
 		if w.stats.boxes > w.limits.MaxBoxes {
 			return limitError("the file holds more than %d boxes", w.limits.MaxBoxes)
@@ -75,7 +93,6 @@ func (w *mp4Walk) level(pos, end int64, depth int) error {
 			return limitError("boxes nested more than %d deep", w.limits.MaxBoxDepth)
 		}
 		w.stats.depth = max(w.stats.depth, depth)
-		boxSize, hdr := int64(binary.BigEndian.Uint32(header[:4])), int64(8)
 		switch boxSize {
 		case 0:
 			boxSize = end - pos // to the end of the enclosing box
@@ -83,10 +100,11 @@ func (w *mp4Walk) level(pos, end int64, depth int) error {
 			if end-pos < 16 {
 				return nil
 			}
-			if _, err := w.at.ReadAt(header[8:16], pos+8); err != nil {
+			wide := w.peek(pos+8, 8)
+			if wide == nil {
 				return nil
 			}
-			large := binary.BigEndian.Uint64(header[8:16])
+			large := binary.BigEndian.Uint64(wide)
 			if large < 16 || large > uint64(end-pos) {
 				return nil
 			}
@@ -95,7 +113,7 @@ func (w *mp4Walk) level(pos, end int64, depth int) error {
 		if boxSize < hdr || boxSize > end-pos {
 			return nil
 		}
-		if skip, ok := mp4Containers[string(header[4:8])]; ok && boxSize-hdr >= int64(skip) {
+		if skip, ok := mp4Containers[string(typ[:])]; ok && boxSize-hdr >= int64(skip) {
 			if err := w.level(pos+hdr+int64(skip), pos+boxSize, depth+1); err != nil {
 				return err
 			}

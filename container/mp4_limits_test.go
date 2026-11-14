@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -228,10 +229,14 @@ func (failingAt) ReadAt([]byte, int64) (int, error) { return 0, errors.New("unre
 type shortAt struct{ data []byte }
 
 func (s shortAt) ReadAt(b []byte, off int64) (int, error) {
-	if off >= int64(len(s.data)) || off+int64(len(b)) > int64(len(s.data)) {
-		return 0, errors.New("past the end")
+	if off >= int64(len(s.data)) {
+		return 0, io.EOF
 	}
-	return copy(b, s.data[off:]), nil
+	n := copy(b, s.data[off:])
+	if n < len(b) {
+		return n, io.EOF
+	}
+	return n, nil
 }
 
 // A real MP4 reads as it did: the check counts, it does not alter the read.
