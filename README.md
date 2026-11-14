@@ -1276,18 +1276,47 @@ past a bound with `ErrReaderLimit` (use `errors.Is`).
   real file is never refused. At the defaults the worst case is about 380 B
   allocated per input byte of one-byte laced frames; a caller with less memory,
   a WebAssembly worker for one, passes lower limits.
-- **`ReaderLimits`.** `MaxTrackFrames` and `MaxFrames`; a value of zero, a
-  negative value or one above its default means the default, so a caller can only
-  lower a bound.
-- **Entry points that take limits.** `NewReaderWithLimits`, `DemuxWithLimits` and
-  `OpenFileWithLimits`; `NewReader`, `Demux` and `OpenFile` apply the defaults.
-  `NewFileReader` reads MP4 only and refuses a Matroska file before it parses it.
-- **Only Matroska is covered for now.** The MP4 box count
-  (go-avkit/avkit#113) will be bounded through the same `ReaderLimits`.
+- **`ReaderLimits`.** `MaxTrackFrames` and `MaxFrames` for Matroska, `MaxBoxes`
+  and `MaxBoxDepth` for MP4; a value of zero, a negative value or one above its
+  default means the default, so a caller can only lower a bound. Build it with
+  field names, for fields have been added since v0.17.0.
+- **Entry points that take limits.** `NewReaderWithLimits`, `DemuxWithLimits`,
+  `NewFileReaderWithLimits` and `OpenFileWithLimits`; `NewReader`, `Demux`,
+  `NewFileReader` and `OpenFile` apply the defaults. `NewFileReader` reads MP4
+  only and refuses a Matroska file before it parses it.
 
 The check walks the elements ebml-go itself descends into. That set is generated
 from ebml-go's element table (`internal/ebmlmasters`), and a test fails when a new
 ebml-go version changes it.
+
+### MP4 boxes
+
+`mp4ff` decodes every box into a Go value, so a file of empty 8-byte `free` boxes
+cost about 33 bytes of allocation per input byte: 8 MiB of them made `NewReader`
+allocate 270 MB before it said `MP4 has no moov box` (go-avkit/avkit#113). Every
+MP4 entry point now walks the box headers first, reading 8 or 16 bytes per box
+and nothing else, and refuses the file with `ErrReaderLimit` before `mp4ff`
+allocates anything for it.
+
+- **`MaxBoxes`.** The boxes of the whole file, all levels together. The default,
+  `DefaultMaxBoxes`, is 1<<20: about 1,900 times the largest of a library of 3,466
+  MP4, MOV and M4A files (552 boxes), and room for a day of one-second fragments
+  of two tracks.
+- **`MaxBoxDepth`.** How deep boxes nest. The default, `DefaultMaxBoxDepth`, is
+  64, `mp4ff`'s own bound and ten times the deepest file of that library (6); a
+  lower bound refuses before `mp4ff` allocates the 0.8 MB it took to reach 64.
+- **The worst case at the defaults** is the flood above, 1<<20 boxes of 8 bytes:
+  33 bytes allocated per input byte (276 MB for 8 MiB; a test asserts the bound of
+  400 bytes per input byte). A caller with less memory lowers `MaxBoxes`.
+- **No bound on table entries.** A table box (`stts`, `stsc`, `stsz`, `stco`,
+  `trun`...) states a count, and `mp4ff` checks it against the bytes of its box
+  before it sizes anything: a 16-byte `stts` stating 2^32-1 entries is refused
+  after 4 KB. A uniform `stsz`, which states a count in 20 bytes, is checked against
+  the size of the file when the samples are listed. A table costs what holds it,
+  so a count of its own would bound nothing the file size does not; a test pins the
+  premise so that a `mp4ff` that stopped checking fails it.
+- **What is not covered.** The CENC functions, `DecryptFile` among them, decode
+  MP4 boxes of their own and take no `ReaderLimits`.
 
 ## Guarantees
 

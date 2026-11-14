@@ -14,8 +14,11 @@ import (
 // demuxMP4 reads an ISO-BMFF (MP4/MOV) file with the reference mp4ff library and
 // projects its box tree onto the unified File/Track metadata. Container parsing
 // is delegated to mp4ff; this file only maps its structures.
-func demuxMP4(data []byte) (*File, error) {
+func demuxMP4(data []byte, limits ReaderLimits) (*File, error) {
 	held := bytes.NewReader(data)
+	if err := checkMP4(held, int64(len(data)), limits); err != nil {
+		return nil, err
+	}
 	mf, err := decodeMP4(held, held, int64(len(data)))
 	if err != nil {
 		return nil, err

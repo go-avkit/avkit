@@ -226,7 +226,7 @@ func TestDemuxMP4NoMoov(t *testing.T) {
 	if err := mp4.NewFtyp("isom", 0, []string{"isom"}).Encode(&buf); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := demuxMP4(buf.Bytes()); err == nil {
+	if _, err := demuxMP4(buf.Bytes(), ReaderLimits{}.bounded()); err == nil {
 		t.Fatal("expected 'no moov' error")
 	}
 }
