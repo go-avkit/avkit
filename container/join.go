@@ -210,7 +210,16 @@ func HoldsFragments(src io.ReaderAt) (bool, error) {
 // walks those from end to end and there is nothing to address into.
 //
 // The returned function closes what was opened. It is not nil.
+//
+// A Matroska file is refused with ErrReaderLimit past the default ReaderLimits;
+// OpenFileWithLimits lowers them.
 func OpenFile(path string) (*Reader, func() error, error) {
+	return OpenFileWithLimits(path, ReaderLimits{})
+}
+
+// OpenFileWithLimits is OpenFile with the caller's bounds, which can only be
+// lower than the defaults.
+func OpenFileWithLimits(path string, limits ReaderLimits) (*Reader, func() error, error) {
 	noClose := func() error { return nil }
 	fh, err := openFile(path)
 	if err != nil {
@@ -230,7 +239,7 @@ func OpenFile(path string) (*Reader, func() error, error) {
 	if err != nil {
 		return nil, noClose, err
 	}
-	r, err := NewReader(data)
+	r, err := NewReaderWithLimits(data, limits)
 	if err != nil {
 		return nil, noClose, err
 	}

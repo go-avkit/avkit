@@ -185,13 +185,20 @@ func readableTraks(parsed *mp4.File) map[uint32]*mp4.TrakBox {
 // NewReader reads the structure of a container and prepares its samples: an
 // MP4's sample tables are indexed, and a transport stream or a Matroska file,
 // which have none, is walked in one pass.
+//
+// A file that holds more than the default bounds are willing to unpack is
+// refused with ErrReaderLimit; NewReaderWithLimits lowers them.
 func NewReader(data []byte) (*Reader, error) {
+	return newReader(data, ReaderLimits{}.bounded())
+}
+
+func newReader(data []byte, limits ReaderLimits) (*Reader, error) {
 	switch format := Sniff(data); format {
 	case FormatMP4:
 	case FormatMPEGTS:
 		return newTSReader(data)
 	case FormatMatroska:
-		return newMatroskaReader(data)
+		return newMatroskaReader(data, limits)
 	default:
 		if f, ok := elementaryFor(format); ok {
 			return newElementaryReader(f, data)

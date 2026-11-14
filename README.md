@@ -1258,6 +1258,37 @@ has no `ContentProtection`), so the end-to-end test is the oracle: the directory
 `WriteDir` writes is read back through the playlists it wrote, and the segments
 they name decrypt with the key to the clear segmentation's samples.
 
+## Reader limits on hostile files
+
+A Matroska block states how many frames it laces in one byte, and each frame
+costs the reader a slice, so a 7-byte block can ask for 256 of them: a 70 KB file
+of such blocks once made `NewReader` allocate 925 MiB. The reader now counts the
+frames from the block headers, before anything is unlaced, and refuses a file
+past a bound with `ErrReaderLimit` (use `errors.Is`).
+
+- **What is bounded.** A block cannot state more frames than it has bytes
+  after its lace count (zero-size frames included). The frames of one track
+  are bounded by `MaxTrackFrames`, and the frames of the whole file by
+  `MaxFrames`.
+- **The defaults.** `DefaultMaxTrackFrames` is 1<<24 and `DefaultMaxFrames` is
+  1<<25. They sit about 1.85 and 3.5 times above the largest file of a library of
+  30 Matroska files, a 4K remux whose TrueHD track holds 9,064,256 frames, so a
+  real file is never refused. At the defaults the worst case is about 380 B
+  allocated per input byte of one-byte laced frames; a caller with less memory,
+  a WebAssembly worker for one, passes lower limits.
+- **`ReaderLimits`.** `MaxTrackFrames` and `MaxFrames`; a value of zero, a
+  negative value or one above its default means the default, so a caller can only
+  lower a bound.
+- **Entry points that take limits.** `NewReaderWithLimits`, `DemuxWithLimits` and
+  `OpenFileWithLimits`; `NewReader`, `Demux` and `OpenFile` apply the defaults.
+  `NewFileReader` reads MP4 only and refuses a Matroska file before it parses it.
+- **Only Matroska is covered for now.** The MP4 box count
+  (go-avkit/avkit#113) will be bounded through the same `ReaderLimits`.
+
+The check walks the elements ebml-go itself descends into. That set is generated
+from ebml-go's element table (`internal/ebmlmasters`), and a test fails when a new
+ebml-go version changes it.
+
 ## Guarantees
 
 - **Pure Go, CGO=0.** No `libav`, no `exec` to `ffmpeg`.

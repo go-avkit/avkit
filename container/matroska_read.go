@@ -146,7 +146,12 @@ type mkvFrame struct {
 // newMatroskaReader reads a Matroska or WebM file whole. There is no sample
 // table to seek with, so every cluster is walked and every block converted in
 // one pass, the way a transport stream is.
-func newMatroskaReader(data []byte) (*Reader, error) {
+func newMatroskaReader(data []byte, limits ReaderLimits) (*Reader, error) {
+	// Before ebml-go sees a block: it unlaces while it parses. A truncated
+	// file's kept prefix is part of data, so one check covers both parses.
+	if err := checkMatroskaFrames(data, limits); err != nil {
+		return nil, err
+	}
 	doc, groups, err := unmarshalMatroska(data)
 	truncated := false
 	if err != nil {
