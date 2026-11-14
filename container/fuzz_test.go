@@ -106,6 +106,13 @@ func readAll(r *Reader) {
 
 func FuzzNewReader(f *testing.F) {
 	fuzzSeeds(f)
+	// Maximal lace counts, empty and one byte per frame, in every lacing: the
+	// shape of go-avkit/avkit#120.
+	for _, l := range lacings {
+		for _, frameLen := range []int{0, 1} {
+			f.Add(bombDoc(f, l.mode, 200, frameLen))
+		}
+	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		withinBudget(t, len(data), func() {
 			r, err := NewReader(data)

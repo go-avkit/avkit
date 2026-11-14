@@ -330,7 +330,7 @@ func TestAPrefixTheParserStillRefusesReportsTheOriginalError(t *testing.T) {
 	odd := ebmlElem([]byte{0xBF}, 1, []byte{0x01, 0x02}) // CRC-32, legal but not a Segment child
 	seg := ebmlElem(idSegment, 2, odd)
 	data := append(append(ebmlElem(idEBMLHeader, 1, []byte{0x01}), seg...), 0xEC)
-	_, err := newMatroskaReader(data)
+	_, err := newMatroskaReader(data, ReaderLimits{}.bounded())
 	if err == nil {
 		t.Fatal("rubbish was accepted")
 	}
