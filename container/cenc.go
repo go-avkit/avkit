@@ -119,8 +119,15 @@ type protection struct {
 	raw    [][]byte
 }
 
-// check validates e and fills in a random IV.
+// check validates e and fills in a random IV, bounding the pssh boxes by the
+// default reader limits.
 func (e Encryption) check() (*protection, error) {
+	return e.checkWith(ReaderLimits{}.bounded())
+}
+
+// checkWith is check with the bounds of limits, already bounded, on the boxes a
+// pssh holds.
+func (e Encryption) checkWith(limits ReaderLimits) (*protection, error) {
 	if e.Scheme != SchemeCENC && e.Scheme != SchemeCBCS {
 		return nil, fmt.Errorf("%w: scheme %q is neither cenc nor cbcs", ErrEncryption, string(e.Scheme))
 	}
@@ -146,6 +153,9 @@ func (e Encryption) check() (*protection, error) {
 	for i, raw := range e.PSSH {
 		if len(raw) > MaxPSSHSize {
 			return nil, fmt.Errorf("%w: pssh box %d is %d bytes, at most %d", ErrEncryption, i, len(raw), MaxPSSHSize)
+		}
+		if err := checkCENC(raw, limits); err != nil {
+			return nil, fmt.Errorf("pssh box %d: %w", i, err)
 		}
 		box, err := mp4.DecodeBox(0, bytes.NewReader(raw))
 		if err != nil {
@@ -201,6 +211,13 @@ func newTrackEncryptor(init []byte, p *protection) ([]byte, *trackEncryptor, err
 	return out, &trackEncryptor{ipd: ipd, p: p, iv: p.iv}, nil
 }
 
+// checkCENC walks the box headers of an MP4 the CENC functions are about to
+// decode, with checkMP4 and the bounds of the readers, and refuses it with
+// ErrReaderLimit before mp4ff allocates a box for it. limits are already bounded.
+func checkCENC(data []byte, limits ReaderLimits) error {
+	return checkMP4(bytes.NewReader(data), int64(len(data)), limits)
+}
+
 // encodeMemory writes a box or segment to memory; it is a variable so that the
 // failure of an encoding, which a memory buffer never reports, can be tested.
 var encodeMemory = func(e interface{ Encode(io.Writer) error }) ([]byte, error) {
@@ -238,9 +255,25 @@ func (e *trackEncryptor) segment(seg []byte) ([]byte, error) {
 // without a styp or sidx, in decode order. The inputs are not modified. Video
 // (avc1, avc3, hvc1, hev1, av01, vp09 for cenc) is encrypted in subsamples, audio
 // whole.
+//
+// Every input is walked for its box count and nesting first, as NewReader does,
+// and one past a bound is refused with ErrReaderLimit; Encrypt applies the
+// default bounds (see EncryptWithLimits).
 func Encrypt(init []byte, segments [][]byte, enc Encryption) ([]byte, [][]byte, error) {
-	p, err := enc.check()
+	return EncryptWithLimits(init, segments, enc, ReaderLimits{})
+}
+
+// EncryptWithLimits is Encrypt with the caller's bounds on the boxes of each
+// input (the initialisation segment, each media segment, each pssh box), which
+// can only be lower than the defaults. MaxBoxes and MaxBoxDepth apply to each
+// input on its own; the fields for frames are not used.
+func EncryptWithLimits(init []byte, segments [][]byte, enc Encryption, limits ReaderLimits) ([]byte, [][]byte, error) {
+	limits = limits.bounded()
+	p, err := enc.checkWith(limits)
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := checkCENC(init, limits); err != nil {
 		return nil, nil, err
 	}
 	outInit, te, err := newTrackEncryptor(init, p)
@@ -249,6 +282,9 @@ func Encrypt(init []byte, segments [][]byte, enc Encryption) ([]byte, [][]byte, 
 	}
 	out := make([][]byte, len(segments))
 	for i, s := range segments {
+		if err := checkCENC(s, limits); err != nil {
+			return nil, nil, fmt.Errorf("segment %d: %w", i, err)
+		}
 		if out[i], err = te.segment(s); err != nil {
 			return nil, nil, fmt.Errorf("segment %d: %w", i, err)
 		}
@@ -340,7 +376,22 @@ func (d *decryptor) segment(s *mp4.MediaSegment) error {
 // segment is dropped, as its sizes no longer hold. The key is the clear content
 // key; it is not matched against the track's KID. A track that is not protected
 // comes back as it is.
+//
+// Every input is walked for its box count and nesting first, and one past a
+// bound is refused with ErrReaderLimit; Decrypt applies the default bounds (see
+// DecryptWithLimits).
 func Decrypt(init []byte, segments [][]byte, key ContentKey) ([]byte, [][]byte, error) {
+	return DecryptWithLimits(init, segments, key, ReaderLimits{})
+}
+
+// DecryptWithLimits is Decrypt with the caller's bounds on the boxes of each
+// input, which can only be lower than the defaults. MaxBoxes and MaxBoxDepth
+// apply to the initialisation segment and to each media segment on its own.
+func DecryptWithLimits(init []byte, segments [][]byte, key ContentKey, limits ReaderLimits) ([]byte, [][]byte, error) {
+	limits = limits.bounded()
+	if err := checkCENC(init, limits); err != nil {
+		return nil, nil, err
+	}
 	f, err := mp4.DecodeFile(bytes.NewReader(init))
 	if err != nil || f.Init == nil {
 		return nil, nil, fmt.Errorf("%w: no initialisation segment", ErrDecrypt)
@@ -351,6 +402,9 @@ func Decrypt(init []byte, segments [][]byte, key ContentKey) ([]byte, [][]byte, 
 	}
 	out := make([][]byte, len(segments))
 	for i, s := range segments {
+		if err := checkCENC(s, limits); err != nil {
+			return nil, nil, fmt.Errorf("segment %d: %w", i, err)
+		}
 		g, err := mp4.DecodeFile(bytes.NewReader(s))
 		if err != nil || len(g.Segments) != 1 {
 			return nil, nil, fmt.Errorf("%w: segment %d is not a single media segment", ErrDecrypt, i)
@@ -367,7 +421,20 @@ func Decrypt(init []byte, segments [][]byte, key ContentKey) ([]byte, [][]byte, 
 
 // DecryptFile decrypts a whole fragmented MP4 file, the initialisation segment
 // and all its fragments, of any number of tracks.
+//
+// The file is walked for its box count and nesting first, and refused with
+// ErrReaderLimit past a bound; DecryptFile applies the default bounds (see
+// DecryptFileWithLimits).
 func DecryptFile(data []byte, key ContentKey) ([]byte, error) {
+	return DecryptFileWithLimits(data, key, ReaderLimits{})
+}
+
+// DecryptFileWithLimits is DecryptFile with the caller's bounds on the boxes of
+// the file, which can only be lower than the defaults.
+func DecryptFileWithLimits(data []byte, key ContentKey, limits ReaderLimits) ([]byte, error) {
+	if err := checkCENC(data, limits.bounded()); err != nil {
+		return nil, err
+	}
 	f, err := mp4.DecodeFile(bytes.NewReader(data))
 	if err != nil || f.Init == nil {
 		return nil, fmt.Errorf("%w: not a fragmented MP4 file", ErrDecrypt)

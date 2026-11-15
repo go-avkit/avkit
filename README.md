@@ -1342,8 +1342,19 @@ allocates anything for it.
   the size of the file when the samples are listed. A table costs what holds it,
   so a count of its own would bound nothing the file size does not; a test pins the
   premise so that a `mp4ff` that stopped checking fails it.
-- **What is not covered.** The CENC functions, `DecryptFile` among them, decode
-  MP4 boxes of their own and take no `ReaderLimits`.
+- **The CENC functions are covered** (go-avkit/avkit#123). `Encrypt`, `Decrypt`
+  and `DecryptFile` walk every MP4 they are about to decode (the initialisation
+  segment, each media segment, the file, each `pssh` box of an `Encryption`) with
+  the same check, and refuse one past a bound with `ErrReaderLimit`. They apply
+  the defaults; `EncryptWithLimits`, `DecryptWithLimits` and
+  `DecryptFileWithLimits` take a `ReaderLimits` that can only lower them, and
+  `MaxBoxes` and `MaxBoxDepth` apply to each input on its own. `sinf`, `schi`,
+  `encv`, `enca`, `moof` and `traf` are containers `mp4ff` descends into, so they
+  are in the generated table and a flood inside them is counted; `tenc`, `senc`,
+  `saiz`, `saio`, `pssh`, `schm` and `frma` are leaves, counted as one box each
+  and costing what they hold. A flood of 1<<20 + 1 boxes (8 MiB) made each of
+  them allocate 276 MB before it was refused, and now 8 to 25 KB; encrypted
+  files decrypt byte for byte as before.
 
 ## Guarantees
 
