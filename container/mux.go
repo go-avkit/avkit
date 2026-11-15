@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math/bits"
+	"slices"
 	"strings"
 	"time"
 
@@ -1010,6 +1011,13 @@ func decodeDec3(payload []byte) (*mp4.Dec3Box, error) {
 // handing the decoder the header that content would have had.
 func decodeConfigBox(name string, payload []byte,
 	decode func(mp4.BoxHeader, uint64, io.Reader) (mp4.Box, error)) (mp4.Box, error) {
+	// The record is walked as the box it would have been, a header of size 0
+	// (to the end) in front of it, so that the children of a container such as
+	// stpp are counted before mp4ff decodes them.
+	whole := slices.Concat(binary.BigEndian.AppendUint32(nil, 0), []byte(name), payload)
+	if err := checkCENC(whole, ReaderLimits{}.bounded()); err != nil {
+		return nil, err
+	}
 	hdr := mp4.BoxHeader{Name: name, Size: uint64(8 + len(payload)), Hdrlen: 8}
 	box, err := decode(hdr, 0, bytes.NewReader(payload))
 	if err != nil {

@@ -83,7 +83,15 @@ func (c *webvttCue) key() string {
 // A vtta box is a NOTE block, and it belongs to the cue that follows it, which
 // is where Matroska keeps it too. One that precedes no cue has no cue to go with
 // and is dropped: no container this package writes has anywhere else for it.
+//
+// The boxes of a sample are counted before mp4ff decodes any of them, with the
+// bounds of the readers (the defaults: none of the callers is given a
+// ReaderLimits), and a sample past them is refused with ErrReaderLimit: a sample
+// is the bytes of an mdat, which the walk of a file does not enter.
 func readWebVTTSample(data []byte) ([]webvttCue, error) {
+	if err := checkCENC(data, ReaderLimits{}.bounded()); err != nil {
+		return nil, err
+	}
 	r := bytes.NewReader(data)
 	var (
 		cues     []webvttCue
