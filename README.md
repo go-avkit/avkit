@@ -1355,6 +1355,13 @@ allocates anything for it.
   and costing what they hold. A flood of 1<<20 + 1 boxes (8 MiB) made each of
   them allocate 276 MB before it was refused, and now 8 to 25 KB; encrypted
   files decrypt byte for byte as before.
+- **Boxes inside a sample or a record are covered too.** A `wvtt` sample is bytes
+  of an `mdat`, which the walk of a file does not enter, and `mp4ff` decodes its
+  boxes into Go values: a `vttc` holding 1<<20 + 1 empty boxes made every path
+  that reads one (the remux and cut checks, `Segment`, the tx3g conversion, the
+  WebM muxer) allocate 243 MB. `readWebVTTSample` now counts them first, and so
+  does the reader of a configuration record (`stpp`, `dac3`, `dec3`).
+  These paths take no `ReaderLimits` of their own, so they apply the defaults.
 
 ## Guarantees
 
