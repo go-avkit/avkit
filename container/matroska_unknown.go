@@ -42,10 +42,9 @@ const ebmlVoidID = 0xEC
 func skipUnknownElements(data []byte) []byte {
 	out := data
 	for i := 0; i < len(data); {
-		id, idWidth, _, ok := ebmlVint(data, i, true)
-		if !ok {
-			return out
-		}
+		// An ID that cannot be read has width zero, and the size is then read at
+		// the same byte and cannot be either, so one check covers both.
+		id, idWidth, _, _ := ebmlVint(data, i, true)
 		size, sizeWidth, unknown, ok := ebmlVint(data, i+idWidth, false)
 		if !ok {
 			return out

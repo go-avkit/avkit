@@ -300,7 +300,16 @@ func TestTheSkipEndsWhereTheWalkCannotFollow(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			in := append(append([]byte(nil), unknownElem...), c.tail...)
 			want := append(append([]byte(nil), voided...), c.tail...)
-			if got := skipUnknownElements(in); !bytes.Equal(got, want) {
+			var got []byte
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("skipUnknownElements(% x) panicked: %v", in, r)
+					}
+				}()
+				got = skipUnknownElements(in)
+			}()
+			if !bytes.Equal(got, want) {
 				t.Errorf("skipUnknownElements(% x) = % x, want % x", in, got, want)
 			}
 			if !bytes.Equal(in[:len(unknownElem)], unknownElem) {
