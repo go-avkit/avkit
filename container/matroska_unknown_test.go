@@ -280,3 +280,32 @@ func TestTheFuzzSeedIsTheFixture(t *testing.T) {
 		t.Errorf("%s is not the fixture; regenerate it with AVKIT_REGEN=1 go test -run TestTheFuzzSeedIsTheFixture ./container", path)
 	}
 }
+
+// The walk ends at a structure it cannot follow and leaves the rest to
+// ebml-go, which says what is wrong with it. What it has voided before that
+// point stays voided, and nothing after the point is touched.
+func TestTheSkipEndsWhereTheWalkCannotFollow(t *testing.T) {
+	unknownElem := []byte{0x7F, 0x7F, 0x82, 0xAA, 0xBB} // an ID nobody assigned, two bytes of body
+	voided := []byte{ebmlVoidID, 0x10, 0x00, 0x00, 0x00}
+	for _, c := range []struct {
+		name string
+		tail []byte
+	}{
+		{"an ID that is not a number", []byte{0x00, 0x01}},
+		{"an ID without its size", []byte{0x7F, 0x7F}},
+		{"a size that is not a number", []byte{0x7F, 0x7F, 0x00}},
+		{"a known element of unknown size", append([]byte{0xA3, 0xFF}, unknownElem...)},
+		{"a known element past the end", append([]byte{0xA3, 0x90}, unknownElem...)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			in := append(append([]byte(nil), unknownElem...), c.tail...)
+			want := append(append([]byte(nil), voided...), c.tail...)
+			if got := skipUnknownElements(in); !bytes.Equal(got, want) {
+				t.Errorf("skipUnknownElements(% x) = % x, want % x", in, got, want)
+			}
+			if !bytes.Equal(in[:len(unknownElem)], unknownElem) {
+				t.Error("the input was written to")
+			}
+		})
+	}
+}
