@@ -156,6 +156,7 @@ func demuxMatroska(data []byte, limits ReaderLimits) (*File, error) {
 	if err := checkMatroskaFrames(data, limits); err != nil {
 		return nil, err
 	}
+	data = skipUnknownElements(data)
 	var doc mkvDoc
 	if err := ebml.Unmarshal(bytes.NewReader(data), &doc, mkvLeafLimit(len(data))); err != nil {
 		return nil, err

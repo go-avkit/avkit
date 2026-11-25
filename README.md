@@ -1362,6 +1362,16 @@ allocates anything for it.
   WebM muxer) allocate 243 MB. `readWebVTTSample` now counts them first, and so
   does the reader of a configuration record (`stpp`, `dac3`, `dec3`).
   These paths take no `ReaderLimits` of their own, so they apply the defaults.
+- **Matroska elements the reader does not know are skipped** (go-avkit/avkit#129,
+  RFC 9559 §7). `FrameRate` (`0x2383E3`, deprecated, RFC 9559 Appendix A.26), which
+  libvpx's old muxer wrote into every video track, made `NewReader` and `Demux`
+  refuse 201 of the 307 `.webm` files of the libvpx test vectors with `unknown
+  element`. An element whose ID `ebml-go` has no entry for is now read as a `Void`
+  of the same length, by the size it states, so its children go with it. It is
+  skipped only if that size lies within the file and its parent; an unknown
+  element of unknown size, or one stating more than its parent holds, is refused
+  as before. Reading stays strict otherwise: `ebml-go`'s own ignore-unknown mode
+  is not used, because it swallows every read error.
 
 ## Guarantees
 
