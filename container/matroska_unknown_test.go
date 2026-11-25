@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/at-wat/ebml-go"
@@ -294,7 +295,9 @@ func TestTheSkipEndsWhereTheWalkCannotFollow(t *testing.T) {
 		{"an ID that is not a number", []byte{0x00, 0x01}},
 		{"an ID without its size", []byte{0x7F, 0x7F}},
 		{"a size that is not a number", []byte{0x7F, 0x7F, 0x00}},
-		{"a known element of unknown size", append([]byte{0xA3, 0xFF}, unknownElem...)},
+		// An unknown size reads as 127 in one byte: past those bytes the walk
+		// would find the next element, if it took the value for a length.
+		{"a known element of unknown size", slices.Concat([]byte{0xA3, 0xFF}, make([]byte, 127), unknownElem)},
 		{"a known element past the end", append([]byte{0xA3, 0x90}, unknownElem...)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
