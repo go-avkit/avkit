@@ -152,6 +152,7 @@ func newMatroskaReader(data []byte, limits ReaderLimits) (*Reader, error) {
 	if err := checkMatroskaFrames(data, limits); err != nil {
 		return nil, err
 	}
+	data = skipUnknownElements(data) // RFC 9559 §7; go-avkit/avkit#129
 	doc, groups, err := unmarshalMatroska(data)
 	truncated := false
 	if err != nil {

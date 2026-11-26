@@ -26,6 +26,9 @@ import (
 type Sets struct {
 	Masters []uint64
 	Blocks  []uint64
+	// Known is every element of the table, whatever its type: an ID outside it
+	// is one ebml-go refuses with ErrUnknownElement.
+	Known []uint64
 }
 
 // Parse reads the `table` variable of ebml-go's elementtable.go.
@@ -56,6 +59,7 @@ func Parse(src []byte) (Sets, error) {
 				if err != nil {
 					return Sets{}, err
 				}
+				s.Known = append(s.Known, id)
 				switch kind {
 				case "DataTypeMaster":
 					s.Masters = append(s.Masters, id)
@@ -70,6 +74,7 @@ func Parse(src []byte) (Sets, error) {
 	}
 	slices.Sort(s.Masters)
 	slices.Sort(s.Blocks)
+	slices.Sort(s.Known)
 	return s, nil
 }
 
@@ -84,11 +89,11 @@ func Generate(src []byte, version string) ([]byte, error) {
 	fmt.Fprintf(&b, "// Code generated from ebml-go %s by internal/ebmlmasters; DO NOT EDIT.\n", version)
 	b.WriteString("// Regenerate with AVKIT_REGEN=1 go test -run TestTheWalkDescendsIntoEveryMasterEbmlGoDoes ./container\n\n")
 	b.WriteString("package container\n\n")
-	b.WriteString("// ebmlMasters are the elements ebml-go descends into, and ebmlBlocks the ones it\n// unlaces, by ID with the marker bit kept.\n")
+	b.WriteString("// ebmlMasters are the elements ebml-go descends into, and ebmlBlocks the ones it\n// unlaces, and ebmlKnown every element of the table, by ID with the marker bit\n// kept.\n")
 	for _, set := range []struct {
 		name string
 		ids  []uint64
-	}{{"ebmlMasters", sets.Masters}, {"ebmlBlocks", sets.Blocks}} {
+	}{{"ebmlMasters", sets.Masters}, {"ebmlBlocks", sets.Blocks}, {"ebmlKnown", sets.Known}} {
 		fmt.Fprintf(&b, "var %s = map[uint64]bool{\n", set.name)
 		for _, id := range set.ids {
 			fmt.Fprintf(&b, "\t0x%X: true,\n", id)

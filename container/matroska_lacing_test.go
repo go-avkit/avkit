@@ -246,7 +246,7 @@ func TestTheWalkDescendsIntoEveryMasterEbmlGoDoes(t *testing.T) {
 		name string
 		want []uint64
 		got  map[uint64]bool
-	}{{"masters", sets.Masters, ebmlMasters}, {"blocks", sets.Blocks, ebmlBlocks}} {
+	}{{"masters", sets.Masters, ebmlMasters}, {"blocks", sets.Blocks, ebmlBlocks}, {"known", sets.Known, ebmlKnown}} {
 		if len(c.want) != len(c.got) {
 			t.Errorf("%s: ebml-go has %d, the generated set %d", c.name, len(c.want), len(c.got))
 		}
