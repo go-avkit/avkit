@@ -30,6 +30,7 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"math"
 	"time"
 
 	"github.com/go-avkit/avkit/container"
@@ -99,7 +100,7 @@ type Options struct {
 type Encoder struct {
 	mux   *container.WebMMuxer
 	track uint32
-	enc   *govpx.VP8Encoder
+	enc   frameEncoder
 	opts  Options
 
 	buf             *image.YCbCr // conversion scratch, reused
@@ -116,13 +117,31 @@ type Encoder struct {
 	lastDur int64
 }
 
+// frameEncoder is the part of govpx's encoder this package uses. It, newVP8 and
+// addTrack are seams: the refusals behind them cannot be reached with options
+// this package has already checked, and a test has to be able to reach them.
+type frameEncoder interface {
+	EncodeInto(dst []byte, src govpx.Image, pts, duration uint64, flags govpx.EncodeFlags) (govpx.EncodeResult, error)
+	Close() error
+}
+
+var newVP8 = func(o govpx.EncoderOptions) (frameEncoder, error) {
+	e, err := govpx.NewVP8Encoder(o)
+	if err != nil {
+		return nil, err
+	}
+	return e, nil
+}
+
+var addTrack = (*container.WebMMuxer).AddTrack
+
 // New starts a WebM file on w. A w that is an [io.Seeker], such as an
 // *os.File, gets the duration and the segment size written at Close.
 func New(w io.Writer, o Options) (*Encoder, error) {
 	if err := o.validate(); err != nil {
 		return nil, err
 	}
-	enc, err := govpx.NewVP8Encoder(o.govpx())
+	enc, err := newVP8(o.govpx())
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrOptions, err)
 	}
@@ -131,7 +150,7 @@ func New(w io.Writer, o Options) (*Encoder, error) {
 		mopts = append(mopts, container.BufferedSegment())
 	}
 	mux := container.NewWebMMuxer(w, mopts...)
-	id, err := mux.AddTrack(container.TrackConfig{
+	id, err := addTrack(mux, container.TrackConfig{
 		Kind: container.Video, Codec: "vp08", Timescale: timescale,
 		Width: o.Width, Height: o.Height,
 	})
@@ -227,8 +246,8 @@ func (e *Encoder) AddFrame(img image.Image, pts time.Duration) error {
 		e.started, e.heldAt = true, at
 	}
 	e.lastAt, e.lastDur = at, dur
-	if len(res.Data) == 0 || res.Dropped {
-		return nil // the held frame simply lasts longer
+	if len(res.Data) == 0 { // dropped by rate control: the held frame lasts longer
+		return nil
 	}
 	if e.held != nil {
 		if err := e.flush(at); err != nil {
@@ -244,8 +263,10 @@ func (e *Encoder) AddFrame(img image.Image, pts time.Duration) error {
 
 // flush writes the held frame, which lasts until `until` milliseconds.
 func (e *Encoder) flush(until int64) error {
+	// d is at least one: timestamps advance, and the last frame lasts as long
+	// as one before it or a nominal frame, never less than a millisecond.
 	d := until - e.heldAt
-	if d <= 0 || d > 1<<32-1 {
+	if d > math.MaxUint32 {
 		return fmt.Errorf("%w: duration %dms", ErrFrame, d)
 	}
 	return e.mux.WriteSample(e.track, container.Sample{
@@ -319,25 +340,15 @@ func convert(dst *image.YCbCr, img image.Image) {
 						continue
 					}
 					r, g, bl := rgb(b.Min.X+x, b.Min.Y+y)
-					dst.Y[y*dst.YStride+x] = clamp8(((66*r + 129*g + 25*bl + 128) >> 8) + 16)
+					dst.Y[y*dst.YStride+x] = byte(((66*r + 129*g + 25*bl + 128) >> 8) + 16) // 16..235, 16..240 for Cb, Cr: no clamp
 					sr, sg, sb, n = sr+r, sg+g, sb+bl, n+1
 				}
 			}
 			r, g, bl := (sr+n/2)/n, (sg+n/2)/n, (sb+n/2)/n
-			dst.Cb[cy*dst.CStride+cx] = clamp8(((-38*r - 74*g + 112*bl + 128) >> 8) + 128)
-			dst.Cr[cy*dst.CStride+cx] = clamp8(((112*r - 94*g - 18*bl + 128) >> 8) + 128)
+			dst.Cb[cy*dst.CStride+cx] = byte(((-38*r - 74*g + 112*bl + 128) >> 8) + 128)
+			dst.Cr[cy*dst.CStride+cx] = byte(((112*r - 94*g - 18*bl + 128) >> 8) + 128)
 		}
 	}
-}
-
-func clamp8(v int) byte {
-	if v < 0 {
-		return 0
-	}
-	if v > 255 {
-		return 255
-	}
-	return byte(v)
 }
 
 // rgbReader returns a function reading 8-bit RGB at absolute coordinates, with

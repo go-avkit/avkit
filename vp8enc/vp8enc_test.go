@@ -264,7 +264,7 @@ func TestInputKinds(t *testing.T) {
 		}
 	}
 	g := ToYCbCr(gen)
-	if g.Y[10*g.YStride+10] != clamp8(((66*40+129*40+25*40+128)>>8)+16) || g.Cb[0] != 128 || g.Cr[0] != 128 {
+	if g.Y[10*g.YStride+10] != byte(((66*40+129*40+25*40+128)>>8)+16) || g.Cb[0] != 128 || g.Cr[0] != 128 {
 		t.Errorf("grey converts to Y=%d Cb=%d Cr=%d", g.Y[10*g.YStride+10], g.Cb[0], g.Cr[0])
 	}
 	// A sub-image of a larger YCbCr is encoded in place, at an even origin.
@@ -428,4 +428,108 @@ func FuzzEncode(f *testing.F) {
 			t.Fatalf("%+v: output does not demux: %v", o, err)
 		}
 	})
+}
+
+// TestPrimaries pins the colour matrix: BT.601, studio swing, for the colours
+// whose values every reference lists.
+func TestPrimaries(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		c       color.RGBA
+		y, u, v byte
+	}{
+		{"black", color.RGBA{0, 0, 0, 255}, 16, 128, 128},
+		{"white", color.RGBA{255, 255, 255, 255}, 235, 128, 128},
+		{"red", color.RGBA{255, 0, 0, 255}, 82, 90, 240},
+		{"green", color.RGBA{0, 255, 0, 255}, 144, 54, 34},
+		{"blue", color.RGBA{0, 0, 255, 255}, 41, 240, 110},
+	} {
+		img := image.NewRGBA(image.Rect(0, 0, 3, 3)) // odd: the edge block averages what it has
+		for i := 0; i < 9; i++ {
+			img.SetRGBA(i%3, i/3, c.c)
+		}
+		yc := ToYCbCr(img)
+		if yc.Y[0] != c.y || yc.Y[2*yc.YStride+2] != c.y || yc.Cb[3] != c.u || yc.Cr[3] != c.v {
+			t.Errorf("%s: Y %d Cb %d Cr %d, want %d %d %d", c.name, yc.Y[0], yc.Cb[3], yc.Cr[3], c.y, c.u, c.v)
+		}
+	}
+}
+
+type fakeEnc struct {
+	res govpx.EncodeResult
+	err error
+}
+
+func (f fakeEnc) EncodeInto([]byte, govpx.Image, uint64, uint64, govpx.EncodeFlags) (govpx.EncodeResult, error) {
+	return f.res, f.err
+}
+func (fakeEnc) Close() error { return nil }
+
+// TestDroppedFrame: a frame the encoder drops lengthens the one before it.
+func TestDroppedFrame(t *testing.T) {
+	o := testOptions()
+	o.Buffered = true
+	var buf bytes.Buffer
+	enc, err := New(&buf, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.AddFrame(uiseq.Frame(0, tw, th), 0); err != nil {
+		t.Fatal(err)
+	}
+	real := enc.enc
+	enc.enc = fakeEnc{} // no data, no error: rate control dropped it
+	if err := enc.AddFrame(uiseq.Frame(1, tw, th), 33*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	enc.enc = real
+	if err := enc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ss, _ := samples(t, buf.Bytes())
+	if len(ss) != 1 || ss[0].Duration != 66 {
+		t.Fatalf("%d samples, first lasts %v ms; want one of 66", len(ss), ss[0].Duration)
+	}
+}
+
+func TestEncoderFailures(t *testing.T) {
+	boom := errors.New("boom")
+	var buf bytes.Buffer
+	enc, err := New(&buf, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc.enc = fakeEnc{err: boom}
+	if err := enc.AddFrame(uiseq.Frame(0, tw, th), 0); !errors.Is(err, boom) {
+		t.Errorf("encoder failure: %v", err)
+	}
+
+	save, saveTrack := newVP8, addTrack
+	defer func() { newVP8, addTrack = save, saveTrack }()
+	newVP8 = func(govpx.EncoderOptions) (frameEncoder, error) { return nil, boom }
+	if _, err := New(&buf, testOptions()); !errors.Is(err, ErrOptions) {
+		t.Errorf("govpx refusing the options: %v", err)
+	}
+	newVP8 = save
+	addTrack = func(*container.WebMMuxer, container.TrackConfig) (uint32, error) { return 0, boom }
+	if _, err := New(&buf, testOptions()); !errors.Is(err, boom) {
+		t.Errorf("muxer refusing the track: %v", err)
+	}
+}
+
+// TestGapTooLong: a sample's duration is 32 bits of milliseconds, and a gap
+// past that is refused rather than wrapped.
+func TestGapTooLong(t *testing.T) {
+	var buf bytes.Buffer
+	enc, err := New(&buf, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := uiseq.Frame(0, tw, th)
+	if err := enc.AddFrame(f, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.AddFrame(f, 60*24*time.Hour); !errors.Is(err, ErrFrame) {
+		t.Fatalf("60 day gap: %v", err)
+	}
 }
