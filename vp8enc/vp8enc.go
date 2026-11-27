@@ -42,10 +42,19 @@ import (
 // source, the encoder's references, the output buffer), so the area is bounded
 // as well, in a unit that cannot overflow a 32-bit int.
 const (
+	// MinDimension is the smallest width or height accepted. govpx v0.5.2
+	// panics (slice bounds out of range in its SSE kernels) on frames with a
+	// side under 16 pixels, at every speed preset, so they are refused.
+	MinDimension = 16
 	// MaxDimension is the largest width or height VP8 can state.
 	MaxDimension = 16383
 	// MaxArea is the largest width times height accepted, 8192 x 8192.
 	MaxArea = 1 << 26
+
+	// DefaultCPUUsed is the speed preset used when Options.CPUUsed is zero:
+	// the fastest one that govpx v0.5.2 implements as a distinct preset, about
+	// 250 frames per second at 1280x720 on one core.
+	DefaultCPUUsed = 5
 )
 
 // timescale is the unit of the track: one millisecond, the WebM default tick.
@@ -79,8 +88,11 @@ type Options struct {
 	// KeyFrameInterval is the longest run of frames between keyframes, and
 	// the granularity of seeking. Zero means 120 frames.
 	KeyFrameInterval int
-	// CPUUsed trades speed for compression, 0 (slowest, smallest) to 16
-	// (fastest). Zero is the encoder's default for the good-quality deadline.
+	// CPUUsed trades speed for compression, 1 (slowest, smallest) to 16
+	// (fastest). Zero means DefaultCPUUsed. Measured with govpx v0.5.2 on a
+	// 1280x720 UI sequence: 1 and 2 run at about 1 to 2 frames per second,
+	// 4 at 40, and every value from 5 up at about 250 with the same output
+	// (about 5 dB lower PSNR than 4 for 1% more bytes).
 	CPUUsed int
 	// ScreenContent turns on the encoder's screen-content mode, for
 	// rendered user interfaces and slides.
@@ -164,8 +176,8 @@ func New(w io.Writer, o Options) (*Encoder, error) {
 
 func (o Options) validate() error {
 	switch {
-	case o.Width <= 0 || o.Height <= 0 || o.Width > MaxDimension || o.Height > MaxDimension:
-		return fmt.Errorf("%w: size %dx%d outside 1..%d", ErrOptions, o.Width, o.Height, MaxDimension)
+	case o.Width < MinDimension || o.Height < MinDimension || o.Width > MaxDimension || o.Height > MaxDimension:
+		return fmt.Errorf("%w: size %dx%d outside %d..%d", ErrOptions, o.Width, o.Height, MinDimension, MaxDimension)
 	case int64(o.Width)*int64(o.Height) > MaxArea:
 		return fmt.Errorf("%w: %dx%d exceeds %d pixels", ErrOptions, o.Width, o.Height, MaxArea)
 	case o.FPS <= 0 || o.FPS > timescale:
@@ -181,12 +193,16 @@ func (o Options) validate() error {
 }
 
 func (o Options) govpx() govpx.EncoderOptions {
+	cpu := o.CPUUsed
+	if cpu == 0 {
+		cpu = DefaultCPUUsed
+	}
 	g := govpx.EncoderOptions{
 		Width: o.Width, Height: o.Height,
 		TimebaseNum: 1, TimebaseDen: timescale,
 		TargetBitrateKbps: o.BitrateKbps,
 		KeyFrameInterval:  o.KeyFrameInterval,
-		CpuUsed:           o.CPUUsed,
+		CpuUsed:           cpu,
 		Deadline:          govpx.DeadlineGoodQuality,
 	}
 	if o.Realtime {
