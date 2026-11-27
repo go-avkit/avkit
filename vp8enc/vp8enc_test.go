@@ -351,16 +351,19 @@ func TestOptionsAndFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := uiseq.Frame(0, 64, 64)
-	for name, c := range map[string]struct {
-		img image.Image
-		pts time.Duration
+	for _, c := range []struct {
+		name string
+		img  image.Image
+		pts  time.Duration
 	}{
-		"wrong size":    {uiseq.Frame(0, 80, 64), 0},
-		"negative time": {f, -time.Second},
-		"huge time":     {f, 1 << 62},
+		{"smaller", uiseq.Frame(0, 64, 64).SubImage(image.Rect(0, 0, 32, 64)), 0},
+		{"shorter", uiseq.Frame(0, 64, 64).SubImage(image.Rect(0, 0, 64, 32)), 0},
+		{"wider", uiseq.Frame(0, 80, 64), 0},
+		{"negative time", f, -time.Second},
+		{"huge time", f, 1 << 62},
 	} {
 		if err := enc.AddFrame(c.img, c.pts); !errors.Is(err, ErrFrame) {
-			t.Errorf("%s: %v, want ErrFrame", name, err)
+			t.Errorf("%s: %v, want ErrFrame", c.name, err)
 		}
 	}
 	if err := enc.AddFrame(f, time.Second); err != nil {

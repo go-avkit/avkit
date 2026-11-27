@@ -126,11 +126,7 @@ type frameEncoder interface {
 }
 
 var newVP8 = func(o govpx.EncoderOptions) (frameEncoder, error) {
-	e, err := govpx.NewVP8Encoder(o)
-	if err != nil {
-		return nil, err
-	}
-	return e, nil
+	return govpx.NewVP8Encoder(o) // on error the caller drops the typed nil
 }
 
 var addTrack = (*container.WebMMuxer).AddTrack
