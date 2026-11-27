@@ -32,7 +32,8 @@ const (
 )
 
 func testOptions() Options {
-	return Options{Width: tw, Height: th, FPS: 30, BitrateKbps: 600, KeyFrameInterval: 10, ScreenContent: true}
+	return Options{Width: tw, Height: th, FPS: 30, BitrateKbps: 600, KeyFrameInterval: 10, ScreenContent: true,
+		CPUUsed: 1} // the PSNR bounds below are those of the slow presets; DefaultCPUUsed measures lower
 }
 
 // encodeSeq encodes tn UI frames at 30 fps and returns the file and the frames.
@@ -305,6 +306,23 @@ func TestInputKinds(t *testing.T) {
 	}
 }
 
+// TestDefaultPreset pins the meaning of CPUUsed zero: the same file as the
+// explicit DefaultCPUUsed, and not the one of preset 1.
+func TestDefaultPreset(t *testing.T) {
+	o := testOptions()
+	o.CPUUsed = 0
+	def, _ := encodeSeq(t, o)
+	o.CPUUsed = DefaultCPUUsed
+	explicit, _ := encodeSeq(t, o)
+	if !bytes.Equal(def, explicit) {
+		t.Error("CPUUsed 0 is not DefaultCPUUsed")
+	}
+	o.CPUUsed = 1
+	if slow, _ := encodeSeq(t, o); bytes.Equal(def, slow) {
+		t.Error("CPUUsed 1 gives the default preset's file")
+	}
+}
+
 func TestQualityMode(t *testing.T) {
 	o := testOptions()
 	o.BitrateKbps, o.Quality = 0, 8
@@ -333,6 +351,8 @@ func TestOptionsAndFrames(t *testing.T) {
 		{},
 		{Width: 64, Height: 64, FPS: 30},
 		{Width: 0, Height: 64, FPS: 30, BitrateKbps: 100},
+		{Width: MinDimension - 1, Height: 64, FPS: 30, BitrateKbps: 100},
+		{Width: 64, Height: MinDimension - 1, FPS: 30, BitrateKbps: 100},
 		{Width: MaxDimension + 1, Height: 16, FPS: 30, BitrateKbps: 100},
 		{Width: MaxDimension, Height: MaxDimension, FPS: 30, BitrateKbps: 100},
 		{Width: 64, Height: 64, FPS: 0, BitrateKbps: 100},
