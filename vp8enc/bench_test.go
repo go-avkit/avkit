@@ -1,12 +1,7 @@
 // Copyright (c) the go-avkit authors.
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Command vp8bench measures vp8enc against libvpx's vpxenc on one input: gen
-// writes the UI sequence as a Y4M file (what vpxenc reads), enc encodes a Y4M
-// file with vp8enc and reports speed and size, psnr decodes a WebM file with
-// govpx and compares it with the Y4M it came from. It is a measuring tool for
-// the maintainers, not part of the library.
-package main
+package vp8enc_test
 
 import (
 	"bufio"
@@ -19,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/go-avkit/avkit/container"
@@ -27,47 +23,49 @@ import (
 	"github.com/thesyncim/govpx"
 )
 
-func main() {
-	if len(os.Args) < 2 {
-		fail("usage: vp8bench gen|enc|psnr [flags]")
-	}
-	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
-	var (
-		y4m    = fs.String("y4m", "seq.y4m", "Y4M file")
-		webm   = fs.String("webm", "out.webm", "WebM file")
-		n      = fs.Int("n", 300, "frames (gen)")
-		w      = fs.Int("w", 1280, "width (gen)")
-		h      = fs.Int("h", 720, "height (gen)")
-		fps    = fs.Int("fps", 30, "frame rate")
-		kbps   = fs.Int("kbps", 500, "target bitrate (enc)")
-		cpu    = fs.Int("cpu", 0, "CPUUsed (enc)")
-		kf     = fs.Int("kf", 120, "keyframe interval (enc)")
-		screen = fs.Bool("screen", true, "screen content mode (enc)")
-		rt     = fs.Bool("realtime", false, "realtime deadline (enc)")
-		reps   = fs.Int("reps", 1, "encode repetitions, best time reported (enc)")
-	)
-	_ = fs.Parse(os.Args[2:])
-	switch os.Args[1] {
+// TestMeasure is the measuring harness against libvpx, idle unless -cmd is
+// given (go test -run TestMeasure -args -cmd gen ...):
+//
+//	gen   writes the UI sequence as a Y4M file, which vpxenc and ffmpeg read
+//	enc   encodes a Y4M file with vp8enc, reports speed and size
+//	psnr  decodes a WebM file with govpx and compares it with the Y4M
+var (
+	mCmd    = flag.String("cmd", "", "TestMeasure: gen, enc or psnr")
+	mY4M    = flag.String("y4m", "seq.y4m", "Y4M file")
+	mWebM   = flag.String("webm", "out.webm", "WebM file")
+	mN      = flag.Int("n", 300, "frames (gen)")
+	mW      = flag.Int("w", 1280, "width (gen)")
+	mH      = flag.Int("h", 720, "height (gen)")
+	mFPS    = flag.Int("fps", 30, "frame rate")
+	mKbps   = flag.Int("kbps", 500, "target bitrate (enc)")
+	mCPU    = flag.Int("cpu", 0, "CPUUsed (enc)")
+	mKF     = flag.Int("kf", 120, "keyframe interval (enc)")
+	mScreen = flag.Bool("screen", true, "screen content mode (enc)")
+	mRT     = flag.Bool("realtime", false, "realtime deadline (enc)")
+	mReps   = flag.Int("reps", 1, "encode repetitions, best time reported (enc)")
+)
+
+func TestMeasure(t *testing.T) {
+	var err error
+	switch *mCmd {
+	case "":
+		t.Skip("measuring harness: pass -args -cmd gen|enc|psnr")
 	case "gen":
-		check(gen(*y4m, *n, *w, *h, *fps))
+		err = genY4M(*mY4M, *mN, *mW, *mH, *mFPS)
 	case "enc":
-		check(enc(*y4m, *webm, vp8enc.Options{FPS: *fps, BitrateKbps: *kbps, CPUUsed: *cpu, KeyFrameInterval: *kf, ScreenContent: *screen, Realtime: *rt}, *reps))
+		err = encY4M(*mY4M, *mWebM, vp8enc.Options{FPS: *mFPS, BitrateKbps: *mKbps, CPUUsed: *mCPU,
+			KeyFrameInterval: *mKF, ScreenContent: *mScreen, Realtime: *mRT}, *mReps)
 	case "psnr":
-		check(psnr(*y4m, *webm))
+		err = psnrWebM(*mY4M, *mWebM)
 	default:
-		fail("unknown command " + os.Args[1])
+		t.Fatalf("unknown -cmd %q", *mCmd)
 	}
-}
-
-func fail(s string) { fmt.Fprintln(os.Stderr, s); os.Exit(2) }
-func check(err error) {
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		t.Fatal(err)
 	}
 }
 
-func gen(path string, n, w, h, fps int) error {
+func genY4M(path string, n, w, h, fps int) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -134,7 +132,7 @@ func readY4M(path string) ([]*image.YCbCr, int, error) {
 	}
 }
 
-func enc(y4m, webm string, o vp8enc.Options, reps int) error {
+func encY4M(y4m, webm string, o vp8enc.Options, reps int) error {
 	frames, fps, err := readY4M(y4m)
 	if err != nil {
 		return err
@@ -161,9 +159,7 @@ func enc(y4m, webm string, o vp8enc.Options, reps int) error {
 			return err
 		}
 		d := time.Since(t0)
-		if d < best {
-			best = d
-		}
+		best = min(best, d)
 		size = buf.Len()
 		if rep == reps-1 {
 			if err := os.WriteFile(webm, buf.Bytes(), 0o644); err != nil {
@@ -176,7 +172,7 @@ func enc(y4m, webm string, o vp8enc.Options, reps int) error {
 	return nil
 }
 
-func psnr(y4m, webm string) error {
+func psnrWebM(y4m, webm string) error {
 	src, _, err := readY4M(y4m)
 	if err != nil {
 		return err
@@ -202,11 +198,11 @@ func psnr(y4m, webm string) error {
 		return err
 	}
 	defer dec.Close()
-	// A sample may last several frames (a dropped frame): the picture stays.
 	var sumY, sumAll float64
-	var shown int
-	var last govpx.Image
 	for i, s := range ss {
+		if i >= len(src) {
+			break
+		}
 		if err := dec.Decode(s.Data); err != nil {
 			return fmt.Errorf("sample %d: %w", i, err)
 		}
@@ -214,22 +210,16 @@ func psnr(y4m, webm string) error {
 		if !ok {
 			return fmt.Errorf("sample %d: no picture", i)
 		}
-		last = img
-		// Samples map to frames one to one unless frames were dropped.
-		if shown < len(src) {
-			py, pa := cmp(src[shown], last)
-			sumY, sumAll, shown = sumY+py, sumAll+pa, shown+1
-		}
+		py, pa := cmpFrame(src[i], img)
+		sumY, sumAll = sumY+py, sumAll+pa
 	}
+	n := float64(min(len(ss), len(src)))
 	fmt.Printf("%s: %d samples for %d frames, %d bytes, PSNR Y %.2f dB, Y+U+V %.2f dB (mean over frames)\n",
-		webm, len(ss), len(src), len(data), sumY/float64(shown), sumAll/float64(shown))
-	if len(ss) != len(src) {
-		fmt.Printf("warning: %d samples against %d frames, frame pairing is by index\n", len(ss), len(src))
-	}
+		webm, len(ss), len(src), len(data), sumY/n, sumAll/n)
 	return nil
 }
 
-func cmp(a *image.YCbCr, b govpx.Image) (y, all float64) {
+func cmpFrame(a *image.YCbCr, b govpx.Image) (y, all float64) {
 	w, h := b.Width, b.Height
 	var sy, sc float64
 	for j := 0; j < h; j++ {
