@@ -99,9 +99,22 @@ jobs:
           echo "coverage: ${cov}%"
           awk -v t="$cov" 'BEGIN { exit !(t+0 >= 100.0) }' || {
             echo "::error::coverage ${cov}% < 100%"; exit 1; }
-      - name: 32-bit
-        if: runner.os == 'Linux'
-        run: GOARCH=386 go vet ./... && GOARCH=386 go test ./...
+
+  # The media module on 32-bit. A job of its own on Linux, not a step guarded by
+  # `if: runner.os` in the matrix above: buildscan reads that step as a 32-bit
+  # build on every OS of the matrix, including darwin/386, which does not exist.
+  media-386:
+    name: media 386
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: media
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
+        with:
+          go-version: '1.27.4'
+      - run: GOARCH=386 go vet ./... && GOARCH=386 go test ./...
 
   # Run the suite on the six supported 64-bit targets. amd64/arm64 run natively;
   # the rest run under qemu-user. Container parsing reads multi-byte fields with
