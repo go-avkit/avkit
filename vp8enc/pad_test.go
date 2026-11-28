@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -15,6 +16,13 @@ import (
 	"github.com/go-avkit/avkit/vp8enc/internal/uiseq"
 	"github.com/thesyncim/govpx"
 )
+
+// reduced is true where the encoder runs about 10 times slower than native:
+// under the race detector, and on the architectures CI emulates with qemu
+// (riscv64 hit the 10 minute test timeout at 1366x768). The largest tests then
+// use fewer frames and the size sweep a representative subset; every other
+// lane runs them in full.
+var reduced = raceBuild || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" && runtime.GOARCH != "386")
 
 // gradient is the content of thesyncim/govpx#143: a textured gradient that
 // moves from one frame to the next.
@@ -95,7 +103,7 @@ func TestNonAlignedSizes(t *testing.T) {
 			}
 			o := Options{Width: w, Height: h, FPS: 30, BitrateKbps: 4000, Realtime: true, CPUUsed: 16}
 			n := 120
-			if raceBuild {
+			if reduced {
 				n = 24 // 10x slower under -race; every size is still covered
 			}
 			m := roundTrip(t, o, n, gradient)
@@ -110,7 +118,7 @@ func TestNonAlignedSizes(t *testing.T) {
 			}
 			o := Options{Width: w, Height: h, FPS: 30, BitrateKbps: 1500, ScreenContent: true, CPUUsed: 5}
 			n := 30
-			if raceBuild {
+			if reduced {
 				n = 12
 			}
 			m := roundTrip(t, o, n, uiseq.Frame)
@@ -183,7 +191,7 @@ func TestSweepSizes(t *testing.T) {
 	for v := 1; v <= 40; v++ {
 		sweep = append(sweep, v)
 	}
-	if raceBuild {
+	if reduced {
 		// Every class under -race: 1 and tiny, just under, at and over one
 		// and two macroblocks, odd and even, and the largest.
 		sweep = []int{1, 2, 3, 8, 15, 16, 17, 18, 31, 32, 33, 40}
