@@ -94,7 +94,11 @@ func TestNonAlignedSizes(t *testing.T) {
 				t.Skip("short")
 			}
 			o := Options{Width: w, Height: h, FPS: 30, BitrateKbps: 4000, Realtime: true, CPUUsed: 16}
-			m := roundTrip(t, o, 120, gradient)
+			n := 120
+			if raceBuild {
+				n = 24 // 10x slower under -race; every size is still covered
+			}
+			m := roundTrip(t, o, n, gradient)
 			t.Logf("mean PSNR %.2f dB", m)
 			if m < bound(minGradientPSNR) {
 				t.Fatalf("mean PSNR %.2f dB below %.1f", m, bound(minGradientPSNR))
@@ -105,7 +109,11 @@ func TestNonAlignedSizes(t *testing.T) {
 				t.Skip("short")
 			}
 			o := Options{Width: w, Height: h, FPS: 30, BitrateKbps: 1500, ScreenContent: true, CPUUsed: 5}
-			m := roundTrip(t, o, 30, uiseq.Frame)
+			n := 30
+			if raceBuild {
+				n = 12
+			}
+			m := roundTrip(t, o, n, uiseq.Frame)
 			t.Logf("mean PSNR %.2f dB", m)
 			if m < bound(minUIPSNR) {
 				t.Fatalf("mean PSNR %.2f dB below %.1f", m, bound(minUIPSNR))
@@ -171,12 +179,21 @@ func TestDirectYCbCr(t *testing.T) {
 // decodes at the visible size. Before the padding, most sizes with a side
 // under 16 panicked.
 func TestSweepSizes(t *testing.T) {
+	sweep := make([]int, 0, 40)
+	for v := 1; v <= 40; v++ {
+		sweep = append(sweep, v)
+	}
+	if raceBuild {
+		// Every class under -race: 1 and tiny, just under, at and over one
+		// and two macroblocks, odd and even, and the largest.
+		sweep = []int{1, 2, 3, 8, 15, 16, 17, 18, 31, 32, 33, 40}
+	}
 	for _, p := range []struct {
 		cpu int
 		rt  bool
 	}{{1, false}, {5, false}, {16, true}} {
-		for w := 1; w <= 40; w++ {
-			for h := 1; h <= 40; h++ {
+		for _, w := range sweep {
+			for _, h := range sweep {
 				o := Options{Width: w, Height: h, FPS: 30, BitrateKbps: 500, CPUUsed: p.cpu, Realtime: p.rt}
 				var buf bytes.Buffer
 				enc, err := New(&buf, o)
