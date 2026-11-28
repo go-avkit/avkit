@@ -43,9 +43,11 @@ import (
 // as well, in a unit that cannot overflow a 32-bit int.
 const (
 	// MinDimension is the smallest width or height accepted. govpx v0.5.2
-	// panics (slice bounds out of range in its SSE kernels) on frames with a
-	// side under 16 pixels, at every speed preset, so they are refused.
-	MinDimension = 16
+	// reads whole 16x16 macroblocks from the planes it is given and panics on
+	// a frame that is not a multiple of 16 (thesyncim/govpx#143), so this
+	// package hands it planes padded to whole macroblocks by edge
+	// replication, and every size from 1x1 up is safe.
+	MinDimension = 1
 	// MaxDimension is the largest width or height VP8 can state.
 	MaxDimension = 16383
 	// MaxArea is the largest width times height accepted, 8192 x 8192.
@@ -115,7 +117,8 @@ type Encoder struct {
 	enc   frameEncoder
 	opts  Options
 
-	buf             *image.YCbCr // conversion scratch, reused
+	buf             *image.YCbCr // conversion and padding scratch at the macroblock-aligned size, reused
+	aligned         bool         // Width and Height are multiples of 16
 	out             []byte
 	started, closed bool
 
@@ -168,8 +171,9 @@ func New(w io.Writer, o Options) (*Encoder, error) {
 	}
 	e := &Encoder{
 		mux: mux, track: id, enc: enc, opts: o,
-		buf: image.NewYCbCr(image.Rect(0, 0, o.Width, o.Height), image.YCbCrSubsampleRatio420),
-		out: make([]byte, 2*o.Width*o.Height+64<<10),
+		buf:     newScratch(o.Width, o.Height),
+		aligned: o.Width%16 == 0 && o.Height%16 == 0,
+		out:     make([]byte, 2*o.Width*o.Height+64<<10),
 	}
 	return e, nil
 }
@@ -309,16 +313,75 @@ func (e *Encoder) Close() error {
 // planes returns img as the encoder's I420 image.
 func (e *Encoder) planes(img image.Image) govpx.Image {
 	yc, ok := img.(*image.YCbCr)
-	if !ok || yc.SubsampleRatio != image.YCbCrSubsampleRatio420 ||
-		yc.Rect.Min.X%2 != 0 || yc.Rect.Min.Y%2 != 0 {
+	direct := ok && yc.SubsampleRatio == image.YCbCrSubsampleRatio420 &&
+		yc.Rect.Min.X%2 == 0 && yc.Rect.Min.Y%2 == 0
+	switch {
+	case direct && e.aligned:
+		// Whole macroblocks all the way: the caller's planes are used as they are.
+	case direct:
+		copyPlanes(e.buf, yc)
+		yc = e.buf
+		padEdges(yc)
+	default:
 		yc = e.buf
 		convert(yc, img)
+		if !e.aligned {
+			padEdges(yc)
+		}
 	}
 	x0, y0 := yc.Rect.Min.X, yc.Rect.Min.Y
 	return govpx.Image{
 		Width: e.opts.Width, Height: e.opts.Height,
 		Y: yc.Y[yc.YOffset(x0, y0):], U: yc.Cb[yc.COffset(x0, y0):], V: yc.Cr[yc.COffset(x0, y0):],
 		YStride: yc.YStride, UStride: yc.CStride, VStride: yc.CStride,
+	}
+}
+
+// newScratch returns an empty 4:2:0 image of the visible size whose planes are
+// allocated at the size rounded up to whole 16x16 macroblocks (chroma 8x8).
+func newScratch(w, h int) *image.YCbCr {
+	aw, ah := (w+15)&^15, (h+15)&^15
+	return &image.YCbCr{
+		Y: make([]byte, aw*ah), Cb: make([]byte, aw/2*ah/2), Cr: make([]byte, aw/2*ah/2),
+		YStride: aw, CStride: aw / 2,
+		SubsampleRatio: image.YCbCrSubsampleRatio420,
+		Rect:           image.Rect(0, 0, w, h),
+	}
+}
+
+// copyPlanes copies the visible area of src (4:2:0, even origin) into dst.
+func copyPlanes(dst, src *image.YCbCr) {
+	w, h := dst.Rect.Dx(), dst.Rect.Dy()
+	cw, ch := (w+1)/2, (h+1)/2
+	x0, y0 := src.Rect.Min.X, src.Rect.Min.Y
+	for y := 0; y < h; y++ {
+		copy(dst.Y[y*dst.YStride:y*dst.YStride+w], src.Y[src.YOffset(x0, y0+y):])
+	}
+	for y := 0; y < ch; y++ {
+		copy(dst.Cb[y*dst.CStride:y*dst.CStride+cw], src.Cb[src.COffset(x0, y0+2*y):])
+		copy(dst.Cr[y*dst.CStride:y*dst.CStride+cw], src.Cr[src.COffset(x0, y0+2*y):])
+	}
+}
+
+// padEdges replicates the last visible column and row of each plane of m into
+// the padding up to whole macroblocks, as libvpx does, so that the encoder's
+// 16x16 kernels read defined pixels that belong to the picture's edge.
+func padEdges(m *image.YCbCr) {
+	w, h := m.Rect.Dx(), m.Rect.Dy()
+	padPlane(m.Y, m.YStride, w, h, len(m.Y)/m.YStride)
+	padPlane(m.Cb, m.CStride, (w+1)/2, (h+1)/2, len(m.Cb)/m.CStride)
+	padPlane(m.Cr, m.CStride, (w+1)/2, (h+1)/2, len(m.Cr)/m.CStride)
+}
+
+func padPlane(p []byte, stride, w, h, rows int) {
+	for y := 0; y < h; y++ {
+		row := p[y*stride : (y+1)*stride]
+		for x := w; x < stride; x++ {
+			row[x] = row[w-1]
+		}
+	}
+	for y := h; y < rows; y++ {
+		copy(p[y*stride:(y+1)*stride], p[(h-1)*stride:h*stride])
 	}
 }
 

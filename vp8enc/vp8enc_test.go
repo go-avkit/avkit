@@ -425,6 +425,12 @@ func FuzzEncode(f *testing.F) {
 	f.Add(uint8(16), uint8(16), uint8(30), uint16(100), uint8(0), uint8(3))
 	f.Add(uint8(1), uint8(1), uint8(1), uint16(1), uint8(63), uint8(1))
 	f.Add(uint8(33), uint8(17), uint8(255), uint16(5000), uint8(1), uint8(40))
+	// Sizes that are no multiple of 16 (thesyncim/govpx#143).
+	f.Add(uint8(1), uint8(200), uint8(30), uint16(300), uint8(0), uint8(5))
+	f.Add(uint8(200), uint8(1), uint8(30), uint16(300), uint8(0), uint8(5))
+	f.Add(uint8(15), uint8(17), uint8(30), uint16(100), uint8(0), uint8(7))
+	f.Add(uint8(161), uint8(91), uint8(30), uint16(800), uint8(0), uint8(7))
+	f.Add(uint8(250), uint8(181), uint8(25), uint16(800), uint8(20), uint8(7))
 	f.Fuzz(func(t *testing.T, w, h, fps uint8, kbps uint16, q, n uint8) {
 		o := Options{Width: int(w), Height: int(h), FPS: int(fps), BitrateKbps: int(kbps), Quality: int(q % 70)}
 		var buf bytes.Buffer
